@@ -1,0 +1,363 @@
+"""OpenAPI extractor — parses Swagger 2.0, OpenAPI 3.0, and 3.1 specs into ServiceIR."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+import httpx
+import yaml
+
+from libs.extractors.base import ExtractorProtocol, SourceConfig
+from libs.ir.models import (
+    AuthConfig,
+    AuthType,
+    Operation,
+    Param,
+    RiskLevel,
+    RiskMetadata,
+    ServiceIR,
+    SourceType,
+)
+
+logger = logging.getLogger(__name__)
+
+# HTTP method → risk level mapping
+_METHOD_RISK: dict[str, RiskLevel] = {
+    "GET": RiskLevel.safe,
+    "HEAD": RiskLevel.safe,
+    "OPTIONS": RiskLevel.safe,
+    "POST": RiskLevel.cautious,
+    "PUT": RiskLevel.cautious,
+    "PATCH": RiskLevel.cautious,
+    "DELETE": RiskLevel.dangerous,
+}
+
+# JSON Schema type mapping from OpenAPI types
+_TYPE_MAP: dict[str, str] = {
+    "integer": "integer",
+    "number": "number",
+    "string": "string",
+    "boolean": "boolean",
+    "array": "array",
+    "object": "object",
+    "file": "string",
+}
+
+
+class OpenAPIExtractor:
+    """Extracts ServiceIR from OpenAPI / Swagger specs."""
+
+    protocol_name: str = "openapi"
+
+    def detect(self, source: SourceConfig) -> float:
+        """Check if the source looks like an OpenAPI spec."""
+        content = self._get_content(source)
+        if content is None:
+            return 0.0
+
+        try:
+            spec = self._parse_spec_string(content)
+        except Exception:
+            return 0.0
+
+        if "openapi" in spec:
+            return 0.95
+        if "swagger" in spec:
+            return 0.95
+        if "paths" in spec and "info" in spec:
+            return 0.6
+        return 0.0
+
+    def extract(self, source: SourceConfig) -> ServiceIR:
+        """Parse an OpenAPI/Swagger spec and produce a ServiceIR."""
+        content = self._get_content(source)
+        if content is None:
+            raise ValueError("Could not read source content")
+
+        spec = self._parse_spec_string(content)
+        source_hash = hashlib.sha256(content.encode()).hexdigest()
+
+        is_swagger = "swagger" in spec
+        version = spec.get("swagger", spec.get("openapi", "unknown"))
+
+        base_url = self._extract_base_url(spec, source, is_swagger)
+        auth = self._extract_auth(spec, is_swagger)
+        operations = self._extract_operations(spec, is_swagger)
+
+        service_name = spec.get("info", {}).get("title", "unnamed-api")
+        service_name = _slugify(service_name)
+
+        return ServiceIR(
+            source_url=source.url,
+            source_hash=source_hash,
+            protocol="openapi",
+            service_name=service_name,
+            service_description=spec.get("info", {}).get("description", ""),
+            base_url=base_url,
+            auth=auth,
+            operations=operations,
+            metadata={"openapi_version": version, "spec_title": spec.get("info", {}).get("title", "")},
+        )
+
+    # ── Private helpers ────────────────────────────────────────────────────
+
+    def _get_content(self, source: SourceConfig) -> str | None:
+        """Get spec content from URL, file path, or inline content."""
+        if source.file_content:
+            return source.file_content
+        if source.file_path:
+            return Path(source.file_path).read_text()
+        if source.url:
+            try:
+                resp = httpx.get(source.url, timeout=30, headers=self._auth_headers(source))
+                resp.raise_for_status()
+                return resp.text
+            except Exception:
+                logger.warning("Failed to fetch spec from %s", source.url, exc_info=True)
+                return None
+        return None
+
+    def _auth_headers(self, source: SourceConfig) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if source.auth_header:
+            headers["Authorization"] = source.auth_header
+        elif source.auth_token:
+            headers["Authorization"] = f"Bearer {source.auth_token}"
+        return headers
+
+    def _parse_spec_string(self, content: str) -> dict[str, Any]:
+        """Parse YAML or JSON spec string."""
+        content = content.strip()
+        if content.startswith("{"):
+            spec = json.loads(content)
+        else:
+            spec = yaml.safe_load(content)
+        self._resolve_refs(spec, spec)
+        return spec
+
+    def _resolve_refs(self, node: Any, root: dict) -> Any:
+        """Recursively resolve $ref pointers in-place."""
+        if isinstance(node, dict):
+            if "$ref" in node and len(node) == 1:
+                ref_path = node["$ref"]
+                resolved = self._follow_ref(ref_path, root)
+                node.clear()
+                node.update(resolved)
+            for v in node.values():
+                self._resolve_refs(v, root)
+        elif isinstance(node, list):
+            for item in node:
+                self._resolve_refs(item, root)
+
+    def _follow_ref(self, ref: str, root: dict) -> dict:
+        """Follow a JSON pointer like '#/components/schemas/Pet'."""
+        if not ref.startswith("#/"):
+            return {}
+        parts = ref[2:].split("/")
+        current: Any = root
+        for part in parts:
+            if isinstance(current, dict):
+                current = current.get(part, {})
+            else:
+                return {}
+        return current if isinstance(current, dict) else {}
+
+    def _extract_base_url(self, spec: dict, source: SourceConfig, is_swagger: bool) -> str:
+        if is_swagger:
+            host = spec.get("host", "localhost")
+            base_path = spec.get("basePath", "")
+            schemes = spec.get("schemes", ["https"])
+            scheme = schemes[0] if schemes else "https"
+            return f"{scheme}://{host}{base_path}"
+        else:
+            servers = spec.get("servers", [])
+            if servers:
+                return servers[0].get("url", source.url or "http://localhost")
+            return source.url or "http://localhost"
+
+    def _extract_auth(self, spec: dict, is_swagger: bool) -> AuthConfig:
+        if is_swagger:
+            sec_defs = spec.get("securityDefinitions", {})
+        else:
+            sec_defs = spec.get("components", {}).get("securitySchemes", {})
+
+        if not sec_defs:
+            return AuthConfig(type=AuthType.none)
+
+        # Take the first security scheme
+        name, scheme = next(iter(sec_defs.items()))
+
+        if is_swagger:
+            return self._parse_swagger_auth(scheme)
+        return self._parse_openapi_auth(scheme)
+
+    def _parse_swagger_auth(self, scheme: dict) -> AuthConfig:
+        auth_type = scheme.get("type", "")
+        if auth_type == "apiKey":
+            location = scheme.get("in", "header")
+            return AuthConfig(
+                type=AuthType.api_key,
+                api_key_param=scheme.get("name", "api_key"),
+                api_key_location=location if location in ("header", "query") else "header",
+            )
+        if auth_type == "oauth2":
+            return AuthConfig(type=AuthType.oauth2)
+        if auth_type == "basic":
+            return AuthConfig(type=AuthType.basic)
+        return AuthConfig(type=AuthType.none)
+
+    def _parse_openapi_auth(self, scheme: dict) -> AuthConfig:
+        auth_type = scheme.get("type", "")
+        if auth_type == "http":
+            http_scheme = scheme.get("scheme", "bearer")
+            if http_scheme == "bearer":
+                return AuthConfig(
+                    type=AuthType.bearer,
+                    header_name="Authorization",
+                    header_prefix="Bearer",
+                )
+            if http_scheme == "basic":
+                return AuthConfig(type=AuthType.basic)
+        if auth_type == "apiKey":
+            location = scheme.get("in", "header")
+            return AuthConfig(
+                type=AuthType.api_key,
+                api_key_param=scheme.get("name", "api_key"),
+                api_key_location=location if location in ("header", "query") else "header",
+            )
+        if auth_type == "oauth2":
+            return AuthConfig(type=AuthType.oauth2)
+        return AuthConfig(type=AuthType.none)
+
+    def _extract_operations(self, spec: dict, is_swagger: bool) -> list[Operation]:
+        operations: list[Operation] = []
+        paths = spec.get("paths", {})
+
+        for path, path_item in paths.items():
+            if not isinstance(path_item, dict):
+                continue
+            for method in ("get", "post", "put", "patch", "delete", "head", "options"):
+                if method not in path_item:
+                    continue
+                op_spec = path_item[method]
+                if not isinstance(op_spec, dict):
+                    continue
+
+                op_id = op_spec.get("operationId", f"{method}_{_slugify(path)}")
+                risk_level = _METHOD_RISK.get(method.upper(), RiskLevel.unknown)
+
+                params = self._extract_params(op_spec, path_item, is_swagger)
+
+                enabled = risk_level != RiskLevel.unknown
+                op = Operation(
+                    id=op_id,
+                    name=op_spec.get("summary", op_id),
+                    description=op_spec.get("description", ""),
+                    method=method.upper(),
+                    path=path,
+                    params=params,
+                    risk=RiskMetadata(
+                        writes_state=method.upper() in ("POST", "PUT", "PATCH", "DELETE"),
+                        destructive=method.upper() == "DELETE",
+                        idempotent=method.upper() in ("GET", "PUT", "DELETE", "HEAD", "OPTIONS"),
+                        risk_level=risk_level,
+                        confidence=0.9,
+                        source=SourceType.extractor,
+                    ),
+                    tags=op_spec.get("tags", []),
+                    source=SourceType.extractor,
+                    confidence=0.9,
+                    enabled=enabled,
+                )
+                operations.append(op)
+
+        return operations
+
+    def _extract_params(self, op_spec: dict, path_item: dict, is_swagger: bool) -> list[Param]:
+        params: list[Param] = []
+        seen_names: set[str] = set()
+
+        # Path-level params + operation-level params
+        raw_params = path_item.get("parameters", []) + op_spec.get("parameters", [])
+
+        for p in raw_params:
+            if not isinstance(p, dict):
+                continue
+            name = p.get("name", "")
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+
+            if is_swagger and p.get("in") == "body":
+                # Swagger 2.0 body param — extract from schema
+                body_schema = p.get("schema", {})
+                body_params = self._flatten_schema_to_params(body_schema)
+                params.extend(body_params)
+                continue
+
+            param_type = self._resolve_param_type(p, is_swagger)
+            params.append(Param(
+                name=name,
+                type=param_type,
+                required=p.get("required", False),
+                description=p.get("description", ""),
+                default=p.get("default") if not is_swagger else p.get("default"),
+                source=SourceType.extractor,
+                confidence=0.9,
+            ))
+
+        # OpenAPI 3.x requestBody
+        if not is_swagger and "requestBody" in op_spec:
+            body_params = self._extract_request_body_params(op_spec["requestBody"])
+            for bp in body_params:
+                if bp.name not in seen_names:
+                    params.append(bp)
+                    seen_names.add(bp.name)
+
+        return params
+
+    def _resolve_param_type(self, param: dict, is_swagger: bool) -> str:
+        if is_swagger:
+            return _TYPE_MAP.get(param.get("type", "string"), "string")
+        schema = param.get("schema", {})
+        return _TYPE_MAP.get(schema.get("type", "string"), "string")
+
+    def _extract_request_body_params(self, body: dict) -> list[Param]:
+        content = body.get("content", {})
+        json_content = content.get("application/json", {})
+        schema = json_content.get("schema", {})
+        return self._flatten_schema_to_params(schema)
+
+    def _flatten_schema_to_params(self, schema: dict) -> list[Param]:
+        """Extract top-level properties from a schema as params."""
+        if schema.get("type") != "object" and "properties" not in schema:
+            return []
+
+        params: list[Param] = []
+        required_fields = set(schema.get("required", []))
+        properties = schema.get("properties", {})
+
+        for name, prop in properties.items():
+            param_type = _TYPE_MAP.get(prop.get("type", "string"), "string")
+            params.append(Param(
+                name=name,
+                type=param_type,
+                required=name in required_fields,
+                description=prop.get("description", ""),
+                source=SourceType.extractor,
+                confidence=0.9,
+            ))
+
+        return params
+
+
+def _slugify(text: str) -> str:
+    """Convert text to a URL-safe slug."""
+    import re
+    text = text.lower().strip()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return text.strip("-")
