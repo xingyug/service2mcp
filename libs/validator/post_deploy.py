@@ -17,6 +17,11 @@ from libs.ir.models import (
     ServiceIR,
     SqlOperationType,
 )
+from libs.validator.audit import (
+    AuditPolicy,
+    ToolAuditResult,
+    ToolAuditSummary,
+)
 from libs.validator.pre_deploy import ValidationReport, ValidationResult
 
 ToolInvoker = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -78,6 +83,163 @@ class PostDeployValidator:
         return ValidationReport(
             results=results,
             overall_passed=all(result.passed for result in results),
+        )
+
+    async def validate_with_audit(
+        self,
+        base_url: str,
+        expected_ir: ServiceIR | dict[str, Any],
+        *,
+        sample_invocations: dict[str, dict[str, Any]] | None = None,
+        audit_policy: AuditPolicy | None = None,
+    ) -> tuple[ValidationReport, ToolAuditSummary]:
+        """Run standard post-deploy validation plus a full generated-tool audit.
+
+        Returns a ``(ValidationReport, ToolAuditSummary)`` tuple.  The
+        standard validation report includes health, tool listing, and
+        invocation smoke results.  The audit summary covers every enabled
+        operation in the IR, applying the given ``audit_policy`` skip rules.
+        """
+
+        service_ir = (
+            expected_ir
+            if isinstance(expected_ir, ServiceIR)
+            else ServiceIR.model_validate(expected_ir)
+        )
+        policy = audit_policy or AuditPolicy()
+        invocations = sample_invocations or {}
+
+        health_result = await self._validate_health(base_url)
+        tool_listing_result, available_tools = await self._validate_tool_listing(
+            base_url,
+            service_ir,
+        )
+
+        # Standard invocation smoke (same as validate)
+        invocation_result = await self._validate_invocation_smoke(
+            service_ir,
+            available_tools=available_tools,
+            sample_invocations=invocations,
+            health_passed=health_result.passed,
+            tool_listing_passed=tool_listing_result.passed,
+        )
+
+        results = [health_result, tool_listing_result, invocation_result]
+        report = ValidationReport(
+            results=results,
+            overall_passed=all(result.passed for result in results),
+        )
+
+        # Full audit pass over all enabled operations
+        audit_summary = await self._audit_all_enabled_operations(
+            service_ir,
+            available_tools=available_tools,
+            sample_invocations=invocations,
+            audit_policy=policy,
+            health_passed=health_result.passed,
+            tool_listing_passed=tool_listing_result.passed,
+        )
+        return report, audit_summary
+
+    async def _audit_all_enabled_operations(
+        self,
+        service_ir: ServiceIR,
+        *,
+        available_tools: dict[str, dict[str, Any]],
+        sample_invocations: dict[str, dict[str, Any]],
+        audit_policy: AuditPolicy,
+        health_passed: bool,
+        tool_listing_passed: bool,
+    ) -> ToolAuditSummary:
+        """Iterate over every enabled operation and produce audit results."""
+
+        enabled_operations = sorted(
+            (op for op in service_ir.operations if op.enabled),
+            key=lambda op: op.id,
+        )
+        runtime_tool_names = set(available_tools)
+        audit_results: list[ToolAuditResult] = []
+
+        for operation in enabled_operations:
+            if operation.id not in runtime_tool_names:
+                audit_results.append(
+                    ToolAuditResult(
+                        tool_name=operation.id,
+                        outcome="failed",
+                        reason="Runtime /tools listing does not expose this generated tool.",
+                    )
+                )
+                continue
+
+            skip_reason = audit_policy.skip_reason(operation, sample_invocations)
+            if skip_reason is not None:
+                audit_results.append(
+                    ToolAuditResult(
+                        tool_name=operation.id,
+                        outcome="skipped",
+                        reason=skip_reason,
+                    )
+                )
+                continue
+
+            if not health_passed or self._tool_invoker is None:
+                audit_results.append(
+                    ToolAuditResult(
+                        tool_name=operation.id,
+                        outcome="failed",
+                        reason="Cannot invoke tool: runtime health check failed or no invoker.",
+                    )
+                )
+                continue
+
+            arguments = sample_invocations[operation.id]
+            try:
+                result = await self._tool_invoker(operation.id, arguments)
+            except Exception as exc:
+                audit_results.append(
+                    ToolAuditResult(
+                        tool_name=operation.id,
+                        outcome="failed",
+                        reason=f"Invocation raised: {exc}",
+                        arguments=arguments,
+                    )
+                )
+                continue
+
+            status = result.get("status") if isinstance(result, dict) else None
+            if status != "ok":
+                audit_results.append(
+                    ToolAuditResult(
+                        tool_name=operation.id,
+                        outcome="failed",
+                        reason=f"Invocation returned unexpected status: {status!r}.",
+                        arguments=arguments,
+                        result=result if isinstance(result, dict) else {"raw": str(result)},
+                    )
+                )
+                continue
+
+            audit_results.append(
+                ToolAuditResult(
+                    tool_name=operation.id,
+                    outcome="passed",
+                    reason="Invocation succeeded.",
+                    arguments=arguments,
+                    result=result if isinstance(result, dict) else {"raw": str(result)},
+                )
+            )
+
+        passed = sum(r.outcome == "passed" for r in audit_results)
+        failed = sum(r.outcome == "failed" for r in audit_results)
+        skipped = sum(r.outcome == "skipped" for r in audit_results)
+        return ToolAuditSummary(
+            discovered_operations=len(enabled_operations),
+            generated_tools=len(runtime_tool_names),
+            audited_tools=passed + failed,
+            passed=passed,
+            failed=failed,
+            skipped=skipped,
+            results=audit_results,
         )
 
     async def _validate_health(self, base_url: str) -> ValidationResult:

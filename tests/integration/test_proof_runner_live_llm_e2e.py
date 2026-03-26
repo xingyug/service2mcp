@@ -30,6 +30,7 @@ from libs.ir.models import (
     ServiceIR,
     SourceType,
 )
+from libs.validator.audit import AuditPolicy
 
 
 def test_parse_sse_events_extracts_event_payloads() -> None:
@@ -281,3 +282,56 @@ async def test_audit_generated_tools_reports_passed_failed_and_skipped() -> None
     assert results_by_tool["adjust_inventory"].reason == "Skipped state-mutating tool by policy."
     assert results_by_tool["get_missing"].outcome == "failed"
     assert invoker_calls == [("stream_updates", {})]
+
+
+@pytest.mark.asyncio
+async def test_audit_with_allow_idempotent_writes_audits_safe_mutation() -> None:
+    """When allow_idempotent_writes=True, an idempotent write-state tool is audited."""
+    service_ir = _build_audit_fixture_ir()
+    # Make adjust_inventory idempotent so the policy lets it through
+    for operation in service_ir.operations:
+        if operation.id == "adjust_inventory":
+            object.__setattr__(operation.risk, "idempotent", True)
+
+    async def fake_invoker(tool_name: str, arguments: dict[str, object]) -> dict[str, object]:
+        if tool_name == "adjust_inventory":
+            return {"status": "ok", "result": {"adjusted": True}}
+        if tool_name == "stream_updates":
+            return {
+                "status": "ok",
+                "transport": "sse",
+                "result": {
+                    "events": [{"sku": "sku-123"}],
+                    "lifecycle": {"closed": True},
+                },
+            }
+        raise AssertionError(f"Unexpected invocation: {tool_name}")
+
+    audit_summary = await _audit_generated_tools(
+        "http://runtime.example.test",
+        service_ir,
+        representative_invocations=(
+            ToolInvocationSpec(
+                tool_name="get_items_item_id",
+                arguments={"item_id": "sku-123"},
+            ),
+        ),
+        representative_results=[
+            ToolInvocationResult(
+                tool_name="get_items_item_id",
+                result={"status": "ok", "result": {"item_id": "sku-123"}},
+            )
+        ],
+        tool_invoker=fake_invoker,
+        available_tool_names={
+            "get_items_item_id",
+            "stream_updates",
+            "adjust_inventory",
+        },
+        audit_policy=AuditPolicy(allow_idempotent_writes=True),
+    )
+
+    results_by_tool = {r.tool_name: r for r in audit_summary.results}
+    assert results_by_tool["adjust_inventory"].outcome == "passed"
+    assert audit_summary.passed == 3
+    assert audit_summary.skipped == 0

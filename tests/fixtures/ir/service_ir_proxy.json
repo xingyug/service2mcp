@@ -95,6 +95,71 @@
       "source": "extractor",
       "confidence": 1.0,
       "enabled": true
+    },
+    {
+      "id": "listTransactions",
+      "name": "List Transactions",
+      "description": "List recent transactions for an account.",
+      "method": "GET",
+      "path": "/accounts/{account_id}/transactions",
+      "params": [
+        {
+          "name": "account_id",
+          "type": "string",
+          "required": true,
+          "description": "Account identifier",
+          "source": "extractor",
+          "confidence": 1.0
+        }
+      ],
+      "risk": {
+        "writes_state": false,
+        "destructive": false,
+        "external_side_effect": false,
+        "idempotent": true,
+        "risk_level": "safe",
+        "confidence": 1.0,
+        "source": "extractor"
+      },
+      "response_strategy": {
+        "max_array_items": 2
+      },
+      "source": "extractor",
+      "confidence": 1.0,
+      "enabled": true
+    },
+    {
+      "id": "getAccountDetailed",
+      "name": "Get Account Detailed",
+      "description": "Get account with nested and array-bracket field filtering.",
+      "method": "GET",
+      "path": "/accounts/{account_id}/detailed",
+      "params": [
+        {
+          "name": "account_id",
+          "type": "string",
+          "required": true,
+          "description": "Account identifier",
+          "source": "extractor",
+          "confidence": 1.0
+        }
+      ],
+      "risk": {
+        "writes_state": false,
+        "destructive": false,
+        "external_side_effect": false,
+        "idempotent": true,
+        "risk_level": "safe",
+        "confidence": 1.0,
+        "source": "extractor"
+      },
+      "response_strategy": {
+        "field_filter": ["id", "owner.email", "items[].name"],
+        "max_array_items": 3
+      },
+      "source": "extractor",
+      "confidence": 1.0,
+      "enabled": true
     }
   ],
   "operation_chains": [],

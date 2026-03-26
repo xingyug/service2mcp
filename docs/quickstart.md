@@ -170,7 +170,7 @@ KEEP_NAMESPACE=1 \
 make gke-llm-e2e-smoke
 ```
 
-Supported values are `all`, `graphql`, `rest`, `grpc`, `soap`, and `sql`. Single-protocol mode remains the recommended troubleshooting path when the full matrix regresses, because it isolates live proof failures without rerunning all five compiler-managed protocol slices. For current black-box hardening work, use the `PROTOCOL=all` audit run as the clean baseline and switch to the REST + audit command above only when you want to isolate discovery behavior on the catalog fixture.
+Supported values are `all`, `graphql`, `rest`, `grpc`, `soap`, and `sql` (e.g. `PROTOCOL=graphql`). Single-protocol mode remains the recommended troubleshooting path when the full matrix regresses, because it isolates live proof failures without rerunning all five compiler-managed protocol slices. For current black-box hardening work, use the `PROTOCOL=all` audit run as the clean baseline and switch to the REST + audit command above only when you want to isolate discovery behavior on the catalog fixture.
 
 ## 8. Run Local Real DeepSeek Smoke
 

@@ -35,6 +35,7 @@ from libs.ir.models import (
     SqlRelationKind,
 )
 from libs.ir.schema import serialize_ir
+from libs.validator.audit import AuditThresholds, check_thresholds
 from libs.validator.post_deploy import PostDeployValidator
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tests" / "fixtures" / "ir"
@@ -912,3 +913,110 @@ async def test_post_deploy_validator_rejects_wrong_grpc_stream_transport_shape(
     assert report.overall_passed is False
     assert report.get_result("invocation_smoke").passed is False
     assert "expected 'grpc_stream'" in report.get_result("invocation_smoke").details
+
+
+@pytest.mark.asyncio
+async def test_validate_with_audit_returns_report_and_audit_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """validate_with_audit returns standard report plus audit summary."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"id": "acct-1", "name": "Primary", "secret": "ignore"},
+            request=request,
+        )
+
+    monkeypatch.setenv("BILLING_SECRET", "runtime-token")
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        app = create_app(service_ir_path=PROXY_IR_PATH, upstream_client=upstream_client)
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            async def tool_invoker(
+                tool_name: str,
+                arguments: dict[str, object],
+            ) -> dict[str, object]:
+                _, structured = await app.state.runtime_state.mcp_server.call_tool(
+                    tool_name,
+                    arguments,
+                )
+                return cast(dict[str, object], structured)
+
+            validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+            report, audit_summary = await validator.validate_with_audit(
+                "http://testserver",
+                load_service_ir(PROXY_IR_PATH),
+                sample_invocations={
+                    "getAccount": {"account_id": "acct-1"},
+                    "createNote": {
+                        "account_id": "acct-1",
+                        "payload": {"title": "Test"},
+                    },
+                },
+            )
+    finally:
+        await upstream_client.aclose()
+
+    assert report.overall_passed is True
+    assert audit_summary.discovered_operations > 0
+    assert audit_summary.passed + audit_summary.failed + audit_summary.skipped == len(
+        audit_summary.results
+    )
+    assert audit_summary.failed == 0
+    results_by_tool = {r.tool_name: r for r in audit_summary.results}
+    assert results_by_tool["getAccount"].outcome == "passed"
+
+
+@pytest.mark.asyncio
+async def test_validate_with_audit_threshold_violations_detected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """check_thresholds reports violations when audit summary does not meet minimums."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"id": "acct-1", "name": "Primary", "secret": "ignore"},
+            request=request,
+        )
+
+    monkeypatch.setenv("BILLING_SECRET", "runtime-token")
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        app = create_app(service_ir_path=PROXY_IR_PATH, upstream_client=upstream_client)
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            async def tool_invoker(
+                tool_name: str,
+                arguments: dict[str, object],
+            ) -> dict[str, object]:
+                _, structured = await app.state.runtime_state.mcp_server.call_tool(
+                    tool_name,
+                    arguments,
+                )
+                return cast(dict[str, object], structured)
+
+            validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+            _, audit_summary = await validator.validate_with_audit(
+                "http://testserver",
+                load_service_ir(PROXY_IR_PATH),
+                sample_invocations={"getAccount": {"account_id": "acct-1"}},
+            )
+    finally:
+        await upstream_client.aclose()
+
+    # Require more passed tools than actually exist to trigger a threshold violation
+    strict_thresholds = AuditThresholds(min_passed=100)
+    violations = check_thresholds(audit_summary, strict_thresholds)
+    assert len(violations) == 1
+    assert "passed count" in violations[0].lower()
+
+    # Zero-tolerance threshold should pass since we have no failures
+    clean_thresholds = AuditThresholds(max_failed=0)
+    assert check_thresholds(audit_summary, clean_thresholds) == []

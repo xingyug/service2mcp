@@ -18,7 +18,8 @@ from apps.compiler_worker.activities import (
     build_sample_invocations,
     build_streamable_http_tool_invoker,
 )
-from libs.ir.models import EventDescriptor, EventSupportLevel, Operation, ServiceIR
+from libs.ir.models import EventDescriptor, EventSupportLevel, ServiceIR
+from libs.validator.audit import AuditPolicy, ToolAuditResult, ToolAuditSummary
 
 FIXTURES_ROOT = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 GRAPHQL_INTROSPECTION_PATH = FIXTURES_ROOT / "graphql_schemas" / "catalog_introspection.json"
@@ -56,28 +57,7 @@ class ToolInvocationResult:
     result: dict[str, Any]
 
 
-@dataclass(frozen=True)
-class ToolAuditResult:
-    """Behavioral audit result for a generated runtime tool."""
-
-    tool_name: str
-    outcome: Literal["passed", "failed", "skipped"]
-    reason: str
-    arguments: dict[str, Any] | None = None
-    result: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class ToolAuditSummary:
-    """Machine-readable summary for all generated-tool audit outcomes."""
-
-    discovered_operations: int
-    generated_tools: int
-    audited_tools: int
-    passed: int
-    failed: int
-    skipped: int
-    results: list[ToolAuditResult]
+# ToolAuditResult and ToolAuditSummary are imported from libs.validator.audit
 
 
 @dataclass(frozen=True)
@@ -102,6 +82,7 @@ async def run_proofs(
     timeout_seconds: float,
     run_id: str,
     audit_all_generated_tools: bool = False,
+    audit_policy: AuditPolicy | None = None,
 ) -> list[ProofResult]:
     """Execute one or more live proof cases and return serialized results."""
 
@@ -122,6 +103,7 @@ async def run_proofs(
                     namespace=namespace,
                     timeout_seconds=timeout_seconds,
                     audit_all_generated_tools=audit_all_generated_tools,
+                    audit_policy=audit_policy or AuditPolicy(),
                 )
             )
     return results
@@ -257,6 +239,7 @@ async def _run_case(
     namespace: str,
     timeout_seconds: float,
     audit_all_generated_tools: bool,
+    audit_policy: AuditPolicy = AuditPolicy(),
 ) -> ProofResult:
     job = await _submit_compilation(client, case.request_payload)
     job_id = str(job["id"])
@@ -297,6 +280,7 @@ async def _run_case(
             service_ir,
             representative_invocations=case.tool_invocations,
             representative_results=invocation_results,
+            audit_policy=audit_policy,
         )
         if audit_all_generated_tools
         else None
@@ -426,6 +410,7 @@ async def _audit_generated_tools(
     representative_results: list[ToolInvocationResult],
     tool_invoker: ToolInvoker | None = None,
     available_tool_names: set[str] | None = None,
+    audit_policy: AuditPolicy = AuditPolicy(),
 ) -> ToolAuditSummary:
     runtime_tool_names = (
         available_tool_names
@@ -458,7 +443,7 @@ async def _audit_generated_tools(
             )
             continue
 
-        skip_reason = _generated_tool_audit_skip_reason(operation, sample_invocations)
+        skip_reason = audit_policy.skip_reason(operation, sample_invocations)
         if skip_reason is not None:
             audit_results.append(
                 ToolAuditResult(
@@ -535,19 +520,7 @@ async def _fetch_runtime_tool_names(runtime_base_url: str) -> set[str]:
     }
 
 
-def _generated_tool_audit_skip_reason(
-    operation: Operation,
-    sample_invocations: dict[str, dict[str, Any]],
-) -> str | None:
-    if operation.id not in sample_invocations:
-        return "No sample invocation is available for this tool."
-    if operation.risk.destructive:
-        return "Skipped destructive tool by policy."
-    if operation.risk.external_side_effect:
-        return "Skipped external side-effect tool by policy."
-    if operation.risk.writes_state:
-        return "Skipped state-mutating tool by policy."
-    return None
+# _generated_tool_audit_skip_reason is now replaced by AuditPolicy.skip_reason()
 
 
 def _generated_tool_audit_failure_reason(

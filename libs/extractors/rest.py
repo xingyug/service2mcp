@@ -222,9 +222,12 @@ class RESTExtractor:
                     normalized_path,
                     _ObservedEndpoint(path=normalized_path, absolute_url=candidate_url),
                 )
-                if source_name == "link":
+                if source_name in {"link", "json"}:
                     endpoint.methods.add("GET")
-                    endpoint.confidence = max(endpoint.confidence, 0.75)
+                    endpoint.confidence = max(
+                        endpoint.confidence,
+                        0.75 if source_name == "link" else 0.7,
+                    )
                     if depth + 1 < self._max_pages and candidate_url not in visited_pages:
                         queue.append((candidate_url, depth + 1))
                 elif source_name == "form":
@@ -237,12 +240,114 @@ class RESTExtractor:
         for endpoint in observed.values():
             self._probe_allowed_methods(endpoint)
 
+        # Phase 2: URI-based resource hierarchy inference.
+        # When we discover a collection endpoint like /api/users, probe
+        # /api/users/{id} via OPTIONS.  When a detail endpoint like
+        # /api/users/{id} is discovered, probe common sub-resource patterns.
+        # This implements the paper's "resource dependency tree" concept.
+        inferred = self._infer_sub_resources(base_url, observed)
+        observed.update(inferred)
+
         observed = _coalesce_sibling_endpoints(observed)
 
         return [
             endpoint.freeze()
             for endpoint in sorted(observed.values(), key=lambda item: item.path)
         ]
+
+    def _infer_sub_resources(
+        self,
+        base_url: str,
+        observed: dict[str, _ObservedEndpoint],
+    ) -> dict[str, _ObservedEndpoint]:
+        """Synthesize and probe sub-resource paths from discovered endpoints.
+
+        Uses URI path structure to infer likely child resources:
+        - Collection ``/api/X`` → probe ``/api/X/{id}``
+        - Detail ``/api/X/{id}`` → probe ``/api/X/{id}/Y`` for common sub-resources
+
+        Only endpoints confirmed via OPTIONS or GET (2XX response) are added.
+        """
+        inferred: dict[str, _ObservedEndpoint] = {}
+        probed: set[str] = set()
+
+        for path in list(observed.keys()):
+            clean = path.split("?", 1)[0].rstrip("/")
+            if not clean:
+                continue
+
+            # If this looks like a collection (no path param at the leaf),
+            # probe for a detail endpoint with {id}.
+            leaf = clean.rsplit("/", 1)[-1] if "/" in clean else clean
+            if not (leaf.startswith("{") and leaf.endswith("}")):
+                candidate = f"{clean}/{{id}}"
+                candidate_url = urljoin(base_url, candidate)
+                if candidate not in observed and candidate not in probed:
+                    probed.add(candidate)
+                    self._probe_and_register(
+                        candidate, candidate_url, inferred, source="inferred",
+                    )
+
+            # If this looks like a detail endpoint (has {param} leaf),
+            # probe common sub-resource names.
+            if leaf.startswith("{") and leaf.endswith("}"):
+                parent = clean.rsplit("/", 1)[0] if "/" in clean else ""
+                # Infer common sub-resource names from the parent.
+                parent_leaf = parent.rsplit("/", 1)[-1] if parent else ""
+                sub_candidates = _common_sub_resources(parent_leaf)
+                for sub_name in sub_candidates:
+                    candidate = f"{clean}/{sub_name}"
+                    candidate_url = urljoin(base_url, candidate)
+                    if candidate not in observed and candidate not in probed:
+                        probed.add(candidate)
+                        self._probe_and_register(
+                            candidate, candidate_url, inferred, source="inferred",
+                        )
+
+        return inferred
+
+    def _probe_and_register(
+        self,
+        path: str,
+        absolute_url: str,
+        target: dict[str, _ObservedEndpoint],
+        *,
+        source: str = "inferred",
+    ) -> None:
+        """Probe a candidate URL via OPTIONS and optionally GET, registering it if valid."""
+        methods: set[str] = set()
+
+        # Try OPTIONS first to discover allowed methods.
+        try:
+            response = self._client.options(absolute_url)
+            if response.status_code < 400:
+                allow_header = response.headers.get("allow", "")
+                methods = {
+                    m.strip().upper()
+                    for m in allow_header.split(",")
+                    if m.strip().upper() in _SUPPORTED_METHODS
+                }
+        except httpx.HTTPError:
+            pass
+
+        # If OPTIONS didn't reveal methods, try a GET probe.
+        if not methods:
+            try:
+                response = self._client.get(absolute_url)
+                if response.status_code < 400:
+                    methods.add("GET")
+            except httpx.HTTPError:
+                pass
+
+        if methods:
+            endpoint = _ObservedEndpoint(
+                path=path,
+                absolute_url=absolute_url,
+                methods=methods,
+                sources={source, "options"} if len(methods) > 1 else {source},
+                confidence=0.85,
+            )
+            target[path] = endpoint
 
     def _extract_candidate_paths(
         self,
@@ -400,6 +505,44 @@ class RESTExtractor:
             ],
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Sub-resource inference heuristics
+# ---------------------------------------------------------------------------
+
+# Common sub-resource patterns for REST API resource groups.
+# Maps parent collection name → list of likely child resource names.
+_SUB_RESOURCE_HINTS: dict[str, list[str]] = {
+    "users": ["posts", "comments", "settings", "orders", "notifications"],
+    "products": ["reviews", "images", "variants", "inventory"],
+    "orders": ["items", "payments", "status", "shipments"],
+    "categories": ["products", "items"],
+    "inventory": ["adjustments", "history"],
+    "notifications": ["acknowledge", "read"],
+    "reports": ["status", "download"],
+    "webhooks": ["test", "events", "logs"],
+}
+
+# Fallback sub-resource names tried for any collection not in the hints map.
+_DEFAULT_SUB_RESOURCES = [
+    "items", "details", "status", "history", "settings", "comments",
+]
+
+
+def _common_sub_resources(parent_name: str) -> list[str]:
+    """Return plausible sub-resource names for a given parent collection.
+
+    Uses a heuristic lookup table plus a small set of universal fallbacks.
+    """
+    normalized = parent_name.lower().rstrip("s") + "s"  # simple pluralize
+    hints = _SUB_RESOURCE_HINTS.get(
+        normalized,
+        _SUB_RESOURCE_HINTS.get(parent_name.lower(), []),
+    )
+    if hints:
+        return hints
+    return _DEFAULT_SUB_RESOURCES
 
 
 _SIBLING_COALESCE_THRESHOLD = 3

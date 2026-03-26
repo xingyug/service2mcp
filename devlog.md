@@ -1662,9 +1662,162 @@ Current handoff implication:
 
 ---
 
+### Private GitHub sync and release posture ✅
+
+Completed on `2026-03-26`.
+
+Repository/distribution status:
+- Synced the current working tree to the private GitHub repository `xingyug/service2mcp`
+- Switched the tracked branch to `main`
+- Pushed commit `31a5747` with message `Import service2mcp project state`
+- Added a top-level `README.md` and aligned `pyproject.toml` metadata with the external/project name `service2mcp`
+
+Safety and release notes:
+- Ran `gitleaks detect --no-git --source .` and `gitleaks detect` before push; both reported `no leaks found`
+- Kept internal handoff docs such as `new-agent-reading-list.md`, `docs/context-engineering.md`, and `docs/post-sdd-modular-expansion-plan.md` local-only through `.gitignore`
+- `agent.md` and `devlog.md` remain in the private repo because they were already tracked project documents at push time
+- If the project is later open-sourced, the preferred path is a fresh public repo without importing this private/internal history; publish a curated public-safe snapshot instead of mirroring the private git timeline
+
+Current pause-point implication:
+- The private repo is now a usable backup/collaboration baseline
+- Public release preparation is explicitly deferred and should be treated as a separate cleanup/export step rather than a simple visibility flip on the current repository
+
+---
+
 - This repository should remain maintainable by strong coding agents if documentation stays current, tasks remain narrow, and repo-wide lint/type/test gates are preserved
 - Human review remains required for migrations, auth, gateway behavior, Kubernetes rollout semantics, rollback logic, and other production-risking changes
 - If the repository grows beyond roughly `30k+` production lines or operational behavior becomes more environment-specific, maintenance should shift toward tighter task decomposition and heavier human supervision
+
+---
+
+### B-001 Second Slice: Audit Reporting, Skip-Policy, Regression Thresholds (2026-03-26)
+
+**Goal:** Plumb audit summary into validator surfaces, refine skip-policy for safe mutations, and add regression thresholds for audit coverage.
+
+**Completed:**
+- Extracted shared `ToolAuditResult`, `ToolAuditSummary` from `apps/proof_runner/live_llm_e2e.py` into `libs/validator/audit.py`
+- Added `AuditPolicy` with configurable skip rules (`skip_destructive`, `skip_external_side_effect`, `skip_writes_state`) and `allow_idempotent_writes` for safe mutation auditing
+- Added `AuditThresholds` with `min_audited_ratio`, `max_failed`, `min_passed` regression expectations plus `check_thresholds()` verification helper
+- Added `PostDeployValidator.validate_with_audit()` combining standard validation with full generated-tool audit
+- Refactored proof runner to import shared types and delegate skip-reason logic to `AuditPolicy`
+- All existing behavior preserved (backward-compatible)
+
+**Tests added:**
+- `libs/validator/tests/test_audit.py` — 17 tests for policy and threshold logic
+- `tests/integration/test_proof_runner_live_llm_e2e.py` — 1 new test for `allow_idempotent_writes` policy integration
+- `libs/validator/tests/test_post_deploy.py` — 2 new tests for `validate_with_audit()` and threshold enforcement
+
+**Verification:** ruff clean, mypy clean (141 files), 339 passed
+
+**Write set:**
+- `libs/validator/audit.py` (new)
+- `libs/validator/tests/test_audit.py` (new)
+- `libs/validator/post_deploy.py` (modified)
+- `libs/validator/tests/test_post_deploy.py` (modified)
+- `apps/proof_runner/live_llm_e2e.py` (modified)
+- `tests/integration/test_proof_runner_live_llm_e2e.py` (modified)
+- `docs/post-sdd-modular-expansion-plan.md` (modified)
+
+---
+
+### B-003 First Slice: Large-Surface Black-Box Pilot (2026-03-26)
+
+**Goal:** Measure endpoint discovery coverage, generated MCP-tool coverage, and audited invocation pass rate against a large REST surface.
+
+**Completed:**
+- Created `tests/fixtures/large_surface_rest_mock.py` with 62 ground-truth endpoints across 9 resource groups
+- Added `LargeSurfacePilotReport` dataclass to `libs/validator/audit.py`
+- Created `tests/integration/test_large_surface_pilot.py` running the full discovery → extraction → runtime → audit pipeline
+
+**Pilot baseline results:**
+- Ground truth unique paths: 39 | Discovered: 10 (25.6%)
+- Generated tools: 16 | Audited: 10, Passed: 10, Failed: 0 (100% audit pass rate)
+- Unsupported patterns: 3 (nested resources, un-crawlable mutations, side-effect skips)
+
+**Key finding:** GET-based crawl cannot discover POST/PUT/DELETE endpoints without explicit links → need OPTIONS probing or spec-first paths for large surfaces.
+
+**Verification:** ruff clean, mypy clean (142 files), 340 passed
+
+---
+
+### B-003 Second Slice: REST Discovery Enhancement — Resource Hierarchy Inference (2026-03-26)
+
+**Goal:** Improve REST extractor discovery coverage by implementing techniques from the API-to-tool conversion research paper: resource dependency tree inference, JSON link crawling, and HATEOAS-aware probing.
+
+**Approach (paper-informed):**
+The research paper on advanced API-to-tool conversion methodology identifies three key techniques for maximizing coverage: (1) LLM-driven seed mutation with closed-loop validation, (2) URI-based resource dependency tree construction, and (3) adaptive schema inference with feedback loops. For this slice we implemented the resource dependency tree concept as a deterministic heuristic — the most impactful quick-win from the paper that doesn't require LLM calls during discovery.
+
+**Completed:**
+- Modified `RESTExtractor._discover()` to queue JSON-discovered links for crawling (previously only HTML `<a>` tags were followed)
+- Added `_infer_sub_resources()` — after initial crawl, examines discovered paths and synthesizes sub-resource candidates from URI structure:
+  - Collection endpoints (e.g., `/api/users`) → probe `{id}` detail path via OPTIONS
+  - Detail endpoints (e.g., `/api/users/{id}`) → probe common sub-resource names (posts, settings, etc.) via `_common_sub_resources()` heuristic lookup
+- Added `_probe_and_register()` — validates inferred paths via OPTIONS response and/or GET probe before registering
+- Added `_common_sub_resources()` with `_SUB_RESOURCE_HINTS` lookup table mapping resource group names to likely child resources
+- Enhanced mock fixture with HATEOAS-style detail responses (sub-resource links) and OPTIONS on collection endpoints
+
+**Pilot results improvement:**
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| Discovered endpoints | 10 | 17 | +70% |
+| Generated tools | 16 | 32 | +100% |
+| Audited / Passed / Failed | 10/10/0 | 17/17/0 | +70% |
+| Audit pass rate | 100% | 100% | — |
+| Unsupported patterns | 3 | 4 | +1 (destructive skip) |
+
+**Paper concepts to implement next (P1 priority per impact-effort matrix):**
+- **LLM-driven seed mutation (RESTSpecIT-style):** Use LLM to guess endpoint names and validate via HTTP probes. Expected: 88%+ route discovery.
+- **Semantic tool aggregation (LLM-ITL):** Cluster related endpoints into business-intent tools instead of 1:1 mapping. Add `tool_grouping` to IR.
+- **Discovery/Action tool bifurcation:** Explicit separation in generated tool descriptions.
+- **Response pruning:** Strip noise fields from API responses before context injection.
+
+**Verification:** ruff clean, mypy clean (142 files), 340 passed
+
+**Write set:**
+- `libs/extractors/rest.py` (modified — JSON link crawling, `_infer_sub_resources`, `_probe_and_register`, `_common_sub_resources`)
+- `tests/fixtures/large_surface_rest_mock.py` (modified — HATEOAS detail responses, OPTIONS on collections)
+
+---
+
+## P0: Response Field Pruning — LLM Context Window Protection (2026-03-26)
+
+**Context template (per context-engineering.md):**
+
+| Item | Detail |
+|---|---|
+| **Goal** | Protect LLM context windows by pruning upstream API responses: nested field filtering, array item truncation. |
+| **Non-goals** | LLM-driven field selection, response summarization, pagination auto-traversal. |
+| **Inputs** | `ResponseStrategy.field_filter` (dot/bracket paths), `ResponseStrategy.max_array_items` (int). |
+| **Outputs** | Pruned payloads returned from MCP tool invocations. |
+| **Invariants** | Flat field_filter backward-compatible; missing paths silently skipped; truncation applied after filtering. |
+| **Tests** | 5 IR model tests (max_array_items validation), 3 integration tests (nested filter, array limit, combined). |
+
+### IR model changes
+- Added `max_array_items: int | None = Field(default=None, ge=1)` to `ResponseStrategy` in `libs/ir/models.py`.
+
+### Runtime proxy changes (`apps/mcp_runtime/proxy.py`)
+- Replaced flat `_apply_field_filter` with nested dot-path and array-bracket support:
+  - `"name"` — top-level key
+  - `"user.name"` — nested dot notation
+  - `"items[].id"` — key inside each element of a top-level array
+- Added `_filter_dict` and `_set_nested` helpers for nested path traversal.
+- Added `_apply_array_limit` — truncates top-level list payloads and list-typed dict values.
+- Pipeline order: parse → unwrap(SOAP/GraphQL) → field_filter → array_limit → truncation.
+
+### Test additions
+- `libs/ir/tests/test_models.py`: 5 new tests in `TestResponseStrategy` class (accepts positive, defaults none, rejects zero, rejects negative, round-trip), plus updated serialization round-trip with `max_array_items=50`.
+- `tests/fixtures/ir/service_ir_proxy.json`: Added `listTransactions` (max_array_items=2) and `getAccountDetailed` (nested field_filter + max_array_items=3) operations.
+- `tests/integration/test_mcp_runtime_proxy.py`: 3 new tests — array limit on list, nested dot/bracket filter, array limit on dict with nested lists.
+
+**Verification:** ruff clean, mypy clean (142 files), 349 passed
+
+**Write set:**
+- `libs/ir/models.py` (modified — `max_array_items` field on `ResponseStrategy`)
+- `apps/mcp_runtime/proxy.py` (modified — nested field filter, `_apply_array_limit`, pipeline wiring)
+- `tests/fixtures/ir/service_ir_proxy.json` (modified — 2 new operations)
+- `tests/integration/test_mcp_runtime_proxy.py` (modified — 3 new tests)
+- `libs/ir/tests/test_models.py` (modified — 5 new tests, updated round-trip)
 
 ---
 

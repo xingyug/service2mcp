@@ -1259,3 +1259,138 @@ async def test_runtime_tool_call_uses_native_grpc_stream_executor_when_configure
             "parsed_data": {"sku": "sku-1", "status": "updated"},
         }
     ]
+
+
+# ── Response pruning (field filter + array limit) ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_runtime_array_limit_truncates_list_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """max_array_items=2 on listTransactions truncates a 5-item list to 2."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {"id": "tx-1", "amount": 100},
+                {"id": "tx-2", "amount": 200},
+                {"id": "tx-3", "amount": 300},
+                {"id": "tx-4", "amount": 400},
+                {"id": "tx-5", "amount": 500},
+            ],
+            request=request,
+        )
+
+    monkeypatch.setenv("BILLING_SECRET", "runtime-token")
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        app = create_app(service_ir_path=PROXY_IR_PATH, upstream_client=upstream_client)
+        _, structured = await app.state.runtime_state.mcp_server.call_tool(
+            "listTransactions",
+            {"account_id": "acct-1"},
+        )
+    finally:
+        await upstream_client.aclose()
+
+    assert structured["status"] == "ok"
+    assert structured["result"] == [
+        {"id": "tx-1", "amount": 100},
+        {"id": "tx-2", "amount": 200},
+    ]
+    assert structured["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_nested_field_filter_with_dot_and_bracket_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """getAccountDetailed filters nested dot-paths and array bracket paths."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "acct-1",
+                "balance": 9999,
+                "owner": {"email": "a@b.com", "phone": "555-0100"},
+                "items": [
+                    {"name": "Widget", "price": 10, "sku": "w-1"},
+                    {"name": "Gadget", "price": 20, "sku": "g-1"},
+                    {"name": "Doohickey", "price": 30, "sku": "d-1"},
+                    {"name": "Thingamajig", "price": 40, "sku": "t-1"},
+                ],
+            },
+            request=request,
+        )
+
+    monkeypatch.setenv("BILLING_SECRET", "runtime-token")
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        app = create_app(service_ir_path=PROXY_IR_PATH, upstream_client=upstream_client)
+        _, structured = await app.state.runtime_state.mcp_server.call_tool(
+            "getAccountDetailed",
+            {"account_id": "acct-1"},
+        )
+    finally:
+        await upstream_client.aclose()
+
+    assert structured["status"] == "ok"
+    # field_filter: ["id", "owner.email", "items[].name"]
+    # max_array_items: 3 — applied after field filtering
+    result = structured["result"]
+    assert result["id"] == "acct-1"
+    assert "balance" not in result
+    assert result["owner"] == {"email": "a@b.com"}
+    # items filtered to name-only, then truncated to 3
+    assert result["items"] == [
+        {"name": "Widget"},
+        {"name": "Gadget"},
+        {"name": "Doohickey"},
+    ]
+    assert structured["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_array_limit_on_dict_payload_truncates_nested_lists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """max_array_items on a dict response truncates list-typed values."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total": 5,
+                "items": [
+                    {"id": "tx-1"},
+                    {"id": "tx-2"},
+                    {"id": "tx-3"},
+                    {"id": "tx-4"},
+                    {"id": "tx-5"},
+                ],
+            },
+            request=request,
+        )
+
+    monkeypatch.setenv("BILLING_SECRET", "runtime-token")
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        app = create_app(service_ir_path=PROXY_IR_PATH, upstream_client=upstream_client)
+        _, structured = await app.state.runtime_state.mcp_server.call_tool(
+            "listTransactions",
+            {"account_id": "acct-1"},
+        )
+    finally:
+        await upstream_client.aclose()
+
+    assert structured["status"] == "ok"
+    # max_array_items=2 applies to list values inside dicts
+    assert structured["result"] == {
+        "total": 5,
+        "items": [{"id": "tx-1"}, {"id": "tx-2"}],
+    }

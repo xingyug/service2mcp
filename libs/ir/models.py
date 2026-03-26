@@ -134,6 +134,7 @@ class ResponseStrategy(BaseModel):
 
     pagination: PaginationConfig | None = None
     max_response_bytes: int | None = None
+    max_array_items: int | None = Field(default=None, ge=1)
     field_filter: list[str] | None = None
     truncation_policy: TruncationPolicy = TruncationPolicy.none
 

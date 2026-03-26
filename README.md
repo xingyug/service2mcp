@@ -65,6 +65,7 @@ The current clean audit-enabled GKE baseline recorded:
 - Some live harnesses still assume private images or environment-specific defaults
 - The repository has not yet been fully polished for public open-source onboarding
 - Top-level project governance files are still minimal and will need expansion before a public launch
+- The current collaboration/baseline repo is private; if this project is later open-sourced, the preferred path is a fresh public repo without carrying over the full private/internal history
 
 ## Development
 

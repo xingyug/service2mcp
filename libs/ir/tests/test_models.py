@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from pydantic import ValidationError
 
 from libs.ir.models import (
     AsyncJobConfig,
@@ -454,6 +455,34 @@ class TestServiceIR:
         assert ir.environment is None
 
 
+# ── ResponseStrategy Validation Tests ──────────────────────────────────────
+
+
+class TestResponseStrategy:
+    def test_max_array_items_accepts_positive_int(self):
+        rs = ResponseStrategy(max_array_items=5)
+        assert rs.max_array_items == 5
+
+    def test_max_array_items_defaults_to_none(self):
+        rs = ResponseStrategy()
+        assert rs.max_array_items is None
+
+    def test_max_array_items_rejects_zero(self):
+        with pytest.raises(ValidationError):
+            ResponseStrategy(max_array_items=0)
+
+    def test_max_array_items_rejects_negative(self):
+        with pytest.raises(ValidationError):
+            ResponseStrategy(max_array_items=-1)
+
+    def test_max_array_items_round_trip(self):
+        rs = ResponseStrategy(max_array_items=10, field_filter=["id", "name"])
+        data = rs.model_dump()
+        restored = ResponseStrategy.model_validate(data)
+        assert restored.max_array_items == 10
+        assert restored.field_filter == ["id", "name"]
+
+
 # ── Serialization Round-Trip Tests ─────────────────────────────────────────
 
 class TestSerialization:
@@ -519,6 +548,7 @@ class TestSerialization:
                     response_strategy=ResponseStrategy(
                         pagination=PaginationConfig(style="offset"),
                         max_response_bytes=1_000_000,
+                        max_array_items=50,
                         truncation_policy=TruncationPolicy.truncate,
                     ),
                     tags=["items", "read"],
@@ -560,6 +590,7 @@ class TestSerialization:
         assert len(restored.operations) == 2
         assert restored.operations[0].response_strategy.pagination is not None
         assert restored.operations[0].response_strategy.pagination.style == "offset"
+        assert restored.operations[0].response_strategy.max_array_items == 50
         assert restored.operations[1].risk.destructive is True
         assert len(restored.operation_chains) == 1
         assert restored.tenant == "acme-corp"

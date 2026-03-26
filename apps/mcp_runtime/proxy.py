@@ -1222,6 +1222,7 @@ class RuntimeProxy:
         if operation.graphql is not None:
             payload = _unwrap_graphql_payload(payload, operation)
         payload = _apply_field_filter(payload, operation.response_strategy.field_filter)
+        payload = _apply_array_limit(payload, operation.response_strategy.max_array_items)
         return _apply_truncation(payload, operation.response_strategy)
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -1584,17 +1585,134 @@ def _coerce_xml_text(text: str | None) -> Any:
 
 
 def _apply_field_filter(payload: Any, field_filter: list[str] | None) -> Any:
+    """Filter response fields by allowlist.
+
+    Supports three path styles:
+    - ``"name"`` — top-level key
+    - ``"user.name"`` — nested key via dot notation
+    - ``"items[].id"`` — key inside each element of a top-level array
+    """
     if not field_filter:
         return payload
+
+    # Separate plain top-level keys from dot/bracket paths.
+    top_keys: set[str] = set()
+    nested_paths: list[tuple[str, list[str]]] = []  # (root, remaining segments)
+    array_paths: dict[str, list[str]] = {}  # root[] -> inner field names
+
+    for path in field_filter:
+        if "[]." in path:
+            root, rest = path.split("[].", 1)
+            array_paths.setdefault(root, []).append(rest)
+        elif "." in path:
+            root, rest = path.split(".", 1)
+            nested_paths.append((root, rest.split(".")))
+        else:
+            top_keys.add(path)
+
     if isinstance(payload, dict):
-        return {key: value for key, value in payload.items() if key in field_filter}
+        return _filter_dict(payload, top_keys, nested_paths, array_paths)
+
     if isinstance(payload, list):
+        # When the payload itself is a list, apply filters to each dict item.
+        all_inner_fields = top_keys | {p for paths in array_paths.values() for p in paths}
+        if not nested_paths and not array_paths:
+            # Simple flat filter on list items.
+            return [
+                {k: v for k, v in item.items() if k in top_keys}
+                if isinstance(item, dict)
+                else item
+                for item in payload
+            ]
         return [
-            {key: value for key, value in item.items() if key in field_filter}
+            _filter_dict(item, all_inner_fields, nested_paths, {})
             if isinstance(item, dict)
             else item
             for item in payload
         ]
+
+    return payload
+
+
+def _filter_dict(
+    d: dict[str, Any],
+    top_keys: set[str],
+    nested_paths: list[tuple[str, list[str]]],
+    array_paths: dict[str, list[str]],
+) -> dict[str, Any]:
+    """Build a filtered copy of *d* keeping only requested paths."""
+    result: dict[str, Any] = {}
+
+    # Top-level keys.
+    for key in top_keys:
+        if key in d:
+            result[key] = d[key]
+
+    # Nested dot-paths — drill into sub-dicts.
+    for root, segments in nested_paths:
+        if root not in d:
+            continue
+        _set_nested(result, root, segments, d[root])
+
+    # Array bracket paths — filter items inside a top-level list field.
+    for root, inner_fields in array_paths.items():
+        if root not in d:
+            continue
+        value = d[root]
+        if isinstance(value, list):
+            inner_set = set(inner_fields)
+            result[root] = [
+                {k: v for k, v in item.items() if k in inner_set}
+                if isinstance(item, dict)
+                else item
+                for item in value
+            ]
+        else:
+            result[root] = value
+
+    return result
+
+
+def _set_nested(
+    target: dict[str, Any],
+    root: str,
+    segments: list[str],
+    source: Any,
+) -> None:
+    """Copy a nested value from *source* into *target[root]* following *segments*."""
+    node = source
+    for seg in segments:
+        if isinstance(node, dict) and seg in node:
+            node = node[seg]
+        else:
+            return  # path not present — skip silently
+
+    # Build / merge nested structure in *target*.
+    cur = target
+    if root not in cur:
+        cur[root] = {}
+    cur = cur[root]
+    for seg in segments[:-1]:
+        if not isinstance(cur, dict):
+            return
+        if seg not in cur:
+            cur[seg] = {}
+        cur = cur[seg]
+    if isinstance(cur, dict):
+        cur[segments[-1]] = node
+
+
+def _apply_array_limit(payload: Any, max_items: int | None) -> Any:
+    """Truncate top-level list payloads (or list values inside a dict) to *max_items*."""
+    if max_items is None:
+        return payload
+    if isinstance(payload, list):
+        return payload[:max_items]
+    if isinstance(payload, dict):
+        return {
+            k: v[:max_items] if isinstance(v, list) else v
+            for k, v in payload.items()
+        }
     return payload
 
 
