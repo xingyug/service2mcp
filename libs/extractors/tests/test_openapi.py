@@ -8,7 +8,7 @@ import pytest
 
 from libs.extractors.base import SourceConfig
 from libs.extractors.openapi import OpenAPIExtractor
-from libs.ir.models import AuthType, RiskLevel
+from libs.ir.models import AuthType, EventSupportLevel, EventTransport, RiskLevel
 
 FIXTURES = Path(__file__).parent.parent.parent.parent / "tests" / "fixtures" / "openapi_specs"
 
@@ -150,7 +150,12 @@ class TestSwagger20Extraction:
 
 class TestEdgeCases:
     def test_empty_paths(self, extractor):
-        source = SourceConfig(file_content='{"openapi": "3.0.0", "info": {"title": "Empty", "version": "1.0"}, "paths": {}}')
+        source = SourceConfig(
+            file_content=(
+                '{"openapi": "3.0.0", "info": {"title": "Empty", "version": "1.0"}, '
+                '"paths": {}}'
+            )
+        )
         ir = extractor.extract(source)
         assert len(ir.operations) == 0
         assert ir.service_name == "empty"
@@ -191,3 +196,60 @@ paths:
         assert ir1.source_hash == ir2.source_hash
         assert len(ir1.operations) == len(ir2.operations)
         assert {op.id for op in ir1.operations} == {op.id for op in ir2.operations}
+
+    def test_callbacks_and_webhooks_become_explicit_event_descriptors(self, extractor):
+        spec = """
+openapi: "3.1.0"
+info:
+  title: Eventful API
+  version: "1.0"
+servers:
+  - url: https://events.example.com
+paths:
+  /uploads:
+    post:
+      operationId: uploadInvoiceAttachment
+      summary: Upload invoice attachment
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+      callbacks:
+        onComplete:
+          "{$request.body#/callbackUrl}":
+            post:
+              responses:
+                "200":
+                  description: OK
+      responses:
+        "202":
+          description: Accepted
+webhooks:
+  invoiceSigned:
+    post:
+      responses:
+        "200":
+          description: OK
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+
+        assert ir.metadata["ignored_callbacks"] == ["uploadInvoiceAttachment:onComplete"]
+        assert ir.metadata["ignored_webhooks"] == ["invoiceSigned"]
+        assert {descriptor.id for descriptor in ir.event_descriptors} == {
+            "invoiceSigned",
+            "uploadInvoiceAttachment:onComplete",
+        }
+        callback = next(
+            descriptor
+            for descriptor in ir.event_descriptors
+            if descriptor.id == "uploadInvoiceAttachment:onComplete"
+        )
+        webhook = next(
+            descriptor for descriptor in ir.event_descriptors if descriptor.id == "invoiceSigned"
+        )
+        assert callback.transport is EventTransport.callback
+        assert callback.operation_id == "uploadInvoiceAttachment"
+        assert callback.support is EventSupportLevel.unsupported
+        assert webhook.transport is EventTransport.webhook

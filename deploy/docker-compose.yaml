@@ -1,0 +1,219 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: toolcompiler
+      POSTGRES_USER: toolcompiler
+      POSTGRES_PASSWORD: toolcompiler
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U toolcompiler -d toolcompiler"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  temporal:
+    image: temporalio/server:1.25.2
+    command: ["temporal", "server", "start-dev", "--ip", "0.0.0.0"]
+    ports:
+      - "7233:7233"
+    healthcheck:
+      test: ["CMD-SHELL", "echo > /dev/tcp/127.0.0.1/7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  compiler-api:
+    image: python:3.11-slim
+    working_dir: /workspace
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        pip install -e ".[all]" &&
+        alembic -c migrations/alembic.ini upgrade head &&
+        python -m uvicorn apps.compiler_api.main:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+asyncpg://toolcompiler:toolcompiler@postgres:5432/toolcompiler
+      WORKFLOW_ENGINE: celery
+      REDIS_URL: redis://redis:6379/0
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    volumes:
+      - ..:/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  access-control:
+    image: python:3.11-slim
+    working_dir: /workspace
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        pip install -e ".[all]" &&
+        python -m uvicorn apps.access_control.main:app --host 0.0.0.0 --port 8001
+    environment:
+      DATABASE_URL: postgresql+asyncpg://toolcompiler:toolcompiler@postgres:5432/toolcompiler
+      JWT_SECRET_KEY: dev-secret-key
+      GATEWAY_ADMIN_URL: http://gateway-admin-mock:8004
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    volumes:
+      - ..:/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      compiler-api:
+        condition: service_healthy
+      gateway-admin-mock:
+        condition: service_healthy
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  gateway-admin-mock:
+    image: python:3.11-slim
+    working_dir: /workspace
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        pip install -e ".[all]" &&
+        python -m uvicorn apps.gateway_admin_mock.main:app --host 0.0.0.0 --port 8004
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    volumes:
+      - ..:/workspace
+    ports:
+      - "8004:8004"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/healthz')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  compiler-worker:
+    image: python:3.11-slim
+    working_dir: /workspace
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        pip install -e ".[all]" &&
+        python -m apps.compiler_worker.entrypoint
+    environment:
+      DATABASE_URL: postgresql+asyncpg://toolcompiler:toolcompiler@postgres:5432/toolcompiler
+      WORKFLOW_ENGINE: celery
+      REDIS_URL: redis://redis:6379/0
+      TEMPORAL_ADDRESS: temporal:7233
+      MCP_RUNTIME_IMAGE: tool-compiler/mcp-runtime:latest
+      ROUTE_PUBLISH_MODE: access-control
+      ACCESS_CONTROL_URL: http://access-control:8001
+      CELERY_WORKER_CONCURRENCY: "1"
+      CELERY_WORKER_POOL: solo
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    volumes:
+      - ..:/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      access-control:
+        condition: service_healthy
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/healthz')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  mcp-runtime:
+    image: python:3.11-slim
+    working_dir: /workspace
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        pip install -e ".[all]" &&
+        python -m uvicorn apps.mcp_runtime.main:app --host 0.0.0.0 --port 8003
+    environment:
+      SERVICE_IR_PATH: /workspace/tests/fixtures/ir/service_ir_valid.json
+      BILLING_SECRET: dev-token
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    volumes:
+      - ..:/workspace
+    depends_on:
+      compiler-api:
+        condition: service_healthy
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/healthz')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20

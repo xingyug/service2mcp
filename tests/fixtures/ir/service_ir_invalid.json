@@ -1,0 +1,48 @@
+{
+  "ir_version": "1.0.0",
+  "compiler_version": "0.1.0",
+  "source_url": "https://example.com/billing/openapi.json",
+  "source_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "protocol": "openapi",
+  "service_name": "invalid-runtime",
+  "service_description": "Invalid runtime fixture",
+  "base_url": "https://billing.example.com",
+  "auth": {
+    "type": "none"
+  },
+  "operations": [
+    {
+      "id": "dangerousDelete",
+      "name": "Dangerous Delete",
+      "description": "Invalid because unknown risk cannot be enabled.",
+      "method": "DELETE",
+      "path": "/accounts/{customer_id}",
+      "params": [
+        {
+          "name": "customer_id",
+          "type": "string",
+          "required": true,
+          "description": "Customer identifier",
+          "source": "extractor",
+          "confidence": 1.0
+        }
+      ],
+      "risk": {
+        "writes_state": true,
+        "destructive": true,
+        "external_side_effect": true,
+        "idempotent": false,
+        "risk_level": "unknown",
+        "confidence": 1.0,
+        "source": "extractor"
+      },
+      "source": "extractor",
+      "confidence": 1.0,
+      "enabled": true
+    }
+  ],
+  "operation_chains": [],
+  "metadata": {
+    "fixture": true
+  }
+}

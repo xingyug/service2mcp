@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package catalog.v1;
+
+// Inventory service for catalog operations.
+service InventoryService {
+  // List catalog items available in a location.
+  rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
+  // Adjust a SKU inventory count.
+  rpc AdjustInventory(AdjustInventoryRequest) returns (AdjustInventoryResponse);
+  // Streaming RPCs are deferred until the runtime supports them.
+  rpc WatchInventory(WatchInventoryRequest) returns (stream InventoryEvent);
+}
+
+message ListItemsRequest {
+  string location_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+  ItemFilter filter = 4;
+}
+
+message ItemFilter {
+  repeated string categories = 1;
+  bool include_inactive = 2;
+}
+
+message ListItemsResponse {
+  repeated Item items = 1;
+  string next_page_token = 2;
+}
+
+message Item {
+  string sku = 1;
+  string title = 2;
+}
+
+message AdjustInventoryRequest {
+  string sku = 1;
+  int32 delta = 2;
+  AdjustmentReason reason = 3;
+}
+
+enum AdjustmentReason {
+  ADJUSTMENT_REASON_UNSPECIFIED = 0;
+  ADJUSTMENT_REASON_SALE = 1;
+  ADJUSTMENT_REASON_RESTOCK = 2;
+}
+
+message AdjustInventoryResponse {
+  string operation_id = 1;
+}
+
+message WatchInventoryRequest {
+  string sku = 1;
+}
+
+message InventoryEvent {
+  string sku = 1;
+}

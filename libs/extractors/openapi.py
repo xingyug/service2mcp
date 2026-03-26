@@ -6,17 +6,22 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import yaml
 
-from libs.extractors.base import ExtractorProtocol, SourceConfig
+from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthConfig,
     AuthType,
+    EventDescriptor,
+    EventDirection,
+    EventSupportLevel,
+    EventTransport,
     Operation,
     Param,
+    RequestBodyMode,
     RiskLevel,
     RiskMetadata,
     ServiceIR,
@@ -24,6 +29,7 @@ from libs.ir.models import (
 )
 
 logger = logging.getLogger(__name__)
+JSONDict = dict[str, Any]
 
 # HTTP method → risk level mapping
 _METHOD_RISK: dict[str, RiskLevel] = {
@@ -86,7 +92,21 @@ class OpenAPIExtractor:
 
         base_url = self._extract_base_url(spec, source, is_swagger)
         auth = self._extract_auth(spec, is_swagger)
-        operations = self._extract_operations(spec, is_swagger)
+        operations, ignored_callbacks, callback_descriptors = self._extract_operations(
+            spec,
+            is_swagger,
+        )
+        metadata: JSONDict = {
+            "openapi_version": version,
+            "spec_title": spec.get("info", {}).get("title", ""),
+        }
+        ignored_webhooks = self._extract_ignored_webhooks(spec)
+        event_descriptors = callback_descriptors + self._extract_webhook_descriptors(spec)
+        event_descriptors.sort(key=lambda descriptor: descriptor.id)
+        if ignored_callbacks:
+            metadata["ignored_callbacks"] = ignored_callbacks
+        if ignored_webhooks:
+            metadata["ignored_webhooks"] = ignored_webhooks
 
         service_name = spec.get("info", {}).get("title", "unnamed-api")
         service_name = _slugify(service_name)
@@ -100,7 +120,8 @@ class OpenAPIExtractor:
             base_url=base_url,
             auth=auth,
             operations=operations,
-            metadata={"openapi_version": version, "spec_title": spec.get("info", {}).get("title", "")},
+            event_descriptors=event_descriptors,
+            metadata=metadata,
         )
 
     # ── Private helpers ────────────────────────────────────────────────────
@@ -129,17 +150,17 @@ class OpenAPIExtractor:
             headers["Authorization"] = f"Bearer {source.auth_token}"
         return headers
 
-    def _parse_spec_string(self, content: str) -> dict[str, Any]:
+    def _parse_spec_string(self, content: str) -> JSONDict:
         """Parse YAML or JSON spec string."""
         content = content.strip()
         if content.startswith("{"):
-            spec = json.loads(content)
+            spec = cast(JSONDict, json.loads(content))
         else:
-            spec = yaml.safe_load(content)
+            spec = cast(JSONDict, yaml.safe_load(content))
         self._resolve_refs(spec, spec)
         return spec
 
-    def _resolve_refs(self, node: Any, root: dict) -> Any:
+    def _resolve_refs(self, node: Any, root: JSONDict) -> None:
         """Recursively resolve $ref pointers in-place."""
         if isinstance(node, dict):
             if "$ref" in node and len(node) == 1:
@@ -153,7 +174,7 @@ class OpenAPIExtractor:
             for item in node:
                 self._resolve_refs(item, root)
 
-    def _follow_ref(self, ref: str, root: dict) -> dict:
+    def _follow_ref(self, ref: str, root: JSONDict) -> JSONDict:
         """Follow a JSON pointer like '#/components/schemas/Pet'."""
         if not ref.startswith("#/"):
             return {}
@@ -164,38 +185,45 @@ class OpenAPIExtractor:
                 current = current.get(part, {})
             else:
                 return {}
-        return current if isinstance(current, dict) else {}
+        return cast(JSONDict, current) if isinstance(current, dict) else {}
 
-    def _extract_base_url(self, spec: dict, source: SourceConfig, is_swagger: bool) -> str:
+    def _extract_base_url(
+        self,
+        spec: JSONDict,
+        source: SourceConfig,
+        is_swagger: bool,
+    ) -> str:
         if is_swagger:
             host = spec.get("host", "localhost")
             base_path = spec.get("basePath", "")
             schemes = spec.get("schemes", ["https"])
             scheme = schemes[0] if schemes else "https"
             return f"{scheme}://{host}{base_path}"
-        else:
-            servers = spec.get("servers", [])
-            if servers:
-                return servers[0].get("url", source.url or "http://localhost")
-            return source.url or "http://localhost"
+        servers = spec.get("servers", [])
+        if isinstance(servers, list) and servers and isinstance(servers[0], dict):
+            return str(servers[0].get("url", source.url or "http://localhost"))
+        return source.url or "http://localhost"
 
-    def _extract_auth(self, spec: dict, is_swagger: bool) -> AuthConfig:
+    def _extract_auth(self, spec: JSONDict, is_swagger: bool) -> AuthConfig:
         if is_swagger:
-            sec_defs = spec.get("securityDefinitions", {})
+            sec_defs = cast(JSONDict, spec.get("securityDefinitions", {}))
         else:
-            sec_defs = spec.get("components", {}).get("securitySchemes", {})
+            components = cast(JSONDict, spec.get("components", {}))
+            sec_defs = cast(JSONDict, components.get("securitySchemes", {}))
 
         if not sec_defs:
             return AuthConfig(type=AuthType.none)
 
         # Take the first security scheme
-        name, scheme = next(iter(sec_defs.items()))
+        scheme = next(iter(sec_defs.values()))
+        if not isinstance(scheme, dict):
+            return AuthConfig(type=AuthType.none)
 
         if is_swagger:
             return self._parse_swagger_auth(scheme)
         return self._parse_openapi_auth(scheme)
 
-    def _parse_swagger_auth(self, scheme: dict) -> AuthConfig:
+    def _parse_swagger_auth(self, scheme: JSONDict) -> AuthConfig:
         auth_type = scheme.get("type", "")
         if auth_type == "apiKey":
             location = scheme.get("in", "header")
@@ -210,7 +238,7 @@ class OpenAPIExtractor:
             return AuthConfig(type=AuthType.basic)
         return AuthConfig(type=AuthType.none)
 
-    def _parse_openapi_auth(self, scheme: dict) -> AuthConfig:
+    def _parse_openapi_auth(self, scheme: JSONDict) -> AuthConfig:
         auth_type = scheme.get("type", "")
         if auth_type == "http":
             http_scheme = scheme.get("scheme", "bearer")
@@ -233,12 +261,20 @@ class OpenAPIExtractor:
             return AuthConfig(type=AuthType.oauth2)
         return AuthConfig(type=AuthType.none)
 
-    def _extract_operations(self, spec: dict, is_swagger: bool) -> list[Operation]:
+    def _extract_operations(
+        self,
+        spec: JSONDict,
+        is_swagger: bool,
+    ) -> tuple[list[Operation], list[str], list[EventDescriptor]]:
         operations: list[Operation] = []
+        ignored_callbacks: list[str] = []
+        event_descriptors: list[EventDescriptor] = []
         paths = spec.get("paths", {})
+        if not isinstance(paths, dict):
+            return operations, ignored_callbacks, event_descriptors
 
         for path, path_item in paths.items():
-            if not isinstance(path_item, dict):
+            if not isinstance(path, str) or not isinstance(path_item, dict):
                 continue
             for method in ("get", "post", "put", "patch", "delete", "head", "options"):
                 if method not in path_item:
@@ -250,7 +286,29 @@ class OpenAPIExtractor:
                 op_id = op_spec.get("operationId", f"{method}_{_slugify(path)}")
                 risk_level = _METHOD_RISK.get(method.upper(), RiskLevel.unknown)
 
-                params = self._extract_params(op_spec, path_item, is_swagger)
+                params, request_body_mode, body_param_name = self._extract_params(
+                    op_spec,
+                    path_item,
+                    is_swagger,
+                )
+                callbacks = op_spec.get("callbacks", {})
+                if isinstance(callbacks, dict):
+                    for callback_name in callbacks:
+                        if not isinstance(callback_name, str):
+                            continue
+                        callback_id = f"{op_id}:{callback_name}"
+                        ignored_callbacks.append(callback_id)
+                        event_descriptors.append(
+                            EventDescriptor(
+                                id=callback_id,
+                                name=callback_name,
+                                transport=EventTransport.callback,
+                                direction=EventDirection.inbound,
+                                support=EventSupportLevel.unsupported,
+                                operation_id=op_id,
+                                channel=callback_name,
+                            )
+                        )
 
                 enabled = risk_level != RiskLevel.unknown
                 op = Operation(
@@ -260,6 +318,8 @@ class OpenAPIExtractor:
                     method=method.upper(),
                     path=path,
                     params=params,
+                    request_body_mode=request_body_mode,
+                    body_param_name=body_param_name,
                     risk=RiskMetadata(
                         writes_state=method.upper() in ("POST", "PUT", "PATCH", "DELETE"),
                         destructive=method.upper() == "DELETE",
@@ -275,11 +335,19 @@ class OpenAPIExtractor:
                 )
                 operations.append(op)
 
-        return operations
+        ignored_callbacks.sort()
+        return operations, ignored_callbacks, event_descriptors
 
-    def _extract_params(self, op_spec: dict, path_item: dict, is_swagger: bool) -> list[Param]:
+    def _extract_params(
+        self,
+        op_spec: JSONDict,
+        path_item: JSONDict,
+        is_swagger: bool,
+    ) -> tuple[list[Param], RequestBodyMode, str | None]:
         params: list[Param] = []
         seen_names: set[str] = set()
+        request_body_mode = RequestBodyMode.json
+        body_param_name: str | None = None
 
         # Path-level params + operation-level params
         raw_params = path_item.get("parameters", []) + op_spec.get("parameters", [])
@@ -300,39 +368,120 @@ class OpenAPIExtractor:
                 continue
 
             param_type = self._resolve_param_type(p, is_swagger)
-            params.append(Param(
-                name=name,
-                type=param_type,
-                required=p.get("required", False),
-                description=p.get("description", ""),
-                default=p.get("default") if not is_swagger else p.get("default"),
-                source=SourceType.extractor,
-                confidence=0.9,
-            ))
+            params.append(
+                Param(
+                    name=name,
+                    type=param_type,
+                    required=bool(p.get("required", False)),
+                    description=str(p.get("description", "")),
+                    default=p.get("default"),
+                    source=SourceType.extractor,
+                    confidence=0.9,
+                )
+            )
 
         # OpenAPI 3.x requestBody
         if not is_swagger and "requestBody" in op_spec:
-            body_params = self._extract_request_body_params(op_spec["requestBody"])
+            body_params, request_body_mode, body_param_name = self._extract_request_body_params(
+                op_spec["requestBody"]
+            )
             for bp in body_params:
                 if bp.name not in seen_names:
                     params.append(bp)
                     seen_names.add(bp.name)
 
-        return params
+        return params, request_body_mode, body_param_name
 
-    def _resolve_param_type(self, param: dict, is_swagger: bool) -> str:
+    def _resolve_param_type(self, param: JSONDict, is_swagger: bool) -> str:
         if is_swagger:
-            return _TYPE_MAP.get(param.get("type", "string"), "string")
+            return _TYPE_MAP.get(str(param.get("type", "string")), "string")
         schema = param.get("schema", {})
+        if not isinstance(schema, dict):
+            return "string"
         return _TYPE_MAP.get(schema.get("type", "string"), "string")
 
-    def _extract_request_body_params(self, body: dict) -> list[Param]:
+    def _extract_request_body_params(
+        self,
+        body: JSONDict,
+    ) -> tuple[list[Param], RequestBodyMode, str | None]:
         content = body.get("content", {})
-        json_content = content.get("application/json", {})
-        schema = json_content.get("schema", {})
-        return self._flatten_schema_to_params(schema)
+        if not isinstance(content, dict):
+            return [], RequestBodyMode.json, None
 
-    def _flatten_schema_to_params(self, schema: dict) -> list[Param]:
+        required = bool(body.get("required", False))
+
+        if "multipart/form-data" in content:
+            return (
+                [
+                    Param(
+                        name="payload",
+                        type="object",
+                        required=required,
+                        description="Multipart form payload.",
+                        source=SourceType.extractor,
+                        confidence=0.9,
+                    )
+                ],
+                RequestBodyMode.multipart,
+                "payload",
+            )
+
+        if "application/octet-stream" in content:
+            return (
+                [
+                    Param(
+                        name="payload",
+                        type="object",
+                        required=required,
+                        description="Raw request body payload.",
+                        source=SourceType.extractor,
+                        confidence=0.9,
+                    )
+                ],
+                RequestBodyMode.raw,
+                "payload",
+            )
+
+        json_content = content.get("application/json", {})
+        if not isinstance(json_content, dict):
+            return [], RequestBodyMode.json, None
+        schema = json_content.get("schema", {})
+        if not isinstance(schema, dict):
+            return [], RequestBodyMode.json, None
+        return self._flatten_schema_to_params(schema), RequestBodyMode.json, None
+
+    def _extract_ignored_webhooks(self, spec: JSONDict) -> list[str]:
+        webhooks = spec.get("webhooks", {})
+        if not isinstance(webhooks, dict):
+            return []
+        ignored_webhooks = [
+            webhook_name
+            for webhook_name in webhooks
+            if isinstance(webhook_name, str)
+        ]
+        ignored_webhooks.sort()
+        return ignored_webhooks
+
+    def _extract_webhook_descriptors(self, spec: JSONDict) -> list[EventDescriptor]:
+        webhooks = spec.get("webhooks", {})
+        if not isinstance(webhooks, dict):
+            return []
+        descriptors = [
+            EventDescriptor(
+                id=webhook_name,
+                name=webhook_name,
+                transport=EventTransport.webhook,
+                direction=EventDirection.inbound,
+                support=EventSupportLevel.unsupported,
+                channel=webhook_name,
+            )
+            for webhook_name in webhooks
+            if isinstance(webhook_name, str)
+        ]
+        descriptors.sort(key=lambda descriptor: descriptor.id)
+        return descriptors
+
+    def _flatten_schema_to_params(self, schema: JSONDict) -> list[Param]:
         """Extract top-level properties from a schema as params."""
         if schema.get("type") != "object" and "properties" not in schema:
             return []
@@ -340,17 +489,23 @@ class OpenAPIExtractor:
         params: list[Param] = []
         required_fields = set(schema.get("required", []))
         properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            return []
 
         for name, prop in properties.items():
+            if not isinstance(name, str) or not isinstance(prop, dict):
+                continue
             param_type = _TYPE_MAP.get(prop.get("type", "string"), "string")
-            params.append(Param(
-                name=name,
-                type=param_type,
-                required=name in required_fields,
-                description=prop.get("description", ""),
-                source=SourceType.extractor,
-                confidence=0.9,
-            ))
+            params.append(
+                Param(
+                    name=name,
+                    type=param_type,
+                    required=name in required_fields,
+                    description=str(prop.get("description", "")),
+                    source=SourceType.extractor,
+                    confidence=0.9,
+                )
+            )
 
         return params
 

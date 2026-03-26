@@ -1,1 +1,1 @@
-
+"""Gateway binding module."""

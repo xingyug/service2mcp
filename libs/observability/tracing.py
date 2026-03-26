@@ -1,0 +1,117 @@
+"""OpenTelemetry tracing helpers — shared across all components.
+
+Provides tracer setup and span context managers.  Falls back to no-op
+when OTEL_EXPORTER_ENDPOINT is not configured, so importing this module
+in tests or local dev causes no side-effects.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from collections.abc import Generator
+from contextlib import contextmanager
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Lazy-initialised globals
+_tracer_provider: Any = None
+_is_configured: bool = False
+
+
+def setup_tracer(
+    service_name: str,
+    endpoint: str | None = None,
+    *,
+    enable_local: bool = False,
+) -> None:
+    """Configure the OpenTelemetry tracer provider.
+
+    Args:
+        service_name: Logical name of the service (e.g. "compiler-api").
+        endpoint: OTel collector gRPC endpoint.  Falls back to
+                  ``OTEL_EXPORTER_ENDPOINT`` env var.  If neither is set,
+                  tracing runs in no-op mode unless ``enable_local`` is true.
+        enable_local: When true, configure in-process spans even when no
+                  exporter endpoint is provided.
+    """
+    global _tracer_provider, _is_configured  # noqa: PLW0603
+
+    if _is_configured and _tracer_provider is not None:
+        return
+
+    endpoint = endpoint or os.environ.get("OTEL_EXPORTER_ENDPOINT")
+    if not endpoint and not enable_local:
+        logger.info("OTEL_EXPORTER_ENDPOINT not set — tracing disabled (no-op mode)")
+        _is_configured = False
+        return
+
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+
+        resource = Resource.create({"service.name": service_name})
+        provider = TracerProvider(resource=resource)
+
+        if endpoint:
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+            exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+            provider.add_span_processor(BatchSpanProcessor(exporter))
+
+        trace.set_tracer_provider(provider)
+        _tracer_provider = provider
+        _is_configured = True
+        if endpoint:
+            logger.info("OTel tracing configured for %s → %s", service_name, endpoint)
+        else:
+            logger.info("OTel tracing configured for %s (local spans only)", service_name)
+    except ImportError:
+        logger.warning("opentelemetry SDK not installed — tracing disabled")
+        _is_configured = False
+    except Exception:
+        logger.warning("Failed to configure OTel tracing", exc_info=True)
+        _is_configured = False
+
+
+def get_tracer(name: str) -> Any:
+    """Return a tracer instance.  Returns a no-op tracer if not configured."""
+    if _is_configured:
+        from opentelemetry import trace
+        return trace.get_tracer(name)
+    return _NoOpTracer()
+
+
+@contextmanager
+def trace_span(name: str, attributes: dict[str, str] | None = None) -> Generator[Any, None, None]:
+    """Context manager that creates a span or acts as a no-op."""
+    tracer = get_tracer("tool-compiler")
+    if _is_configured:
+        with tracer.start_as_current_span(name, attributes=attributes or {}) as span:
+            yield span
+    else:
+        yield _NoOpSpan()
+
+
+class _NoOpSpan:
+    """Placeholder span when tracing is not configured."""
+
+    def set_attribute(self, key: str, value: Any) -> None:
+        pass
+
+    def set_status(self, status: Any) -> None:
+        pass
+
+    def record_exception(self, exception: BaseException) -> None:
+        pass
+
+
+class _NoOpTracer:
+    """Placeholder tracer when tracing is not configured."""
+
+    @contextmanager
+    def start_as_current_span(self, name: str, **kwargs: Any) -> Generator[_NoOpSpan, None, None]:
+        yield _NoOpSpan()

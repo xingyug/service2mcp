@@ -3,10 +3,12 @@
 from libs.ir.models import (
     AuthConfig,
     AuthType,
+    GraphQLOperationConfig,
+    GraphQLOperationType,
     Operation,
     OperationChain,
-    Param,
     PaginationConfig,
+    Param,
     ResponseStrategy,
     RiskLevel,
     RiskMetadata,
@@ -14,11 +16,19 @@ from libs.ir.models import (
     SourceType,
     TruncationPolicy,
 )
-from libs.ir.schema import deserialize_ir, generate_json_schema, ir_from_dict, ir_to_dict, serialize_ir
+from libs.ir.schema import (
+    deserialize_ir,
+    generate_json_schema,
+    ir_from_dict,
+    ir_to_dict,
+    serialize_ir,
+)
 
 __all__ = [
     "AuthConfig",
     "AuthType",
+    "GraphQLOperationConfig",
+    "GraphQLOperationType",
     "Operation",
     "OperationChain",
     "Param",

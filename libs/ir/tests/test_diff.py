@@ -1,11 +1,13 @@
 """Tests for IR diff computation."""
 
+from typing import Any
+
 from libs.ir.diff import compute_diff
 from libs.ir.models import Operation, Param, RiskLevel, RiskMetadata, ServiceIR
 
 
-def _base_ir(**overrides) -> ServiceIR:
-    defaults = {
+def _base_ir(**overrides: Any) -> ServiceIR:
+    defaults: dict[str, Any] = {
         "source_hash": "abc123",
         "protocol": "openapi",
         "service_name": "test-api",
@@ -15,8 +17,8 @@ def _base_ir(**overrides) -> ServiceIR:
     return ServiceIR(**(defaults | overrides))
 
 
-def _op(id: str, name: str = "", method: str = "GET", **kw) -> Operation:
-    defaults = {
+def _op(id: str, name: str = "", method: str = "GET", **kw: Any) -> Operation:
+    defaults: dict[str, Any] = {
         "id": id,
         "name": name or id,
         "method": method,
@@ -97,13 +99,21 @@ class TestDiffChanged:
 
     def test_added_param(self):
         a = _base_ir(operations=[_op("get_pet", params=[])])
-        b = _base_ir(operations=[_op("get_pet", params=[Param(name="id", type="string", required=True)])])
+        b = _base_ir(
+            operations=[
+                _op("get_pet", params=[Param(name="id", type="string", required=True)])
+            ]
+        )
         diff = compute_diff(a, b)
         assert len(diff.changed_operations) == 1
         assert diff.changed_operations[0].added_params == ["id"]
 
     def test_removed_param(self):
-        a = _base_ir(operations=[_op("get_pet", params=[Param(name="id", type="string", required=True)])])
+        a = _base_ir(
+            operations=[
+                _op("get_pet", params=[Param(name="id", type="string", required=True)])
+            ]
+        )
         b = _base_ir(operations=[_op("get_pet", params=[])])
         diff = compute_diff(a, b)
         assert diff.changed_operations[0].removed_params == ["id"]

@@ -1,0 +1,93 @@
+{
+  "ir_version": "1.0.0",
+  "compiler_version": "0.1.0",
+  "source_url": "https://example.com/billing/openapi.json",
+  "source_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "protocol": "openapi",
+  "service_name": "billing-runtime",
+  "service_description": "Billing runtime fixture",
+  "base_url": "https://billing.example.com",
+  "auth": {
+    "type": "bearer",
+    "runtime_secret_ref": "billing-secret"
+  },
+  "operations": [
+    {
+      "id": "listAccounts",
+      "name": "List Accounts",
+      "description": "List billing accounts.",
+      "method": "GET",
+      "path": "/accounts",
+      "params": [
+        {
+          "name": "customer_id",
+          "type": "string",
+          "required": true,
+          "description": "Customer identifier",
+          "source": "extractor",
+          "confidence": 1.0
+        },
+        {
+          "name": "verbose",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Include verbose details",
+          "source": "extractor",
+          "confidence": 1.0
+        }
+      ],
+      "risk": {
+        "writes_state": false,
+        "destructive": false,
+        "external_side_effect": false,
+        "idempotent": true,
+        "risk_level": "safe",
+        "confidence": 1.0,
+        "source": "extractor"
+      },
+      "response_strategy": {
+        "max_response_bytes": 4096,
+        "truncation_policy": "truncate"
+      },
+      "source": "extractor",
+      "confidence": 1.0,
+      "enabled": true
+    },
+    {
+      "id": "deleteAccount",
+      "name": "Delete Account",
+      "description": "Delete a billing account.",
+      "method": "DELETE",
+      "path": "/accounts/{customer_id}",
+      "params": [
+        {
+          "name": "customer_id",
+          "type": "string",
+          "required": true,
+          "description": "Customer identifier",
+          "source": "extractor",
+          "confidence": 1.0
+        }
+      ],
+      "risk": {
+        "writes_state": true,
+        "destructive": true,
+        "external_side_effect": true,
+        "idempotent": false,
+        "risk_level": "unknown",
+        "confidence": 0.9,
+        "source": "extractor"
+      },
+      "source": "extractor",
+      "confidence": 1.0,
+      "enabled": false
+    }
+  ],
+  "operation_chains": [],
+  "metadata": {
+    "fixture": true
+  },
+  "tenant": "team-a",
+  "environment": "prod"
+}

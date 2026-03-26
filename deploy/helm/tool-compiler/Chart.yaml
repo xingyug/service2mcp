@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tool-compiler
+description: Helm chart for deploying the Tool Compiler v2 platform
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

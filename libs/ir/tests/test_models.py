@@ -2,33 +2,57 @@
 
 from __future__ import annotations
 
-import json
+from typing import Any
 
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from libs.ir.models import (
+    AsyncJobConfig,
+    AsyncStatusUrlSource,
     AuthConfig,
     AuthType,
+    EventDescriptor,
+    EventDirection,
+    EventSupportLevel,
+    EventTransport,
+    GraphQLOperationConfig,
+    GraphQLOperationType,
+    GrpcStreamMode,
+    GrpcStreamRuntimeConfig,
+    GrpcUnaryRuntimeConfig,
+    MTLSConfig,
+    OAuth2ClientCredentialsConfig,
     Operation,
     OperationChain,
-    Param,
     PaginationConfig,
+    Param,
+    RequestBodyMode,
+    RequestSigningConfig,
     ResponseStrategy,
     RiskLevel,
     RiskMetadata,
     ServiceIR,
+    SoapOperationConfig,
     SourceType,
+    SqlOperationConfig,
+    SqlOperationType,
+    SqlRelationKind,
     TruncationPolicy,
 )
-from libs.ir.schema import deserialize_ir, generate_json_schema, ir_from_dict, ir_to_dict, serialize_ir
-
+from libs.ir.schema import (
+    deserialize_ir,
+    generate_json_schema,
+    ir_from_dict,
+    ir_to_dict,
+    serialize_ir,
+)
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
-def make_param(**overrides) -> Param:
-    defaults = {"name": "pet_id", "type": "integer", "required": True}
+def make_param(**overrides: Any) -> Param:
+    defaults: dict[str, Any] = {"name": "pet_id", "type": "integer", "required": True}
     return Param(**(defaults | overrides))
 
 
@@ -41,8 +65,12 @@ def make_risk(level: RiskLevel = RiskLevel.safe) -> RiskMetadata:
     )
 
 
-def make_operation(id: str = "get_pet", enabled: bool = True, **overrides) -> Operation:
-    defaults = {
+def make_operation(
+    id: str = "get_pet",
+    enabled: bool = True,
+    **overrides: Any,
+) -> Operation:
+    defaults: dict[str, Any] = {
         "id": id,
         "name": f"Get {id}",
         "description": f"Retrieve {id}",
@@ -55,8 +83,8 @@ def make_operation(id: str = "get_pet", enabled: bool = True, **overrides) -> Op
     return Operation(**(defaults | overrides))
 
 
-def make_service_ir(**overrides) -> ServiceIR:
-    defaults = {
+def make_service_ir(**overrides: Any) -> ServiceIR:
+    defaults: dict[str, Any] = {
         "source_hash": "abc123def456",
         "protocol": "openapi",
         "service_name": "petstore",
@@ -147,6 +175,151 @@ class TestOperation:
         with pytest.raises(ValueError):
             make_operation(name="")
 
+    def test_operation_supports_request_body_modes_and_async_job(self):
+        op = make_operation(
+            id="upload_document",
+            method="POST",
+            request_body_mode=RequestBodyMode.multipart,
+            body_param_name="payload",
+            async_job=AsyncJobConfig(
+                status_url_source=AsyncStatusUrlSource.response_body,
+                status_url_field="job.status_url",
+                status_field="job.state",
+            ),
+        )
+
+        assert op.request_body_mode == RequestBodyMode.multipart
+        assert op.body_param_name == "payload"
+        assert op.async_job is not None
+        assert op.async_job.status_url_source == AsyncStatusUrlSource.response_body
+
+    def test_operation_supports_typed_graphql_execution_contract(self):
+        op = make_operation(
+            id="searchProducts",
+            method="POST",
+            path="/graphql",
+            graphql=GraphQLOperationConfig(
+                operation_type=GraphQLOperationType.query,
+                operation_name="searchProducts",
+                document=(
+                    "query searchProducts($term: String!) {\n"
+                    "  searchProducts(term: $term) { id name }\n"
+                    "}"
+                ),
+                variable_names=["term"],
+            ),
+        )
+
+        assert op.graphql is not None
+        assert op.graphql.operation_type is GraphQLOperationType.query
+        assert op.graphql.variable_names == ["term"]
+
+    def test_operation_supports_typed_grpc_unary_execution_contract(self):
+        op = make_operation(
+            id="ListItems",
+            method="POST",
+            path="/catalog.v1.InventoryService/ListItems",
+            grpc_unary=GrpcUnaryRuntimeConfig(
+                rpc_path="/catalog.v1.InventoryService/ListItems",
+                timeout_seconds=4.0,
+            ),
+        )
+
+        assert op.grpc_unary is not None
+        assert op.grpc_unary.rpc_path == "/catalog.v1.InventoryService/ListItems"
+        assert op.grpc_unary.timeout_seconds == 4.0
+
+    def test_operation_supports_typed_soap_execution_contract(self):
+        op = make_operation(
+            id="GetOrderStatus",
+            method="POST",
+            path="/soap/order-service",
+            soap=SoapOperationConfig(
+                target_namespace="http://example.com/orders/wsdl",
+                request_element="GetOrderStatusRequest",
+                response_element="GetOrderStatusResponse",
+                soap_action="http://example.com/orders/GetOrderStatus",
+            ),
+        )
+
+        assert op.soap is not None
+        assert op.soap.request_element == "GetOrderStatusRequest"
+        assert op.soap.response_element == "GetOrderStatusResponse"
+
+    def test_operation_supports_typed_sql_execution_contract(self):
+        op = make_operation(
+            id="query_orders",
+            method="GET",
+            path="/sql/public/orders",
+            sql=SqlOperationConfig(
+                schema_name="public",
+                relation_name="orders",
+                relation_kind=SqlRelationKind.table,
+                action=SqlOperationType.query,
+                filterable_columns=["id", "customer_id"],
+            ),
+        )
+
+        assert op.sql is not None
+        assert op.sql.action is SqlOperationType.query
+        assert op.sql.filterable_columns == ["id", "customer_id"]
+
+    def test_grpc_unary_contract_rejects_non_post_methods(self):
+        with pytest.raises(ValueError, match="method='POST'"):
+            make_operation(
+                method="GET",
+                grpc_unary=GrpcUnaryRuntimeConfig(rpc_path="/catalog.v1.InventoryService/ListItems"),
+            )
+
+    def test_soap_contract_rejects_non_post_methods(self):
+        with pytest.raises(ValueError, match="method='POST'"):
+            make_operation(
+                method="GET",
+                soap=SoapOperationConfig(
+                    target_namespace="http://example.com/orders/wsdl",
+                    request_element="GetOrderStatusRequest",
+                ),
+            )
+
+    def test_sql_query_contract_rejects_non_get_methods(self):
+        with pytest.raises(ValueError, match="method='GET'"):
+            make_operation(
+                method="POST",
+                sql=SqlOperationConfig(
+                    schema_name="public",
+                    relation_name="orders",
+                    relation_kind=SqlRelationKind.table,
+                    action=SqlOperationType.query,
+                    filterable_columns=["id"],
+                ),
+            )
+
+    def test_sql_insert_contract_rejects_non_post_methods(self):
+        with pytest.raises(ValueError, match="method='POST'"):
+            make_operation(
+                method="GET",
+                sql=SqlOperationConfig(
+                    schema_name="public",
+                    relation_name="orders",
+                    relation_kind=SqlRelationKind.table,
+                    action=SqlOperationType.insert,
+                    filterable_columns=["id"],
+                    insertable_columns=["customer_id"],
+                ),
+            )
+
+    def test_grpc_unary_contract_requires_matching_path(self):
+        with pytest.raises(ValueError, match="must match operation.path"):
+            make_operation(
+                method="POST",
+                path="/wrong/path",
+                grpc_unary=GrpcUnaryRuntimeConfig(rpc_path="/catalog.v1.InventoryService/ListItems"),
+            )
+
+    def test_async_job_response_body_source_requires_status_url_field(self):
+        with pytest.raises(ValueError, match="status_url_field"):
+            AsyncJobConfig(status_url_source=AsyncStatusUrlSource.response_body)
+
 
 # ── ServiceIR Tests ────────────────────────────────────────────────────────
 
@@ -186,7 +359,84 @@ class TestServiceIR:
         with pytest.raises(ValueError, match="unknown operations"):
             make_service_ir(
                 operations=[make_operation(id="step1")],
-                operation_chains=[OperationChain(id="chain1", name="Chain", steps=["step1", "nonexistent"])],
+                operation_chains=[
+                    OperationChain(
+                        id="chain1",
+                        name="Chain",
+                        steps=["step1", "nonexistent"],
+                    )
+                ],
+            )
+
+    def test_event_descriptors_accept_multiple_transports(self):
+        ir = make_service_ir(
+            event_descriptors=[
+                EventDescriptor(
+                    id="invoiceSigned",
+                    name="invoiceSigned",
+                    transport=EventTransport.webhook,
+                    direction=EventDirection.inbound,
+                ),
+                EventDescriptor(
+                    id="inventoryChanged",
+                    name="inventoryChanged",
+                    transport=EventTransport.graphql_subscription,
+                    direction=EventDirection.inbound,
+                    channel="/graphql",
+                ),
+                EventDescriptor(
+                    id="watchInventory",
+                    name="watchInventory",
+                    transport=EventTransport.grpc_stream,
+                    direction=EventDirection.bidirectional,
+                    support=EventSupportLevel.planned,
+                    channel="/catalog.v1.InventoryService/WatchInventory",
+                    grpc_stream=GrpcStreamRuntimeConfig(
+                        rpc_path="/catalog.v1.InventoryService/WatchInventory",
+                        mode=GrpcStreamMode.bidirectional,
+                    ),
+                ),
+            ]
+        )
+
+        assert len(ir.event_descriptors) == 3
+        assert ir.event_descriptors[0].transport is EventTransport.webhook
+        assert ir.event_descriptors[1].channel == "/graphql"
+        assert ir.event_descriptors[2].support is EventSupportLevel.planned
+
+    def test_grpc_stream_descriptor_requires_runtime_config(self):
+        with pytest.raises(ValueError, match="grpc_stream runtime config"):
+            EventDescriptor(
+                id="watchInventory",
+                name="watchInventory",
+                transport=EventTransport.grpc_stream,
+                direction=EventDirection.bidirectional,
+            )
+
+    def test_non_grpc_transport_rejects_grpc_stream_runtime_config(self):
+        with pytest.raises(ValueError, match="only valid for grpc_stream transport"):
+            EventDescriptor(
+                id="inventoryChanged",
+                name="inventoryChanged",
+                transport=EventTransport.sse,
+                direction=EventDirection.inbound,
+                grpc_stream=GrpcStreamRuntimeConfig(
+                    rpc_path="/catalog.v1.InventoryService/WatchInventory",
+                    mode=GrpcStreamMode.server,
+                ),
+            )
+
+    def test_event_descriptor_operation_reference_must_exist(self):
+        with pytest.raises(ValueError, match="unknown operations"):
+            make_service_ir(
+                event_descriptors=[
+                    EventDescriptor(
+                        id="callback",
+                        name="callback",
+                        transport=EventTransport.callback,
+                        operation_id="missing-operation",
+                    )
+                ]
             )
 
     def test_empty_service_name_rejected(self):
@@ -315,12 +565,65 @@ class TestSerialization:
         assert restored.tenant == "acme-corp"
         assert restored.metadata["openapi_version"] == "3.1.0"
 
+    def test_advanced_auth_ir_round_trip(self):
+        ir = make_service_ir(
+            auth=AuthConfig(
+                type=AuthType.oauth2,
+                oauth2=OAuth2ClientCredentialsConfig(
+                    token_url="https://auth.example.com/oauth/token",
+                    client_id_ref="oauth-client-id",
+                    client_secret_ref="oauth-client-secret",
+                    scopes=["inventory.read", "inventory.write"],
+                    audience="inventory-api",
+                ),
+                mtls=MTLSConfig(
+                    cert_ref="inventory-client-cert",
+                    key_ref="inventory-client-key",
+                    ca_ref="inventory-ca-cert",
+                ),
+                request_signing=RequestSigningConfig(
+                    secret_ref="inventory-signing-secret",
+                    key_id="inventory-runtime",
+                ),
+            )
+        )
+
+        restored = deserialize_ir(serialize_ir(ir))
+
+        assert restored.auth.type == AuthType.oauth2
+        assert restored.auth.oauth2 is not None
+        assert restored.auth.oauth2.client_id_ref == "oauth-client-id"
+        assert restored.auth.oauth2.client_secret_ref == "oauth-client-secret"
+        assert restored.auth.oauth2.audience == "inventory-api"
+        assert restored.auth.mtls is not None
+        assert restored.auth.mtls.cert_ref == "inventory-client-cert"
+        assert restored.auth.mtls.key_ref == "inventory-client-key"
+        assert restored.auth.request_signing is not None
+        assert restored.auth.request_signing.secret_ref == "inventory-signing-secret"
+        assert restored.auth.request_signing.key_id == "inventory-runtime"
+
+    def test_oauth2_nested_config_requires_oauth2_auth_type(self):
+        with pytest.raises(ValueError, match="oauth2"):
+            AuthConfig(
+                type=AuthType.bearer,
+                runtime_secret_ref="legacy-bearer-token",
+                oauth2=OAuth2ClientCredentialsConfig(
+                    token_url="https://auth.example.com/oauth/token",
+                    client_id_ref="oauth-client-id",
+                    client_secret_ref="oauth-client-secret",
+                ),
+            )
+
 
 # ── Hypothesis Property-Based Tests ───────────────────────────────────────
 
 param_strategy = st.builds(
     Param,
-    name=st.text(min_size=1, max_size=50, alphabet=st.characters(whitelist_categories=("L", "N", "Pd"))),
+    name=st.text(
+        min_size=1,
+        max_size=50,
+        alphabet=st.characters(whitelist_categories=("L", "N", "Pd")),
+    ),
     type=st.sampled_from(["string", "integer", "number", "boolean", "array", "object"]),
     required=st.booleans(),
     description=st.text(max_size=200),
@@ -331,7 +634,7 @@ param_strategy = st.builds(
 
 @given(param=param_strategy)
 @settings(max_examples=50)
-def test_param_round_trip_property(param: Param):
+def test_param_round_trip_property(param: Param) -> None:
     """Any valid Param should survive JSON round-trip."""
     json_str = param.model_dump_json()
     restored = Param.model_validate_json(json_str)

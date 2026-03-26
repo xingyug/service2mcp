@@ -13,6 +13,7 @@ env/
 
 .mypy_cache/
 .pytest_cache/
+.hypothesis/
 .ruff_cache/
 htmlcov/
 .coverage
@@ -28,3 +29,14 @@ coverage.xml
 *.log
 .DS_Store
 node_modules/
+
+# Internal handoff docs kept locally for agent context
+new-agent-reading-list.md
+docs/context-engineering.md
+docs/post-sdd-modular-expansion-plan.md
+
+# Local-only helpers and accidental artifacts
+.github/
+get_helm.sh
+=0.20,
+=1.62,

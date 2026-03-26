@@ -1,0 +1,104 @@
+{
+  "ir_version": "1.0.0",
+  "compiler_version": "0.1.0",
+  "source_url": "https://example.com/billing/openapi.json",
+  "source_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "protocol": "openapi",
+  "service_name": "billing-proxy-runtime",
+  "service_description": "Billing proxy runtime fixture",
+  "base_url": "https://api.example.test",
+  "auth": {
+    "type": "bearer",
+    "runtime_secret_ref": "BILLING_SECRET",
+    "header_name": "Authorization",
+    "header_prefix": "Bearer"
+  },
+  "operations": [
+    {
+      "id": "getAccount",
+      "name": "Get Account",
+      "description": "Get a billing account.",
+      "method": "GET",
+      "path": "/accounts/{account_id}",
+      "params": [
+        {
+          "name": "account_id",
+          "type": "string",
+          "required": true,
+          "description": "Account identifier",
+          "source": "extractor",
+          "confidence": 1.0
+        },
+        {
+          "name": "verbose",
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Include extra details",
+          "source": "extractor",
+          "confidence": 1.0
+        }
+      ],
+      "risk": {
+        "writes_state": false,
+        "destructive": false,
+        "external_side_effect": false,
+        "idempotent": true,
+        "risk_level": "safe",
+        "confidence": 1.0,
+        "source": "extractor"
+      },
+      "response_strategy": {
+        "field_filter": ["id", "name"]
+      },
+      "source": "extractor",
+      "confidence": 1.0,
+      "enabled": true
+    },
+    {
+      "id": "createNote",
+      "name": "Create Note",
+      "description": "Create a note for an account.",
+      "method": "POST",
+      "path": "/accounts/{account_id}/notes",
+      "params": [
+        {
+          "name": "account_id",
+          "type": "string",
+          "required": true,
+          "description": "Account identifier",
+          "source": "extractor",
+          "confidence": 1.0
+        },
+        {
+          "name": "payload",
+          "type": "object",
+          "required": true,
+          "description": "Note payload",
+          "source": "extractor",
+          "confidence": 1.0
+        }
+      ],
+      "risk": {
+        "writes_state": true,
+        "destructive": false,
+        "external_side_effect": true,
+        "idempotent": false,
+        "risk_level": "cautious",
+        "confidence": 1.0,
+        "source": "extractor"
+      },
+      "response_strategy": {
+        "max_response_bytes": 80,
+        "truncation_policy": "truncate"
+      },
+      "source": "extractor",
+      "confidence": 1.0,
+      "enabled": true
+    }
+  ],
+  "operation_chains": [],
+  "metadata": {
+    "fixture": true
+  }
+}

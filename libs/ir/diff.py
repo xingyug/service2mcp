@@ -36,7 +36,11 @@ class IRDiff:
 
     @property
     def is_empty(self) -> bool:
-        return not self.added_operations and not self.removed_operations and not self.changed_operations
+        return (
+            not self.added_operations
+            and not self.removed_operations
+            and not self.changed_operations
+        )
 
     @property
     def summary(self) -> str:
@@ -52,10 +56,19 @@ class IRDiff:
 
 # Fields on Operation to compare (excluding volatile fields like confidence, source)
 _OP_COMPARE_FIELDS = ("name", "description", "method", "path", "enabled")
-_RISK_COMPARE_FIELDS = ("writes_state", "destructive", "external_side_effect", "idempotent", "risk_level")
+_RISK_COMPARE_FIELDS = (
+    "writes_state",
+    "destructive",
+    "external_side_effect",
+    "idempotent",
+    "risk_level",
+)
 
 
-def _diff_params(old_params: list[Param], new_params: list[Param]) -> tuple[list[str], list[str], list[ParamChange]]:
+def _diff_params(
+    old_params: list[Param],
+    new_params: list[Param],
+) -> tuple[list[str], list[str], list[ParamChange]]:
     """Compare parameter lists, returning added, removed, and changed."""
     old_map = {p.name: p for p in old_params}
     new_map = {p.name: p for p in new_params}
@@ -70,7 +83,14 @@ def _diff_params(old_params: list[Param], new_params: list[Param]) -> tuple[list
             old_val = getattr(old_p, f)
             new_val = getattr(new_p, f)
             if old_val != new_val:
-                changes.append(ParamChange(param_name=name, field_name=f, old_value=old_val, new_value=new_val))
+                changes.append(
+                    ParamChange(
+                        param_name=name,
+                        field_name=f,
+                        old_value=old_val,
+                        new_value=new_val,
+                    )
+                )
 
     return added, removed, changes
 

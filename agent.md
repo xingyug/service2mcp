@@ -9,12 +9,123 @@
 
 Given a URL or spec file → it detects the protocol → extracts the schema → normalizes it into an **Intermediate Representation (IR)** → generates Kubernetes manifests → deploys a tool server → registers gateway routes → provisions access control. All automated.
 
+## Important Reference Files
+
+Repository root on this machine:
+
+- `/home/guoxy/esoc-agents/tool-compiler-v2`
+
+Key absolute paths on this machine:
+
+- `/home/guoxy/esoc-agents/tool-compiler-v2-sdd.md` — authoritative SDD, architecture, backlog, and acceptance criteria
+- `/home/guoxy/esoc-agents/tool-compiler-v2/agent.md` — current coding-agent briefing and handoff context
+- `/home/guoxy/esoc-agents/tool-compiler-v2/devlog.md` — chronological implementation log and latest verification status
+- `/home/guoxy/esoc-agents/tool-compiler-v2/docs/post-sdd-modular-expansion-plan.md` — modular post-SDD backlog, sequencing, and exit criteria
+- `/home/guoxy/esoc-agents/tool-compiler-v2/docs/context-engineering.md` — context-bounding rules for future agents and module slices
+- `/home/guoxy/esoc-agents/tool-compiler-v2/pyproject.toml` — dependency set plus `pytest` / `ruff` / `mypy` configuration
+
+Key paths below are relative to the repository root (`tool-compiler-v2/`):
+
+- `../tool-compiler-v2-sdd.md` — authoritative SDD, architecture, backlog, and acceptance criteria
+- `./agent.md` — current coding-agent briefing and handoff context
+- `./devlog.md` — chronological implementation log and latest verification status
+- `./docs/post-sdd-modular-expansion-plan.md` — post-SDD modular backlog, sequencing, and exit criteria
+- `./docs/context-engineering.md` — context-management rules for future agents
+- `./pyproject.toml` — dependency set plus `pytest` / `ruff` / `mypy` configuration
+- `./libs/ir/models.py` — core IR contract and invariants
+- `./libs/ir/schema.py` — IR serialization and JSON Schema helpers
+- `./libs/enhancer/enhancer.py` — LLM enhancement pipeline
+- `./libs/generator/generic_mode.py` — generic-mode Kubernetes manifest generation
+- `./apps/compiler_api/main.py` — compiler API app entrypoint
+- `./apps/compiler_api/models.py` — Compiler API request/response models
+- `./apps/compiler_api/dispatcher.py` — compilation dispatch abstraction used by API submission endpoints
+- `./apps/compiler_api/repository.py` — artifact registry persistence logic
+- `./apps/compiler_api/routes/artifacts.py` — current registry HTTP routes
+- `./apps/compiler_api/routes/compilations.py` — compilation submission, status, and SSE event endpoints
+- `./apps/compiler_api/routes/services.py` — compiled service listing endpoints
+- `./apps/access_control/main.py` — access control FastAPI app entrypoint
+- `./apps/access_control/authn/service.py` — JWT validation and PAT lifecycle service
+- `./apps/access_control/authz/service.py` — policy CRUD and semantic authorization evaluation
+- `./apps/access_control/gateway_binding/service.py` — APISIX consumer/policy sync and drift reconciliation
+- `./apps/access_control/audit/service.py` — append-only audit logging and query service
+- `./apps/compiler_worker/main.py` — compiler worker health and metrics shell used by local dev and deployment assets
+- `./apps/compiler_worker/celery_app.py` — Celery app and compilation task binding used by the queue-backed worker path
+- `./apps/compiler_worker/executor.py` — task executor adapters and per-task database-backed workflow runtime
+- `./apps/compiler_worker/entrypoint.py` — process supervisor that runs the worker HTTP shell and Celery consumer together
+- `./apps/compiler_worker/activities/production.py` — production activity handlers, manifest deployment, runtime readiness waiting, and live validation logic
+- `./apps/compiler_worker/observability.py` — compilation workflow metrics for dashboards and worker health endpoints
+- `./apps/compiler_worker/workflows/compile_workflow.py` — durable compilation workflow core with retries and rollback
+- `./apps/compiler_worker/workflows/rollback_workflow.py` — rollback orchestration for redeploying and reactivating prior service versions
+- `./apps/compiler_worker/repository.py` — compilation job and event persistence layer
+- `./apps/compiler_worker/activities/pipeline.py` — activity registry helpers for stage and rollback handlers
+- `./libs/validator/pre_deploy.py` — pre-deploy validation harness for IR schema and auth smoke tests
+- `./libs/validator/post_deploy.py` — post-deploy validation harness for runtime health, tool listing, and invocation smoke checks
+- `./libs/extractors/grpc.py` — gRPC `.proto` detection and unary RPC extraction foundation
+- `./libs/extractors/soap.py` — SOAP / WSDL 1.1 extraction foundation
+- `./libs/extractors/graphql.py` — GraphQL introspection extractor
+- `./libs/extractors/sql.py` — SQL schema extractor backed by SQLAlchemy reflection
+- `./libs/extractors/rest.py` — REST extractor with discovery and classifier-assisted normalization
+- `./apps/gateway_admin_mock/main.py` — lightweight HTTP gateway-admin mock used by local and live reconciliation tests
+- `./apps/mcp_runtime/main.py` — generic runtime FastAPI app entrypoint
+- `./apps/mcp_runtime/grpc_stream.py` — native grpc reflection-backed server-stream executor
+- `./apps/mcp_runtime/loader.py` — runtime IR loading and dynamic tool registration
+- `./apps/mcp_runtime/proxy.py` — upstream HTTP proxy execution path
+- `./apps/mcp_runtime/observability.py` — runtime metrics and logging integration
+- `./libs/observability/tracing.py` — shared tracing setup used by runtime
+- `./deploy/docker-compose.yaml` — local development topology for PostgreSQL, Redis, Temporal, and all service shells
+- `./deploy/docker/Dockerfile.app` — shared container build entrypoint used by CI and Helm values
+- `./deploy/helm/tool-compiler/values.yaml` — full-platform Helm configuration defaults
+- `./deploy/helm/tool-compiler/templates/` — Helm templates for infra, services, and migration hooks
+- `./deploy/helm/tool-compiler/templates/infra.yaml` — shared PostgreSQL / Redis / Temporal deployment assets and cold-start probe defaults
+- `./observability/grafana/compilation-dashboard.json` — compilation pipeline Grafana dashboard
+- `./observability/grafana/runtime-dashboard.json` — runtime Grafana dashboard
+- `./scripts/setup-dev.sh` — local bootstrap script for Python deps and compose validation
+- `./scripts/smoke-dev.sh` — local smoke checks for ports and health endpoints
+- `./scripts/smoke-gateway-routes.sh` — local route-publication smoke harness using Access Control and Gateway Admin Mock
+- `./scripts/smoke-gke-gateway-routes.sh` — minimal live GKE route-publication and drift-reconciliation smoke harness
+- `./.github/workflows/ci.yaml` — CI workflow for lint, typecheck, contract tests, integration tests, and image builds
+- `./docs/quickstart.md` — local onboarding and end-to-end quickstart guide
+- `./docs/adr/` — ADR set for core platform decisions
+- `./migrations/versions/001_initial.py` — current PostgreSQL schema baseline
+- `./tests/fixtures/ir/` — canonical `ServiceIR` fixtures used by runtime and generator tests
+- `./tests/contract/` — contract tests for OpenAPI schemas, dev assets, dashboards, and Helm chart structure
+- `./tests/integration/test_artifact_registry.py` — artifact registry integration coverage
+- `./tests/integration/test_compile_workflow.py` — compilation workflow retry, rollback, and persistence coverage
+- `./tests/integration/test_compiler_api.py` — compiler API submit/status/SSE/service-list coverage
+- `./tests/integration/test_compiler_worker_activities.py` — production activity integration coverage, including runtime startup-lag handling
+- `./tests/integration/test_compiler_worker_app.py` — compiler worker health and metrics coverage
+- `./tests/integration/test_streamable_http_tool_invoker.py` — live HTTP transport regression coverage for runtime tool invocation
+- `./libs/validator/tests/test_pre_deploy.py` — pre-deploy validation coverage
+- `./libs/validator/tests/test_post_deploy.py` — post-deploy validation coverage
+- `./libs/extractors/tests/test_graphql.py` — GraphQL extractor coverage
+- `./libs/extractors/tests/test_grpc.py` — gRPC proto extraction coverage
+- `./libs/extractors/tests/test_conformance_corpus.py` — corpus-driven regression coverage for messy and unsupported fixtures
+- `./libs/extractors/tests/test_soap.py` — SOAP / WSDL extraction coverage
+- `./libs/extractors/tests/test_sql.py` — SQL extractor coverage
+- `./libs/extractors/tests/test_rest.py` — REST extractor discovery and classification coverage
+- `./tests/fixtures/graphql_schemas/` — GraphQL introspection fixtures
+- `./tests/fixtures/grpc_protos/` — gRPC proto fixtures
+- `./tests/fixtures/conformance/` — conformance corpus manifest and messy real-world fixtures
+- `./tests/fixtures/sql_schemas/` — SQL schema fixtures used by reflection tests
+- `./tests/fixtures/wsdl/` — WSDL fixtures used by SOAP extractor tests
+- `./tests/integration/test_access_control_authn.py` — access control authn integration coverage
+- `./tests/integration/test_access_control_authz.py` — access control authz integration coverage
+- `./tests/integration/test_access_control_gateway_binding.py` — gateway binding integration coverage
+- `./tests/integration/test_access_control_audit.py` — audit logging integration coverage
+- `./tests/integration/test_rollback_workflow.py` — rollback workflow integration coverage
+- `./tests/integration/test_version_coexistence.py` — version coexistence and active-switch coverage
+- `./tests/integration/test_mcp_runtime.py` — runtime startup and tool registration coverage
+- `./tests/integration/test_mcp_runtime_grpc_stream.py` — native grpc stream runtime coverage
+- `./tests/integration/test_mcp_runtime_proxy.py` — runtime upstream proxy coverage
+- `./tests/integration/test_mcp_runtime_observability.py` — runtime metrics/tracing coverage
+- `./tests/e2e/test_full_compilation_flow.py` — end-to-end OpenAPI spec to runtime tool invocation coverage
+
 ## Architecture (Three Planes)
 
 ```
 CONTROL PLANE          BUILD PLANE              RUNTIME PLANE
 ├── Compiler API       ├── Type Detector         ├── Generic MCP Runtime
-├── Artifact Registry  ├── Extractors (4 types)  ├── Codegen MCP Servers
+├── Artifact Registry  ├── Extractors (6 types)  ├── Codegen MCP Servers
 ├── Access Control     ├── LLM Enhancer          ├── APISIX Gateway
 │   (AuthN/AuthZ)      ├── Validation Harness    └── Observability Stack
 └── PostgreSQL         └── Pipeline Orchestrator
@@ -42,26 +153,36 @@ tool-compiler-v2/
 │   ├── extractors/              # Protocol-specific extractors → raw IR
 │   │   ├── base.py              # ExtractorProtocol + TypeDetector
 │   │   ├── openapi.py           # Swagger 2.0 / OpenAPI 3.0 / 3.1 extractor
+│   │   ├── graphql.py           # GraphQL introspection extractor
+│   │   ├── grpc.py              # gRPC proto unary extraction foundation
+│   │   ├── soap.py              # SOAP / WSDL extraction foundation
+│   │   ├── sql.py               # SQLAlchemy-backed SQL schema extractor
+│   │   ├── rest.py              # REST discovery extractor with classifier hook
 │   │   └── tests/
-│   ├── enhancer/                # LLM enhancement of IR (stub)
-│   ├── validator/               # Pre-deploy + post-deploy validation (stub)
+│   ├── enhancer/                # LLM enhancement of IR
+│   ├── validator/               # Pre-deploy + post-deploy validation harnesses
 │   ├── generator/               # K8s manifest + codegen artifact generation (stub)
-│   ├── registry_client/         # Client for artifact registry (stub)
-│   └── observability/           # Shared metrics/tracing/logging utils (stub)
+│   ├── registry_client/         # Client + shared models for artifact registry
+│   └── observability/           # Shared metrics/tracing/logging utilities
 ├── apps/                        # Deployable services
 │   ├── compiler_api/            # FastAPI — accepts compilation requests
 │   ├── compiler_worker/         # Pipeline orchestrator (Celery/Temporal)
 │   ├── access_control/          # AuthN + AuthZ + gateway binding
+│   ├── gateway_admin_mock/      # Lightweight gateway-admin mock for local/live smoke
 │   └── mcp_runtime/             # Generic MCP runtime
 ├── tests/                       # Integration and E2E tests
 │   ├── fixtures/                # Test spec files
-│   │   └── openapi_specs/       # Petstore 3.0, Swagger 2.0 fixtures
+│   │   ├── openapi_specs/       # Petstore 3.0, Swagger 2.0 fixtures
+│   │   ├── graphql_schemas/     # Introspection JSON fixtures
+│   │   ├── grpc_protos/         # gRPC proto fixtures
+│   │   ├── sql_schemas/         # SQL schema fixtures for database reflection tests
+│   │   └── wsdl/                # WSDL fixtures
 │   └── conftest.py
 ├── migrations/                  # Alembic DB migrations
 ├── deploy/                      # Helm charts, docker-compose, k8s manifests
 ├── observability/               # Grafana dashboards, Prometheus alerts, OTel config
 ├── specs/                       # Detailed module specs (planned)
-├── docs/                        # ADRs, quickstart guide
+├── docs/                        # ADRs, quickstart guide, modular expansion docs
 ├── scripts/                     # Dev scripts
 ├── pyproject.toml               # Python project config (monorepo, hatchling)
 └── Makefile                     # Common commands
@@ -120,16 +241,79 @@ ruff check .
 mypy libs/
 ```
 
+## Standard Toolchain Policy
+
+Preferred long-term quality stack for this repository:
+- `uv` for environment sync and lock-driven execution
+- `ruff` for formatting and linting
+- `basedpyright` for strict type checking
+- `pytest` with coverage and `hypothesis` for functional and property testing
+- `pre-commit` for local hooks
+- `nox` for a single quality-gate entrypoint
+- `semgrep`, `deptry`, `pip-audit`, and `import-linter` for security, dependency hygiene, and architecture constraints
+
+Required execution order for future work:
+1. `uv sync`
+2. `uv run nox -s lint`
+3. `uv run nox -s typecheck`
+4. `uv run nox -s tests`
+5. `uv run nox -s security deps arch`
+
+Transition rule for the current repository state:
+- This repository is not fully migrated to `uv` / `nox` / `basedpyright` yet.
+- Until that migration lands, agents must follow the same gate order but run the repo-supported equivalent commands from `.venv`, with `ruff`, `mypy`, and `pytest` remaining the authoritative gates.
+- Do not claim `uv`, `nox`, or `basedpyright` results unless those commands actually exist in the repo and were executed successfully.
+
 ## Current Status
 
 See `devlog.md` for detailed progress tracking.
 
-**Completed:** T-001 through T-005 (repo structure, IR models, IR diff, extractor base, OpenAPI extractor)
-**Next up:** T-006 (LLM enhancer), T-007 (observability utils), T-008 (PostgreSQL schema)
+**Completed:** T-001 through T-033 (repo structure, IR models/diff, OpenAPI extraction, enhancer, observability, PostgreSQL schema, artifact registry, generic runtime startup path, runtime upstream proxy, runtime metrics/tracing, generic-mode manifest generator, durable compilation workflow/state machine, Compiler API endpoints, pre-deploy validation harness, post-deploy validation harness, GraphQL extractor, SQL extractor, REST extractor, Access Control AuthN/AuthZ/Gateway Binding modules, audit logging, rollback workflow, version coexistence support, local development environment, CI pipeline, Grafana dashboards, Helm chart, ADRs, quickstart guide, end-to-end compilation flow) plus post-SDD expansion tasks H-001 (gRPC proto detection and unary extraction foundation), H-002 (SOAP / WSDL extraction foundation), H-003 (streaming / event descriptors), H-004 (multipart, binary-safe, and async job runtime foundations), H-005 (approved streaming runtime support), H-006 (advanced auth schema, validation, and runtime adapters), H-007 (messy-spec conformance corpus), and H-008 (live gateway / rollout hardening).
+**Current hardening state:** Post-backlog hardening now includes repeated real infrastructure/provider proof points, four runtime/capability slices, a cross-protocol conformance corpus, and completed follow-on roadmap tracks `R-001` through `R-003`: the clean live GKE compilation success in namespace `tool-compiler-gke-test-r11` for service `petstore-live-r11-r12`, the local access-control-backed route-publication foundation (HTTP gateway-admin clients, service-route sync / rollback / reconciliation endpoints, worker-side route publication through Access Control, rollback restoration of previous stable routes, and `apps.gateway_admin_mock` for compose/Helm plus integration coverage), the earlier minimal live GKE gateway smoke harness in namespace `tool-compiler-gateway-smoke-r2` that proved drift reconciliation plus control-plane rollout/rollback semantics, the completed `R-001` DeepSeek track in both local-provider and full platform form (explicit `deepseek` provider wiring, configurable OpenAI-compatible base URLs, a reproducible harness at `scripts/validate_deepseek_enhancer.py`, and a live Helm/GKE compile-deploy-register proof in namespace `tool-compiler-gke-test-r13` for service `deepseek-live-r13-r16` where the worker logged a real `POST https://api.deepseek.com/chat/completions` `200`, persisted `operations_enhanced=2` in compilation events, and produced an IR artifact with `source: "llm"` descriptions), the completed `R-002` live gateway/data-plane slice (the gateway admin mock now exposes a real forwarding path via published route documents, integration coverage proves active plus pinned route selection and failure visibility, and the live GKE harness in namespace `tool-compiler-gateway-smoke-r7` proved stable-route rollout to `v2`, rollback to `v1`, and pinned `v2` continuity through the gateway entrypoint), the advanced-auth path spanning nested IR auth models plus runtime OAuth2 / request-signing / mTLS support, the H-004 runtime slice covering explicit request-body modes plus multipart/raw/binary/async-job handling, the H-003 typed `event_descriptors` slice that records OpenAPI callbacks/webhooks, GraphQL subscriptions, and gRPC streaming RPCs as explicit unsupported descriptors while the pre-deploy validator rejects false runtime-support claims, the H-005 streaming runtime slice that adds bounded `sse` and `websocket` session handling with lifecycle/backpressure limits while explicitly rejecting non-approved transports such as native `grpc_stream`, the now-complete `R-003` native grpc slice that includes typed `GrpcStreamRuntimeConfig` / `GrpcStreamMode`, proto-extracted native stream config, a dedicated runtime executor seam, a reflection-backed concrete server-stream executor in `apps/mcp_runtime/grpc_stream.py`, opt-in runtime wiring via `ENABLE_NATIVE_GRPC_STREAM`, post-deploy validation coverage through `libs/validator/post_deploy.py` plus the streamable HTTP tool-invoker path, a reproducible live harness in `scripts/smoke-gke-grpc-stream.sh`, the descriptor-priming fix needed for reflection-backed method lookup, rollout-convergence waiting to avoid stale service endpoints, and an authoritative live GKE proof in namespace `tool-compiler-grpc-stream-smoke-r1` using runtime image `20260325-b0e27e6-r19` where the runner job returned `status="ok"`, `transport="grpc_stream"`, and a reflected protobuf event with `{"sku":"sku-live","status":"ready"}`. The protocol-completion track is now fully complete: `P-001` added typed GraphQL execution plus local runtime proof; `P-002` hardened discovered REST runtime semantics; `P-003` added native gRPC unary execution behind `ENABLE_NATIVE_GRPC_UNARY`; `P-004` added typed `SoapOperationConfig` plus SOAP envelope/action/fault execution and validator proof; `P-005` added typed `SqlOperationConfig` plus the safe native SQL query/insert executor in `apps/mcp_runtime/sql.py`; and `P-006` added the machine-readable protocol capability matrix in `libs/validator/capability_matrix.py`, protocol-aware GraphQL/SQL sample invocation generation, and post-deploy smoke selection that prefers safer query/read paths over mutation/insert paths. The original post-SDD modular expansion backlog remains complete at `8 / 8`, and the protocol-completion backlog now stands at `6 / 6`. The final cross-protocol `LLM-enabled E2E` proof track is now also complete: `L-001` remains the live OpenAPI + DeepSeek baseline, `L-002` through `L-006` cover local GraphQL, REST, gRPC, SOAP, and SQL proofs, and the shared local E2E enhancer path can optionally switch from stub mode to a real DeepSeek call via `ENABLE_REAL_DEEPSEEK_E2E`. GraphQL cleared the single-protocol live GKE DeepSeek proof path in namespace `tool-compiler-llm-graphql-015547`; REST discovery did the same in `tool-compiler-llm-rest-020103`; SOAP / WSDL did the same in `tool-compiler-llm-soap-020620`; SQL did the same in `tool-compiler-llm-sql-021037`; and gRPC unary did the same in `tool-compiler-llm-grpc-024113` after rebuilding `compiler-worker:20260326-b0e27e6-r23` to fix worker-generated gRPC smoke samples. The authoritative joint rerun then succeeded in namespace `tool-compiler-llm-all-024755`, returning successful proof records for GraphQL (`job_id=0b3b8bef-cec6-42ca-8704-f8916d8038c9`, `operations_enhanced=2`, `llm_field_count=9`), REST (`job_id=512b9e93-7571-48ad-99ec-45a38ca3b4cc`, `operations_enhanced=6`, `llm_field_count=9`), gRPC (`job_id=71040e7a-7c33-44eb-852c-0cff9bb4112b`, `operations_enhanced=3`, `llm_field_count=11`), SOAP (`job_id=1653e378-d2c5-4cd5-84d3-b8438c13aca0`, `operations_enhanced=2`, `llm_field_count=7`), and SQL (`job_id=364c37fe-a72e-4204-b970-cb49abb306d1`, `operations_enhanced=5`, `llm_field_count=25`), with successful runtime tool invocations for every protocol and real `POST https://api.deepseek.com/chat/completions` `200 OK` evidence in worker logs across the matrix. In response to the cold-start queue flake observed at the beginning of that run, `apps/compiler_worker/entrypoint.py` now waits for the Redis broker socket and for Celery to report `ready` before exposing the worker HTTP shell, with regression coverage in `tests/integration/test_compiler_worker_entrypoint.py`.
+**Latest verification:** Published `compiler-api:20260326-b0e27e6-r28` (`sha256:e5c5e84ed7e388143d297bcad8ddc54a0d5e9315752b29ab3b340dfe276a2df8`) and `compiler-worker:20260326-b0e27e6-r28` (`sha256:9589ecb89c9d5f94c9aa96154574679f201e76890edf83a0ae84f609bf733756`). First reran `PROTOCOL=rest AUDIT_ALL_GENERATED_TOOLS=1` in namespace `tool-compiler-b002-rest-followup-065216`, where the follow-up REST extractor fix stayed clean with `discovered=1`, `generated=1`, `audited=1`, `passed=1`, `failed=0`, `skipped=0` for service `rest-llm-e2e-065216` (`job_id=7c517e3c-a7b7-49ce-ab21-ee4e8fbfd810`). The first `PROTOCOL=all` rerun then exposed an unrelated GKE harness issue: `llm-proof-sql` Postgres could restart during initialization and permanently lose the `order_summaries` view, so `scripts/smoke-gke-llm-e2e.sh` now adds a `startupProbe` before liveness takes over.
+**Current conversion posture:** The follow-up REST fix is now live-proven, and the authoritative cross-protocol audit baseline has also been captured in namespace `tool-compiler-llm-all-audit-075849` with the same `r28` images. The audit returned GraphQL `2/2/1/1/0/1`, REST `1/1/1/1/0/0`, gRPC `3/3/1/1/0/2`, SOAP `2/2/1/1/0/1`, and SQL `5/5/3/3/0/2` for `discovered/generated/audited/passed/failed/skipped`, for an aggregate `13/13/7/7/0/6`. The earlier `18`-tool structure-only total is now superseded by this stricter audit baseline: the missing `5` were the fake REST endpoints eliminated by `B-002`, not a new regression, and SQL again returns `query_order_summaries` successfully under the fixed harness.
+**Next up:** With `B-002` now live-proven end to end, the highest-value next step is `B-003` (large-surface black-box pilot) plus better reporting for `audit_summary` outside the proof runner.
+**Handoff-ready next slice:** Reuse namespace `tool-compiler-llm-all-audit-075849` as the clean cross-protocol audit baseline and push the next hardening round toward larger undocumented REST targets, refined audit skip-policy classification, and validator/reporting surfaces that persist the new audit results.
+
+## Project Size Expectations
+
+As of `2026-03-26`, the repository contains approximately:
+- `21,629` lines of production code (`apps/`, `libs/`, `migrations/`)
+- `9,353` lines of test code
+- `31,141` total Python code lines including repo `scripts/` and excluding virtualenv / generated caches
+
+Original SDD-completion estimate:
+- Production code: roughly `14,000` to `16,000` lines
+- Total code including tests: roughly `24,000` to `28,000` lines
+
+Current interpretation:
+- The repository is now materially beyond the original SDD-only size estimate because the post-SDD protocol-expansion, live-proof, and hardening tracks are complete.
+
+Progress tracking guidance:
+- By backlog count, `33 / 33` tasks are complete (`100%`)
+- By engineering effort against the current SDD, the planned backlog is complete
+- The post-SDD expansion backlog (`H-001` through `H-008`) is complete, with `8 / 8` expansion tasks complete
+- `R-001`, `R-002`, and `R-003` are complete, including live provider, live gateway/data-plane, and live native grpc server-stream proof points
+- The protocol-completion backlog (`P-001` through `P-006`) is complete, with `6 / 6` tasks complete
+- The final cross-protocol `LLM-enabled E2E` proof roadmap (`L-001` through `L-006`) is complete: `L-001` remains the live OpenAPI + DeepSeek baseline, `L-002` through `L-006` cover local GraphQL, REST, gRPC, SOAP, and SQL proofs, and local E2E can now opt into a real DeepSeek enhancer path with `ENABLE_REAL_DEEPSEEK_E2E`
+- OpenAPI, GraphQL, REST, gRPC unary/server-stream, SOAP, and SQL are now live-proven slices, and the compiler-managed protocols have also passed the authoritative joint `PROTOCOL=all` GKE matrix in namespace `tool-compiler-llm-all-024755`
+- Real GKE Helm validation, real GKE queue-path validation, repeated deployed production-activity validation, the final cross-protocol live matrix, and a published broker-aware worker-image rerun baseline have all been exercised against the test cluster, so further work should be treated as post-backlog hardening, capability expansion, or productionization rather than unfinished SDD scope
+- The next unresolved confidence gap is not protocol support but black-box coverage: proving discovered endpoint coverage, generated-tool coverage, and real invocation pass rate for large services without authoritative specs
+
+## AI Maintenance Requirements
+
+This project is still within the range that strong coding agents can maintain effectively, but only under explicit operating constraints:
+
+1. Keep `../tool-compiler-v2-sdd.md`, `./agent.md`, and `./devlog.md` current whenever scope, sequencing, or implementation status changes.
+2. Preserve hard quality gates in the documented order: prefer `uv run nox -s lint`, `typecheck`, `tests`, then `security deps arch` once the repo is migrated; until then, the `.venv`-backed `ruff`, `mypy`, and `pytest` equivalents must stay green before closing substantial work.
+3. Prefer narrow, testable tasks with clear acceptance criteria; avoid large cross-module refactors without first updating the written plan and task context.
+4. Require human review for high-risk changes, especially database schema/migrations, auth, gateway routing, Kubernetes deployment behavior, rollback logic, and secret handling.
+5. Keep external system assumptions explicit in code or docs; do not rely on unstated operational knowledge.
+6. When the repository grows past roughly `30k+` production lines or accumulates significant environment-specific behavior, tighten task scoping further and expect more human supervision.
 
 ## Task Reference
 
-Full task definitions are in the SDD (`../tool-compiler-v2-sdd.md`), section "Atomic Implementation Backlog" (T-001 through T-033). Tasks are ordered by dependency. Each task is designed for one focused coding session.
+Full task definitions are in the SDD (`../tool-compiler-v2-sdd.md`), sections "Atomic Implementation Backlog" (T-001 through T-033) and "Post-SDD Expansion Backlog" (`H-001` through `H-008`, `R-001` through `R-003`, `P-001` through `P-006`, and `L-001` through `L-006`). The follow-on black-box exploration track lives in `./docs/post-sdd-modular-expansion-plan.md`; it remains outside the original SDD-owned committed delivery backlog, but `B-001` has now started with the first generated-tool audit slice.
 
 ## Important Conventions
 
@@ -144,3 +328,9 @@ Full task definitions are in the SDD (`../tool-compiler-v2-sdd.md`), section "At
 - Local git only (no GitHub remote yet)
 - Commit messages prefixed with task ID: `T-00X: <description>`
 - One commit per task completion
+
+## Environment Notes
+
+- Manual LLM-path testing on this VM may use the DeepSeek official API endpoint together with the user-provided API key stored at `/home/guoxy/esoc-agents/.deepseek_api_key`.
+- The local operator entrypoint for the minimal real-provider matrix is `make e2e-real-deepseek-smoke`; it defaults to the GraphQL + SQL local E2E proofs and reads the same VM-local key file unless `LLM_API_KEY_FILE` is overridden.
+- Treat that key as local operator state only: never copy the secret into repository files, tests, fixtures, logs, or generated artifacts.

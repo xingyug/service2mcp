@@ -6,9 +6,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from libs.ir.models import ServiceIR, RiskLevel, RiskMetadata, Operation
 from libs.extractors.base import ExtractorProtocol, SourceConfig, TypeDetector
-
+from libs.ir.models import ServiceIR
 
 # ── Mock Extractors ────────────────────────────────────────────────────────
 

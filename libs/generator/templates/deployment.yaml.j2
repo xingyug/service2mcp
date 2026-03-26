@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ deployment_name }}
+  namespace: {{ namespace }}
+  labels:
+{{ labels_yaml_4 }}
+  annotations:
+{{ annotations_yaml_4 }}
+spec:
+  replicas: {{ replicas }}
+  selector:
+    matchLabels:
+{{ selector_labels_yaml_6 }}
+  template:
+    metadata:
+      labels:
+{{ labels_yaml_8 }}
+      annotations:
+{{ annotations_yaml_8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runtime
+          image: {{ runtime_image }}
+          imagePullPolicy: {{ image_pull_policy }}
+          env:
+            - name: SERVICE_IR_PATH
+              value: {{ service_ir_path }}
+            - name: TMPDIR
+              value: /tmp
+{% if enable_native_grpc_unary %}
+            - name: ENABLE_NATIVE_GRPC_UNARY
+              value: "true"
+{% endif %}
+{% if enable_native_grpc_stream %}
+            - name: ENABLE_NATIVE_GRPC_STREAM
+              value: "true"
+{% endif %}
+          ports:
+            - name: http
+              containerPort: {{ container_port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: service-ir
+              mountPath: /config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: service-ir
+          configMap:
+            name: {{ config_map_name }}
+            items:
+              - key: service-ir.json
+                path: service-ir.json
+        - name: tmp
+          emptyDir: {}

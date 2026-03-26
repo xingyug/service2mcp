@@ -1,0 +1,255 @@
+{
+  "data": {
+    "__schema": {
+      "description": "Catalog GraphQL schema",
+      "queryType": {
+        "name": "Query"
+      },
+      "mutationType": {
+        "name": "Mutation"
+      },
+      "types": [
+        {
+          "kind": "OBJECT",
+          "name": "Query",
+          "fields": [
+            {
+              "name": "searchProducts",
+              "description": "Search products by term, category, and filter.",
+              "args": [
+                {
+                  "name": "term",
+                  "description": "Free-text search term.",
+                  "defaultValue": null,
+                  "type": {
+                    "kind": "NON_NULL",
+                    "name": null,
+                    "ofType": {
+                      "kind": "SCALAR",
+                      "name": "String",
+                      "ofType": null
+                    }
+                  }
+                },
+                {
+                  "name": "category",
+                  "description": "Product category filter.",
+                  "defaultValue": null,
+                  "type": {
+                    "kind": "ENUM",
+                    "name": "Category",
+                    "ofType": null
+                  }
+                },
+                {
+                  "name": "filter",
+                  "description": "Nested filter input.",
+                  "defaultValue": null,
+                  "type": {
+                    "kind": "INPUT_OBJECT",
+                    "name": "ProductFilter",
+                    "ofType": null
+                  }
+                },
+                {
+                  "name": "limit",
+                  "description": "Page size limit.",
+                  "defaultValue": "10",
+                  "type": {
+                    "kind": "SCALAR",
+                    "name": "Int",
+                    "ofType": null
+                  }
+                }
+              ],
+              "type": {
+                "kind": "NON_NULL",
+                "name": null,
+                "ofType": {
+                  "kind": "LIST",
+                  "name": null,
+                  "ofType": {
+                    "kind": "NON_NULL",
+                    "name": null,
+                    "ofType": {
+                      "kind": "OBJECT",
+                      "name": "Product",
+                      "ofType": null
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "Mutation",
+          "fields": [
+            {
+              "name": "adjustInventory",
+              "description": "Adjust inventory levels for a SKU.",
+              "args": [
+                {
+                  "name": "sku",
+                  "description": "Inventory SKU.",
+                  "defaultValue": null,
+                  "type": {
+                    "kind": "NON_NULL",
+                    "name": null,
+                    "ofType": {
+                      "kind": "SCALAR",
+                      "name": "ID",
+                      "ofType": null
+                    }
+                  }
+                },
+                {
+                  "name": "delta",
+                  "description": "Inventory change amount.",
+                  "defaultValue": null,
+                  "type": {
+                    "kind": "NON_NULL",
+                    "name": null,
+                    "ofType": {
+                      "kind": "SCALAR",
+                      "name": "Int",
+                      "ofType": null
+                    }
+                  }
+                },
+                {
+                  "name": "reason",
+                  "description": "Why the inventory changed.",
+                  "defaultValue": null,
+                  "type": {
+                    "kind": "ENUM",
+                    "name": "AdjustmentReason",
+                    "ofType": null
+                  }
+                }
+              ],
+              "type": {
+                "kind": "OBJECT",
+                "name": "InventoryResult",
+                "ofType": null
+              }
+            }
+          ]
+        },
+        {
+          "kind": "ENUM",
+          "name": "Category",
+          "enumValues": [
+            {
+              "name": "BOOKS"
+            },
+            {
+              "name": "GAMES"
+            }
+          ]
+        },
+        {
+          "kind": "ENUM",
+          "name": "AdjustmentReason",
+          "enumValues": [
+            {
+              "name": "SALE"
+            },
+            {
+              "name": "RESTOCK"
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "ProductFilter",
+          "inputFields": [
+            {
+              "name": "priceRange",
+              "type": {
+                "kind": "INPUT_OBJECT",
+                "name": "PriceRangeInput",
+                "ofType": null
+              }
+            },
+            {
+              "name": "tags",
+              "type": {
+                "kind": "LIST",
+                "name": null,
+                "ofType": {
+                  "kind": "SCALAR",
+                  "name": "String",
+                  "ofType": null
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "INPUT_OBJECT",
+          "name": "PriceRangeInput",
+          "inputFields": [
+            {
+              "name": "min",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float",
+                "ofType": null
+              }
+            },
+            {
+              "name": "max",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Float",
+                "ofType": null
+              }
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "Product",
+          "fields": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "NON_NULL",
+                "name": null,
+                "ofType": {
+                  "kind": "SCALAR",
+                  "name": "ID",
+                  "ofType": null
+                }
+              }
+            },
+            {
+              "name": "name",
+              "type": {
+                "kind": "SCALAR",
+                "name": "String",
+                "ofType": null
+              }
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "InventoryResult",
+          "fields": [
+            {
+              "name": "ok",
+              "type": {
+                "kind": "SCALAR",
+                "name": "Boolean",
+                "ofType": null
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

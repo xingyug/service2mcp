@@ -1,1 +1,1 @@
-
+"""Authorization module."""

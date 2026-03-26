@@ -1,0 +1,100 @@
+{
+  "data": {
+    "__schema": {
+      "description": "Catalog schema with unsupported subscriptions",
+      "queryType": {
+        "name": "Query"
+      },
+      "mutationType": null,
+      "subscriptionType": {
+        "name": "Subscription"
+      },
+      "types": [
+        {
+          "kind": "OBJECT",
+          "name": "Query",
+          "description": "Root query type",
+          "fields": [
+            {
+              "name": "viewer",
+              "description": "Fetch the current viewer",
+              "args": [
+                {
+                  "name": "locale",
+                  "description": "Preferred locale",
+                  "defaultValue": "\"en-US\"",
+                  "type": {
+                    "kind": "SCALAR",
+                    "name": "String",
+                    "ofType": null
+                  }
+                }
+              ],
+              "type": {
+                "kind": "OBJECT",
+                "name": "Viewer",
+                "ofType": null
+              }
+            }
+          ],
+          "inputFields": null,
+          "enumValues": null
+        },
+        {
+          "kind": "OBJECT",
+          "name": "Subscription",
+          "description": "Unsupported subscription root",
+          "fields": [
+            {
+              "name": "inventoryChanged",
+              "description": "Inventory event stream",
+              "args": [
+                {
+                  "name": "warehouse",
+                  "description": "Warehouse identifier",
+                  "defaultValue": null,
+                  "type": {
+                    "kind": "SCALAR",
+                    "name": "String",
+                    "ofType": null
+                  }
+                }
+              ],
+              "type": {
+                "kind": "OBJECT",
+                "name": "InventoryEvent",
+                "ofType": null
+              }
+            }
+          ],
+          "inputFields": null,
+          "enumValues": null
+        },
+        {
+          "kind": "OBJECT",
+          "name": "Viewer",
+          "description": "Viewer object",
+          "fields": [],
+          "inputFields": null,
+          "enumValues": null
+        },
+        {
+          "kind": "OBJECT",
+          "name": "InventoryEvent",
+          "description": "Inventory event object",
+          "fields": [],
+          "inputFields": null,
+          "enumValues": null
+        },
+        {
+          "kind": "SCALAR",
+          "name": "String",
+          "description": "Built-in scalar",
+          "fields": null,
+          "inputFields": null,
+          "enumValues": null
+        }
+      ]
+    }
+  }
+}

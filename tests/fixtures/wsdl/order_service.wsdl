@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wsdl:definitions
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:tns="http://example.com/orders/wsdl"
+    xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    name="OrderService"
+    targetNamespace="http://example.com/orders/wsdl">
+
+  <wsdl:types>
+    <xsd:schema targetNamespace="http://example.com/orders/wsdl" elementFormDefault="qualified">
+      <xsd:complexType name="OrderPayload">
+        <xsd:sequence>
+          <xsd:element name="sku" type="xsd:string"/>
+          <xsd:element name="quantity" type="xsd:int"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:element name="GetOrderStatusRequest">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="orderId" type="xsd:string"/>
+            <xsd:element name="includeHistory" type="xsd:boolean" minOccurs="0"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="GetOrderStatusResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="status" type="xsd:string"/>
+            <xsd:element name="estimatedShipDate" type="xsd:dateTime" minOccurs="0"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="SubmitOrderRequest">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="customerId" type="xsd:string"/>
+            <xsd:element name="priority" type="xsd:string" minOccurs="0"/>
+            <xsd:element name="order" type="tns:OrderPayload"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="SubmitOrderResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="confirmationId" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+    </xsd:schema>
+  </wsdl:types>
+
+  <wsdl:message name="GetOrderStatusInput">
+    <wsdl:part name="parameters" element="tns:GetOrderStatusRequest"/>
+  </wsdl:message>
+  <wsdl:message name="GetOrderStatusOutput">
+    <wsdl:part name="parameters" element="tns:GetOrderStatusResponse"/>
+  </wsdl:message>
+  <wsdl:message name="SubmitOrderInput">
+    <wsdl:part name="parameters" element="tns:SubmitOrderRequest"/>
+  </wsdl:message>
+  <wsdl:message name="SubmitOrderOutput">
+    <wsdl:part name="parameters" element="tns:SubmitOrderResponse"/>
+  </wsdl:message>
+
+  <wsdl:portType name="OrderServicePortType">
+    <wsdl:operation name="GetOrderStatus">
+      <wsdl:input message="tns:GetOrderStatusInput"/>
+      <wsdl:output message="tns:GetOrderStatusOutput"/>
+    </wsdl:operation>
+    <wsdl:operation name="SubmitOrder">
+      <wsdl:input message="tns:SubmitOrderInput"/>
+      <wsdl:output message="tns:SubmitOrderOutput"/>
+    </wsdl:operation>
+  </wsdl:portType>
+
+  <wsdl:binding name="OrderServiceBinding" type="tns:OrderServicePortType">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" style="document"/>
+    <wsdl:operation name="GetOrderStatus">
+      <soap:operation soapAction="http://example.com/orders/GetOrderStatus"/>
+      <wsdl:input><soap:body use="literal"/></wsdl:input>
+      <wsdl:output><soap:body use="literal"/></wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="SubmitOrder">
+      <soap:operation soapAction="http://example.com/orders/SubmitOrder"/>
+      <wsdl:input><soap:body use="literal"/></wsdl:input>
+      <wsdl:output><soap:body use="literal"/></wsdl:output>
+    </wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:service name="OrderService">
+    <wsdl:port name="OrderServicePort" binding="tns:OrderServiceBinding">
+      <soap:address location="https://orders.example.com/soap/order-service"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>

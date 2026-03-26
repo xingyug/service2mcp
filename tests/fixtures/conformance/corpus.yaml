@@ -1,0 +1,101 @@
+cases:
+  - id: openapi_messy_auth_upload
+    protocol: openapi
+    source:
+      file_path: conformance/openapi/messy_auth_upload.yaml
+      url: https://billing.example.test/openapi.yaml
+    expect:
+      outcome: pass
+      min_detect_confidence: 0.9
+      service_name: messy-auth-upload-api
+      auth_type: oauth2
+      operations_count: 2
+      operation_ids:
+        - listCustomers
+        - uploadInvoiceAttachment
+      request_body_modes:
+        uploadInvoiceAttachment: multipart
+      body_param_names:
+        uploadInvoiceAttachment: payload
+      event_descriptors:
+        - id: invoiceSigned
+          transport: webhook
+          direction: inbound
+          support: unsupported
+          channel: invoiceSigned
+        - id: uploadInvoiceAttachment:onComplete
+          transport: callback
+          direction: inbound
+          support: unsupported
+          operation_id: uploadInvoiceAttachment
+          channel: onComplete
+      metadata:
+        ignored_callbacks:
+          - uploadInvoiceAttachment:onComplete
+        ignored_webhooks:
+          - invoiceSigned
+
+  - id: openapi_broken_document
+    protocol: openapi
+    source:
+      file_path: conformance/openapi/broken_document.yaml
+    expect:
+      outcome: fail
+      max_detect_confidence: 0.0
+
+  - id: graphql_subscription_schema
+    protocol: graphql
+    source:
+      file_path: conformance/graphql/catalog_with_subscription.json
+      url: https://catalog.example.com/graphql
+    expect:
+      outcome: unsupported
+      min_detect_confidence: 0.9
+      service_name: catalog-with-subscription
+      operations_count: 1
+      operation_ids:
+        - viewer
+      event_descriptors:
+        - id: inventoryChanged
+          transport: graphql_subscription
+          direction: inbound
+          support: unsupported
+          channel: /graphql
+      metadata:
+        subscription_type: Subscription
+        ignored_subscriptions:
+          - inventoryChanged
+
+  - id: grpc_streaming_proto
+    protocol: grpc
+    source:
+      file_path: grpc_protos/inventory.proto
+      url: grpc://inventory.example.internal:443
+    expect:
+      outcome: unsupported
+      min_detect_confidence: 0.9
+      operations_count: 2
+      event_descriptors:
+        - id: WatchInventory
+          transport: grpc_stream
+          direction: inbound
+          support: unsupported
+          channel: /catalog.v1.InventoryService/WatchInventory
+          metadata:
+            client_streaming: false
+            server_streaming: true
+      metadata:
+        ignored_streaming_rpcs:
+          - WatchInventory
+
+  - id: soap_order_service
+    protocol: soap
+    source:
+      file_path: wsdl/order_service.wsdl
+    expect:
+      outcome: pass
+      min_detect_confidence: 0.9
+      service_name: order-service
+      operations_count: 2
+      metadata:
+        wsdl_service: OrderService
