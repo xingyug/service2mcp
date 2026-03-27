@@ -320,6 +320,32 @@ class EventDescriptor(BaseModel):
         return self
 
 
+class ErrorResponse(BaseModel):
+    """A single documented error response for an operation."""
+
+    status_code: int | None = None  # None for non-HTTP protocols
+    error_code: str | None = None  # protocol-specific error code
+    description: str = ""
+    error_body_schema: dict[str, Any] | None = None  # JSON Schema of error body
+
+
+class ErrorSchema(BaseModel):
+    """Unified error model for an operation, normalized across protocols."""
+
+    responses: list[ErrorResponse] = Field(default_factory=list)
+    default_error_schema: dict[str, Any] | None = None  # fallback error shape
+
+
+class ResponseExample(BaseModel):
+    """A synthetic or extracted example response for LLM context."""
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    status_code: int | None = None
+    body: dict[str, Any] | str | None = None
+    source: SourceType = SourceType.extractor
+
+
 class Operation(BaseModel):
     """A single callable operation exposed as an MCP tool."""
 
@@ -330,6 +356,8 @@ class Operation(BaseModel):
     path: str | None = None
     params: list[Param] = Field(default_factory=list)
     response_schema: dict[str, Any] | None = None
+    error_schema: ErrorSchema = Field(default_factory=ErrorSchema)
+    response_examples: list[ResponseExample] = Field(default_factory=list)
     risk: RiskMetadata = Field(default_factory=RiskMetadata)
     response_strategy: ResponseStrategy = Field(default_factory=ResponseStrategy)
     request_body_mode: RequestBodyMode = RequestBodyMode.json
