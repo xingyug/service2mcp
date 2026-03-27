@@ -19,6 +19,10 @@ import httpx
 import pytest
 
 from apps.mcp_runtime import create_app
+from apps.proof_runner.live_llm_e2e import (
+    ToolIntentCounts,
+    _compute_tool_intent_counts,
+)
 from libs.enhancer.tool_grouping import ToolGrouper, apply_grouping
 from libs.enhancer.tool_intent import bifurcate_descriptions, derive_tool_intents
 from libs.extractors.base import SourceConfig
@@ -33,7 +37,7 @@ from libs.validator.audit import (
     ToolAuditSummary,
     check_thresholds,
 )
-from libs.validator.llm_judge import LLMJudge
+from libs.validator.llm_judge import JudgeEvaluation, LLMJudge
 from libs.validator.post_deploy import PostDeployValidator
 from tests.fixtures.large_surface_rest_mock import (
     GROUND_TRUTH,
@@ -754,4 +758,100 @@ async def test_large_surface_openapi_spec_first_pilot(tmp_path: Path) -> None:
     print(f"  Black-box baseline:     {PILOT_MIN_GENERATION_COVERAGE:.1%} (minimum)")
     print(f"  Spec-first audit pass:  {spec_report.audit_pass_rate:.1%}")
     print(f"  Black-box baseline:     {PILOT_MIN_AUDIT_PASS_RATE:.1%} (minimum)")
+    print(f"{'='*60}\n")
+
+
+@pytest.mark.asyncio
+async def test_large_surface_pilot_p1_proof_runner_integration(
+    tmp_path: Path,
+) -> None:
+    """B-004: verify tool_intent_counts and judge_evaluation flow through
+    the proof runner integration path after P1 transforms are applied.
+
+    This test exercises the same pipeline as `test_large_surface_pilot_p1_features`
+    but additionally:
+    - Computes tool_intent_counts via the proof runner helper
+    - Runs LLM judge evaluation and verifies it produces structured output
+    - Confirms both structures are serializable (ProofResult compatibility)
+    """
+    from dataclasses import asdict
+
+    # --- Phase 1: Discovery + Extraction (with LLM seed mutation) ---
+    mock_llm = _MockPilotLLMClient()
+    mock_transport = build_large_surface_transport()
+    discovery_client = httpx.Client(transport=mock_transport, follow_redirects=True)
+    extractor = RESTExtractor(
+        client=discovery_client,
+        max_pages=20,
+        llm_client=mock_llm,
+    )
+
+    try:
+        service_ir = extractor.extract(
+            SourceConfig(
+                url="https://large-surface.example.com/api",
+                hints={"protocol": "rest", "service_name": "large-surface-b004"},
+            )
+        )
+    finally:
+        extractor.close()
+
+    # --- Phase 2: Apply P1 transforms ---
+    service_ir = derive_tool_intents(service_ir)
+    service_ir = bifurcate_descriptions(service_ir)
+
+    grouper = ToolGrouper(mock_llm)
+    grouping_result = grouper.group(service_ir)
+    service_ir = apply_grouping(service_ir, grouping_result)
+
+    # --- Phase 3: Verify tool_intent_counts ---
+    counts = _compute_tool_intent_counts(service_ir)
+
+    assert isinstance(counts, ToolIntentCounts)
+    assert counts.discovery + counts.action + counts.unset > 0, (
+        "Expected at least one operation counted"
+    )
+    # After derive_tool_intents, no enabled ops should be unset.
+    assert counts.unset == 0, (
+        f"Expected zero unset intents after derivation, got {counts.unset}"
+    )
+    assert counts.discovery > 0, "Expected at least one discovery tool"
+    assert counts.action > 0, "Expected at least one action tool"
+
+    # Serialization check.
+    counts_dict = asdict(counts)
+    assert set(counts_dict.keys()) == {"discovery", "action", "unset"}
+
+    # --- Phase 4: Verify LLM judge evaluation ---
+    judge = LLMJudge(mock_llm)
+    evaluation = judge.evaluate(service_ir)
+
+    assert isinstance(evaluation, JudgeEvaluation)
+    assert evaluation.tools_evaluated > 0
+    assert evaluation.average_overall > 0
+    assert evaluation.quality_passed, (
+        f"Judge quality below threshold: {evaluation.average_overall:.2f}"
+    )
+
+    # Serialization check.
+    eval_dict = asdict(evaluation)
+    assert "tools_evaluated" in eval_dict
+    assert "average_overall" in eval_dict
+    assert "scores" in eval_dict
+
+    # --- Phase 5: Report ---
+    print(f"\n{'='*60}")
+    print("B-004 PROOF RUNNER INTEGRATION REPORT")
+    print(f"{'='*60}")
+    print("Tool intent counts:")
+    print(f"  Discovery:          {counts.discovery}")
+    print(f"  Action:             {counts.action}")
+    print(f"  Unset:              {counts.unset}")
+    print("Judge evaluation:")
+    print(f"  Tools evaluated:    {evaluation.tools_evaluated}")
+    print(f"  Average overall:    {evaluation.average_overall:.2f}")
+    print(f"  Quality passed:     {evaluation.quality_passed}")
+    print(f"  Low quality tools:  {len(evaluation.low_quality_tools)}")
+    print(f"Tool groups:          {len(service_ir.tool_grouping)}")
+    print(f"LLM calls (total):    {len(mock_llm.calls)}")
     print(f"{'='*60}\n")

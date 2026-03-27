@@ -9,8 +9,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from apps.proof_runner.live_llm_e2e import (
+    ToolIntentCounts,
     _cluster_grpc_url,
     _cluster_http_url,
+    _compute_tool_intent_counts,
     _count_llm_fields,
     _json_safe,
     _operations_enhanced_from_events,
@@ -29,6 +31,7 @@ from libs.ir.models import (
     RiskLevel,
     RiskMetadata,
     ServiceIR,
+    ToolIntent,
 )
 
 
@@ -378,3 +381,128 @@ class TestSupportedDescriptorForOperation:
         ir = _ir(operations=[_op("dup_op")], event_descriptors=descriptors)
         with pytest.raises(ValueError, match="multiple descriptors"):
             _supported_descriptor_for_operation(ir, "dup_op")
+
+
+# --- _compute_tool_intent_counts ---
+
+
+class TestComputeToolIntentCounts:
+    def test_empty_ir(self) -> None:
+        ir = _ir(operations=[])
+        counts = _compute_tool_intent_counts(ir)
+        assert counts == ToolIntentCounts(discovery=0, action=0, unset=0)
+
+    def test_all_discovery(self) -> None:
+        ops = [
+            Operation(
+                id=f"op{i}",
+                operation_id=f"op{i}",
+                name=f"op{i}",
+                description="test",
+                method="GET",
+                path=f"/op{i}",
+                risk=_risk(),
+                enabled=True,
+                tool_intent=ToolIntent.discovery,
+            )
+            for i in range(3)
+        ]
+        ir = _ir(operations=ops)
+        counts = _compute_tool_intent_counts(ir)
+        assert counts.discovery == 3
+        assert counts.action == 0
+        assert counts.unset == 0
+
+    def test_all_action(self) -> None:
+        ops = [
+            Operation(
+                id=f"op{i}",
+                operation_id=f"op{i}",
+                name=f"op{i}",
+                description="test",
+                method="POST",
+                path=f"/op{i}",
+                risk=_risk(RiskLevel.cautious),
+                enabled=True,
+                tool_intent=ToolIntent.action,
+            )
+            for i in range(2)
+        ]
+        ir = _ir(operations=ops)
+        counts = _compute_tool_intent_counts(ir)
+        assert counts.discovery == 0
+        assert counts.action == 2
+        assert counts.unset == 0
+
+    def test_mixed_intents(self) -> None:
+        ops = [
+            Operation(
+                id="get_op",
+                operation_id="get_op",
+                name="get_op",
+                description="test",
+                method="GET",
+                path="/get",
+                risk=_risk(),
+                enabled=True,
+                tool_intent=ToolIntent.discovery,
+            ),
+            Operation(
+                id="post_op",
+                operation_id="post_op",
+                name="post_op",
+                description="test",
+                method="POST",
+                path="/post",
+                risk=_risk(RiskLevel.cautious),
+                enabled=True,
+                tool_intent=ToolIntent.action,
+            ),
+            Operation(
+                id="unset_op",
+                operation_id="unset_op",
+                name="unset_op",
+                description="test",
+                method="GET",
+                path="/unset",
+                risk=_risk(),
+                enabled=True,
+                tool_intent=None,
+            ),
+        ]
+        ir = _ir(operations=ops)
+        counts = _compute_tool_intent_counts(ir)
+        assert counts.discovery == 1
+        assert counts.action == 1
+        assert counts.unset == 1
+
+    def test_disabled_operations_excluded(self) -> None:
+        ops = [
+            Operation(
+                id="enabled_op",
+                operation_id="enabled_op",
+                name="enabled_op",
+                description="test",
+                method="GET",
+                path="/enabled",
+                risk=_risk(),
+                enabled=True,
+                tool_intent=ToolIntent.discovery,
+            ),
+            Operation(
+                id="disabled_op",
+                operation_id="disabled_op",
+                name="disabled_op",
+                description="test",
+                method="DELETE",
+                path="/disabled",
+                risk=RiskMetadata(risk_level=RiskLevel.unknown),
+                enabled=False,
+                tool_intent=ToolIntent.action,
+            ),
+        ]
+        ir = _ir(operations=ops)
+        counts = _compute_tool_intent_counts(ir)
+        assert counts.discovery == 1
+        assert counts.action == 0
+        assert counts.unset == 0

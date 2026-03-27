@@ -12,6 +12,8 @@ KEEP_NAMESPACE="${KEEP_NAMESPACE:-0}"
 RUN_ID="${RUN_ID:-$(date +%H%M%S)}"
 PROTOCOL="${PROTOCOL:-all}"
 AUDIT_ALL_GENERATED_TOOLS="${AUDIT_ALL_GENERATED_TOOLS:-0}"
+ENABLE_TOOL_GROUPING="${ENABLE_TOOL_GROUPING:-0}"
+ENABLE_LLM_JUDGE="${ENABLE_LLM_JUDGE:-0}"
 IMAGE_REPO_BASE="${IMAGE_REPO_BASE:-us-central1-docker.pkg.dev/insightcompass-465300/tool-compiler}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 COMPILER_API_IMAGE="${COMPILER_API_IMAGE:-${IMAGE_REPO_BASE}/compiler-api:${IMAGE_TAG}}"
@@ -98,6 +100,8 @@ compilerWorker:
       value: "false"
     - name: WORKER_ENABLE_LLM_ENHANCEMENT
       value: "true"
+    - name: WORKER_ENABLE_TOOL_GROUPING
+      value: "${ENABLE_TOOL_GROUPING}"
   secretEnv:
     - name: LLM_API_KEY
       secretName: llm-e2e-secrets
@@ -313,10 +317,31 @@ do
 done
 
 PROOF_JOB_NAME="llm-proof-runner-${RUN_ID}"
-AUDIT_ALL_GENERATED_TOOLS_ARG=""
+EXTRA_PROOF_ARGS=""
 
 if [[ "${AUDIT_ALL_GENERATED_TOOLS}" == "1" ]]; then
-  AUDIT_ALL_GENERATED_TOOLS_ARG='            - "--audit-all-generated-tools"'
+  EXTRA_PROOF_ARGS="${EXTRA_PROOF_ARGS}
+            - \"--audit-all-generated-tools\""
+fi
+
+if [[ "${ENABLE_LLM_JUDGE}" == "1" ]]; then
+  EXTRA_PROOF_ARGS="${EXTRA_PROOF_ARGS}
+            - \"--enable-llm-judge\""
+fi
+
+# The proof runner needs LLM credentials when judge evaluation is enabled.
+PROOF_RUNNER_ENV=""
+if [[ "${ENABLE_LLM_JUDGE}" == "1" ]]; then
+  PROOF_RUNNER_ENV='          env:
+            - name: LLM_PROVIDER
+              value: deepseek
+            - name: LLM_MODEL
+              value: deepseek-chat
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-e2e-secrets
+                  key: llm-api-key'
 fi
 
 "${KUBECTL}" delete job -n "${NAMESPACE}" "${PROOF_JOB_NAME}" --ignore-not-found >/dev/null 2>&1 || true
@@ -338,6 +363,7 @@ spec:
         - name: proof-runner
           image: ${PROOF_HELPER_IMAGE}
           imagePullPolicy: Always
+${PROOF_RUNNER_ENV}
           command:
             - "python"
             - "-m"
@@ -352,7 +378,7 @@ spec:
             - "${WAIT_TIMEOUT_SECONDS}"
             - "--run-id"
             - "${RUN_ID}"
-${AUDIT_ALL_GENERATED_TOOLS_ARG}
+${EXTRA_PROOF_ARGS}
 YAML
 
 if ! "${KUBECTL}" wait -n "${NAMESPACE}" --for=condition=complete "job/${PROOF_JOB_NAME}" --timeout="${WAIT_TIMEOUT_SECONDS}s"; then

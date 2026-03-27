@@ -2597,6 +2597,45 @@ The four P1 features from B-003 (`derive_tool_intents`, `bifurcate_descriptions`
 
 ---
 
+### B-004: P1 Features Live LLM Proof — Foundation Slice ✅
+
+**Scope:** Wire P1 features (tool grouping, LLM judge, tool intent verification) into the GKE live proof harness and proof runner so they can be exercised with a real LLM provider, not only mock clients.
+
+**What changed:**
+
+- `apps/proof_runner/live_llm_e2e.py`:
+  - Added `ToolIntentCounts` dataclass and `_compute_tool_intent_counts()` helper
+  - Added `judge_evaluation: JudgeEvaluation | None` and `tool_intent_counts: ToolIntentCounts | None` to `ProofResult`
+  - Added `--enable-llm-judge` CLI flag
+  - Added `_build_llm_judge_from_env()` that reuses the same `EnhancerConfig.from_env()` provider config as the compiler worker
+  - `run_proofs()` and `_run_case()` now accept `enable_llm_judge` and `llm_judge` params
+  - Compiled IR `tool_intent` counts are now computed and included in every proof result
+
+- `scripts/smoke-gke-llm-e2e.sh`:
+  - Added `ENABLE_TOOL_GROUPING` env var (default `0`), passed as `WORKER_ENABLE_TOOL_GROUPING` to compiler-worker
+  - Added `ENABLE_LLM_JUDGE` env var (default `0`), maps to `--enable-llm-judge` on proof runner
+  - When judge is enabled, the proof runner job receives LLM credentials via the existing `llm-e2e-secrets` secret
+
+- `apps/proof_runner/tests/test_live_llm_helpers.py`:
+  - Added `TestComputeToolIntentCounts` class with 5 tests (empty IR, all discovery, all action, mixed intents, disabled ops excluded)
+
+- `tests/integration/test_large_surface_pilot.py`:
+  - Added `test_large_surface_pilot_p1_proof_runner_integration` exercising the full P1 transform pipeline + tool_intent_counts + LLM judge evaluation + serialization, with mock LLM
+
+- `docs/post-sdd-modular-expansion-plan.md`:
+  - Added "Post-Pilot Confidence Roadmap" section with `B-004` (in progress) and `B-005` (planned)
+
+- `agent.md`, `new-agent-reading-list.md` (updated — status, B-004 key files)
+
+**Verification:** 1086 tests passing (+6), ruff clean, mypy clean (190 source files).
+
+**B-004 integration test report:**
+- Tool intent counts: 27 discovery, 26 action, 0 unset
+- Judge evaluation: 53 tools evaluated, average quality 0.75, quality passed = True
+- 11 tool groups, 8 LLM calls (mock)
+
+---
+
 - **Git remote** — the working tree is periodically pushed to the private GitHub repository `xingyug/service2mcp` on `main`; before each push, run `make gitleaks` (see `agent.md` Git conventions)
 - **VM SA has Vertex AI permissions** — Vertex AI path is wired in the enhancer factory
 - **Provider config** — Anthropic/OpenAI use `LLM_API_KEY`; Vertex AI uses ADC plus optional `VERTEX_PROJECT_ID` / `VERTEX_LOCATION`

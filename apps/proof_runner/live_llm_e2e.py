@@ -18,8 +18,9 @@ from apps.compiler_worker.activities import (
     build_sample_invocations,
     build_streamable_http_tool_invoker,
 )
-from libs.ir.models import EventDescriptor, EventSupportLevel, ServiceIR
+from libs.ir.models import EventDescriptor, EventSupportLevel, ServiceIR, ToolIntent
 from libs.validator.audit import AuditPolicy, ToolAuditResult, ToolAuditSummary
+from libs.validator.llm_judge import JudgeEvaluation, LLMJudge
 
 FIXTURES_ROOT = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 GRAPHQL_INTROSPECTION_PATH = FIXTURES_ROOT / "graphql_schemas" / "catalog_introspection.json"
@@ -61,6 +62,15 @@ class ToolInvocationResult:
 
 
 @dataclass(frozen=True)
+class ToolIntentCounts:
+    """Counts of tool_intent values found in compiled IR operations."""
+
+    discovery: int
+    action: int
+    unset: int
+
+
+@dataclass(frozen=True)
 class ProofResult:
     """Summary emitted for a completed proof case."""
 
@@ -72,6 +82,8 @@ class ProofResult:
     llm_field_count: int
     invocation_results: list[ToolInvocationResult]
     audit_summary: ToolAuditSummary | None = None
+    tool_intent_counts: ToolIntentCounts | None = None
+    judge_evaluation: JudgeEvaluation | None = None
 
 
 async def run_proofs(
@@ -83,6 +95,8 @@ async def run_proofs(
     run_id: str,
     audit_all_generated_tools: bool = False,
     audit_policy: AuditPolicy | None = None,
+    enable_llm_judge: bool = False,
+    llm_judge: LLMJudge | None = None,
 ) -> list[ProofResult]:
     """Execute one or more live proof cases and return serialized results."""
 
@@ -104,6 +118,8 @@ async def run_proofs(
                     timeout_seconds=timeout_seconds,
                     audit_all_generated_tools=audit_all_generated_tools,
                     audit_policy=audit_policy or AuditPolicy(),
+                    enable_llm_judge=enable_llm_judge,
+                    llm_judge=llm_judge,
                 )
             )
     return results
@@ -240,6 +256,8 @@ async def _run_case(
     timeout_seconds: float,
     audit_all_generated_tools: bool,
     audit_policy: AuditPolicy = AuditPolicy(),
+    enable_llm_judge: bool = False,
+    llm_judge: LLMJudge | None = None,
 ) -> ProofResult:
     job = await _submit_compilation(client, case.request_payload)
     job_id = str(job["id"])
@@ -268,6 +286,9 @@ async def _run_case(
         )
     service_ir = ServiceIR.model_validate(artifact_ir)
 
+    # Verify tool_intent derivation in compiled IR.
+    tool_intent_counts = _compute_tool_intent_counts(service_ir)
+
     runtime_base_url = _cluster_http_url(
         namespace,
         f"{case.service_id}-v{active_version}",
@@ -286,6 +307,20 @@ async def _run_case(
         else None
     )
 
+    # Run LLM-as-a-Judge evaluation if enabled.
+    judge_evaluation: JudgeEvaluation | None = None
+    if enable_llm_judge and llm_judge is not None:
+        try:
+            judge_evaluation = llm_judge.evaluate(service_ir)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "LLM judge evaluation failed for %s; continuing without judge results",
+                case.protocol,
+                exc_info=True,
+            )
+
     return ProofResult(
         protocol=case.protocol,
         service_id=case.service_id,
@@ -295,6 +330,8 @@ async def _run_case(
         llm_field_count=llm_field_count,
         invocation_results=invocation_results,
         audit_summary=audit_summary,
+        tool_intent_counts=tool_intent_counts,
+        judge_evaluation=judge_evaluation,
     )
 
 
@@ -573,6 +610,25 @@ def _supported_descriptor_for_operation(
     return descriptors[0]
 
 
+def _compute_tool_intent_counts(service_ir: ServiceIR) -> ToolIntentCounts:
+    """Count tool_intent values across all enabled operations in a compiled IR."""
+    discovery = 0
+    action = 0
+    unset = 0
+    for op in service_ir.operations:
+        if not op.enabled:
+            continue
+        if op.tool_intent is None:
+            unset += 1
+        elif op.tool_intent == ToolIntent.discovery:
+            discovery += 1
+        elif op.tool_intent == ToolIntent.action:
+            action += 1
+        else:
+            unset += 1
+    return ToolIntentCounts(discovery=discovery, action=action, unset=unset)
+
+
 def _count_llm_fields(ir_json: dict[str, Any]) -> int:
     count = 0
     for operation in ir_json.get("operations", []):
@@ -641,11 +697,33 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("--run-id", default=uuid.uuid4().hex[:6])
     parser.add_argument("--audit-all-generated-tools", action="store_true")
+    parser.add_argument("--enable-llm-judge", action="store_true")
     return parser.parse_args()
+
+
+def _build_llm_judge_from_env() -> LLMJudge | None:
+    """Build an LLM judge using the same provider config as the compiler worker."""
+    try:
+        from libs.enhancer.enhancer import EnhancerConfig, create_llm_client
+
+        config = EnhancerConfig.from_env()
+        client = create_llm_client(config)
+        return LLMJudge(client)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Could not build LLM judge from env config; judge evaluation disabled",
+            exc_info=True,
+        )
+        return None
 
 
 async def _async_main() -> None:
     args = _parse_args()
+    judge: LLMJudge | None = None
+    if args.enable_llm_judge:
+        judge = _build_llm_judge_from_env()
     results = await run_proofs(
         namespace=args.namespace,
         api_base_url=args.api_base_url,
@@ -653,6 +731,8 @@ async def _async_main() -> None:
         timeout_seconds=float(args.timeout_seconds),
         run_id=str(args.run_id),
         audit_all_generated_tools=bool(args.audit_all_generated_tools),
+        enable_llm_judge=bool(args.enable_llm_judge),
+        llm_judge=judge,
     )
     print(
         json.dumps(

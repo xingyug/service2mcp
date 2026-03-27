@@ -1,8 +1,8 @@
 Current pause-point note:
-- Read `agent.md` first for the latest status (all backlogs complete; repository DTO transformers & audit service unit tests added — 1080 tests).
-- Then read `devlog.md`: latest entry is `Slice 7 — Repository DTO transformers & audit service` (3 new test files, 23 new tests).
-- All backlogs complete: T-001–T-033, H-001–H-008, R-001–R-003, P-001–P-006, L-001–L-006, B-001, B-002, B-003 (including P1 pipeline integration).
-- Quality gates at last verification: **1080** tests, ruff/mypy clean (see `devlog.md`).
+- Read `agent.md` first for the latest status (`B-004` in progress — P1 live LLM proof wiring).
+- Then read `devlog.md`: latest entry covers B-004 proof runner + GKE harness changes.
+- Backlogs B-001–B-003 complete; `B-004` (P1 Features Live LLM Proof) in progress, `B-005` (Real External API Black-Box) planned.
+- Quality gates at last verification: **1080+** tests, ruff/mypy clean (see `devlog.md`).
 - The project has also been synced to the private GitHub repo `xingyug/service2mcp` on `main`; if a public open-source release happens later, treat it as a fresh export into a new public repo without carrying over this private/internal history.
 - Before every `git push`, run `make gitleaks` (mandatory policy; see `agent.md` Git Conventions and `scripts/git-hooks/pre-push.sample`).
 
@@ -31,6 +31,11 @@ Key implementation files for B-003 P1:
 - `libs/enhancer/tool_grouping.py` — Semantic tool grouping via LLM-ITL intent clustering
 - `libs/enhancer/tool_intent.py` — Discovery vs Action tool intent derivation and description bifurcation
 - `libs/validator/llm_judge.py` — LLM-as-a-Judge evaluation pipeline for tool description quality
+
+Key implementation files for B-004 (P1 Live LLM Proof):
+- `apps/proof_runner/live_llm_e2e.py` — `ProofResult` now carries `tool_intent_counts` and `judge_evaluation`; `--enable-llm-judge` CLI flag; `_build_llm_judge_from_env()`
+- `scripts/smoke-gke-llm-e2e.sh` — `ENABLE_TOOL_GROUPING`, `ENABLE_LLM_JUDGE` env vars; LLM secret injection for proof runner
+- `tests/integration/test_large_surface_pilot.py` — P1 pilot tests with mock LLM
 
 ADRs:
 - `001-ir-as-first-class-artifact.md`: `./docs/adr/001-ir-as-first-class-artifact.md`
