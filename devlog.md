@@ -1145,6 +1145,7 @@ The original SDD backlog is complete. Current follow-on work should proceed in t
 - `P-001` through `P-006` are complete
 - The final per-protocol `LLM-enabled E2E` proof track is complete (`L-001` through `L-006`), and the local E2E suite now also supports an opt-in real DeepSeek enhancer mode behind `ENABLE_REAL_DEEPSEEK_E2E`
 - GraphQL, REST, SOAP, SQL, and gRPC unary have now joined OpenAPI and native `grpc_stream` as live-proven slices; the next hardening step is a final `PROTOCOL=all` rerun
+- **Product UI (planned):** Build a first-party web UI; **human review and formal approval workflows are mandatory**—users must be able to inspect and edit IR, route changes through review with approve/reject and audit-friendly outcomes, and only then promote to publish/deploy. Also cover compilation/registry status and access-control / gateway administration. Current usage remains HTTP APIs, scripts, and Grafana dashboards.
 
 ---
 
@@ -1818,6 +1819,68 @@ The research paper on advanced API-to-tool conversion methodology identifies thr
 - `tests/fixtures/ir/service_ir_proxy.json` (modified — 2 new operations)
 - `tests/integration/test_mcp_runtime_proxy.py` (modified — 3 new tests)
 - `libs/ir/tests/test_models.py` (modified — 5 new tests, updated round-trip)
+
+---
+
+## B-003 Third Slice: P1 Paper-Informed Features (2026-03-27)
+
+**Context template (per context-engineering.md):**
+
+| Item | Detail |
+|---|---|
+| **Goal** | Implement the four remaining paper-informed P1 tasks for B-003: LLM seed mutation, semantic tool grouping, discovery/action bifurcation, LLM-as-a-Judge evaluation. |
+| **Non-goals** | Live GKE proof for these features; real LLM provider integration (mock-only for now); replacing existing extractor/enhancer pipelines. |
+| **Inputs** | Discovered endpoints from REST extractor, `ServiceIR` operations, `RiskMetadata`. |
+| **Outputs** | New IR fields (`tool_intent`, `tool_grouping`), new modules, updated pilot test. |
+| **Invariants** | All existing tests pass; ruff clean; mypy clean; opt-in activation only. |
+| **Tests** | 61 new tests across 6 test files; total suite 410 passed. |
+
+### 1. LLM-driven seed mutation (RESTSpecIT-style)
+- Created `libs/extractors/llm_seed_mutation.py`: `generate_seed_candidates()` sends discovered endpoint patterns to an LLM, parses candidate paths, validates via HTTP probing (OPTIONS/GET).
+- Integrated into `RESTExtractor._discover()` as Phase 3 (after sub-resource inference, before coalescing). Opt-in via `llm_client` parameter on constructor.
+- `SeedCandidate` dataclass with path, methods, rationale, and confidence.
+- Metadata key `llm_seed_mutation` tracks activation.
+- 12 unit tests in `libs/extractors/tests/test_llm_seed_mutation.py`.
+
+### 2. Semantic tool aggregation (LLM-ITL intent clustering)
+- Added `ToolGroup` model to `libs/ir/models.py`: id, label, intent, operation_ids, source, confidence.
+- Added `tool_grouping: list[ToolGroup]` field to `ServiceIR` with validator ensuring operation_ids reference valid operations.
+- Created `libs/enhancer/tool_grouping.py`: `ToolGrouper` class sends operations to LLM for business-intent clustering, `apply_grouping()` merges result into IR.
+- 9 unit tests in `libs/enhancer/tests/test_tool_grouping.py`.
+- 7 IR model tests in `libs/ir/tests/test_models.py` for `ToolGroup` and `ToolIntent`.
+
+### 3. Discovery vs Action tool bifurcation
+- Added `ToolIntent` enum (discovery/action) to `libs/ir/models.py`.
+- Added `tool_intent: ToolIntent | None` field to `Operation`.
+- Created `libs/enhancer/tool_intent.py`: `derive_tool_intent()` classifies based on risk metadata and HTTP method (priority: explicit risk flags > risk_level > method); `derive_tool_intents()` applies across IR; `bifurcate_descriptions()` prepends `[DISCOVERY]`/`[ACTION]` prefix.
+- 19 unit tests in `libs/enhancer/tests/test_tool_intent.py`.
+
+### 4. LLM-as-a-Judge evaluation pipeline
+- Created `libs/validator/llm_judge.py`: `LLMJudge` evaluates tool descriptions on accuracy, completeness, clarity (each 0.0–1.0) with weighted overall score (35%/35%/30%). `JudgeEvaluation` provides aggregate metrics and identifies low-quality tools.
+- Batched evaluation with configurable batch_size and low_quality_threshold.
+- 13 unit tests in `libs/validator/tests/test_llm_judge.py`.
+
+### 5. Updated pilot test
+- Added `test_large_surface_pilot_p1_features()` to `tests/integration/test_large_surface_pilot.py` exercising all four P1 features with `_MockPilotLLMClient` providing realistic mock responses.
+- Existing pilot test unchanged and still passes.
+
+**Verification:** ruff clean, mypy clean (150 files), 410 passed.
+
+**Write set:**
+- `libs/ir/models.py` (modified — `ToolIntent` enum, `ToolGroup` model, `tool_intent` on `Operation`, `tool_grouping` on `ServiceIR`)
+- `libs/extractors/llm_seed_mutation.py` (new — LLM seed mutation module)
+- `libs/extractors/rest.py` (modified — `llm_client` param, Phase 3 `_llm_seed_mutation()`)
+- `libs/enhancer/tool_grouping.py` (new — semantic tool grouping module)
+- `libs/enhancer/tool_intent.py` (new — discovery/action bifurcation module)
+- `libs/validator/llm_judge.py` (new — LLM-as-a-Judge evaluation module)
+- `libs/ir/tests/test_models.py` (modified — 7 new tests for ToolIntent/ToolGroup)
+- `libs/extractors/tests/test_llm_seed_mutation.py` (new — 12 tests)
+- `libs/enhancer/tests/test_tool_grouping.py` (new — 9 tests)
+- `libs/enhancer/tests/test_tool_intent.py` (new — 19 tests)
+- `libs/validator/tests/test_llm_judge.py` (new — 13 tests)
+- `tests/integration/test_large_surface_pilot.py` (modified — 1 new P1 test)
+- `docs/post-sdd-modular-expansion-plan.md` (modified — B-003 status, P1 completion)
+- `agent.md` (modified — current status, key files, line counts)
 
 ---
 

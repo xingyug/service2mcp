@@ -8,6 +8,7 @@ Measures three coverage numbers against a 62-endpoint REST mock:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import cast
 
@@ -15,14 +16,18 @@ import httpx
 import pytest
 
 from apps.mcp_runtime import create_app
+from libs.enhancer.tool_grouping import ToolGrouper, apply_grouping
+from libs.enhancer.tool_intent import bifurcate_descriptions, derive_tool_intents
 from libs.extractors.base import SourceConfig
 from libs.extractors.rest import RESTExtractor
+from libs.ir.models import ToolIntent
 from libs.ir.schema import serialize_ir
 from libs.validator.audit import (
     AuditPolicy,
     LargeSurfacePilotReport,
     ToolAuditSummary,
 )
+from libs.validator.llm_judge import LLMJudge
 from libs.validator.post_deploy import PostDeployValidator
 from tests.fixtures.large_surface_rest_mock import (
     GROUND_TRUTH,
@@ -275,4 +280,184 @@ async def test_large_surface_rest_pilot_measures_three_coverage_numbers(
     print(f"Unsupported patterns ({len(pilot_report.unsupported_patterns)}):")
     for pattern in pilot_report.unsupported_patterns:
         print(f"  - {pattern}")
+    print(f"{'='*60}\n")
+
+
+class _MockPilotLLMClient:
+    """Mock LLM client for pilot P1 feature tests."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def complete(self, prompt: str, max_tokens: int = 4096) -> object:
+        self.calls.append(prompt)
+
+        # Detect which kind of prompt this is and return appropriate mock response
+        if "cluster them into logical business-intent groups" in prompt:
+            return self._grouping_response(prompt)
+        if "Rate the quality of each tool description" in prompt:
+            return self._judge_response(prompt)
+        if "generate additional endpoint paths" in prompt:
+            return self._seed_mutation_response(prompt)
+
+        class _Resp:
+            content = "[]"
+        return _Resp()
+
+    def _grouping_response(self, prompt: str) -> object:
+        # Parse operation IDs from the prompt to build realistic groups
+        import re
+        op_ids = re.findall(r'"operation_id":\s*"([^"]+)"', prompt)
+
+        # Group by path prefix heuristic
+        groups: dict[str, list[str]] = {}
+        for oid in op_ids:
+            # Extract resource name from operation ID pattern like "get_api_users"
+            parts = (
+                oid.replace("get_", "").replace("post_", "")
+                .replace("put_", "").replace("delete_", "")
+            )
+            resource = parts.split("_")[1] if "_" in parts else "general"
+            groups.setdefault(resource, []).append(oid)
+
+        result = [
+            {
+                "id": f"{resource}-ops",
+                "label": f"{resource.title()} Operations",
+                "intent": f"Operations related to {resource}",
+                "operation_ids": ids,
+                "confidence": 0.8,
+            }
+            for resource, ids in groups.items()
+        ]
+
+        class _Resp:
+            content = json.dumps(result)
+        return _Resp()
+
+    def _judge_response(self, prompt: str) -> object:
+        import re
+        op_ids = re.findall(r'"operation_id":\s*"([^"]+)"', prompt)
+        result = [
+            {
+                "operation_id": oid,
+                "accuracy": 0.75,
+                "completeness": 0.70,
+                "clarity": 0.80,
+                "feedback": "Adequate description for discovered endpoint.",
+            }
+            for oid in op_ids
+        ]
+
+        class _Resp:
+            content = json.dumps(result)
+        return _Resp()
+
+    def _seed_mutation_response(self, prompt: str) -> object:
+        # Suggest a few plausible additional endpoints
+        result = [
+            {
+                "path": "/api/users/{id}/activity", "methods": ["GET"],
+                "rationale": "User activity log", "confidence": 0.7,
+            },
+            {
+                "path": "/api/products/{id}/pricing", "methods": ["GET"],
+                "rationale": "Product pricing", "confidence": 0.65,
+            },
+            {
+                "path": "/api/orders/{id}/tracking", "methods": ["GET"],
+                "rationale": "Order tracking", "confidence": 0.7,
+            },
+        ]
+
+        class _Resp:
+            content = json.dumps(result)
+        return _Resp()
+
+
+@pytest.mark.asyncio
+async def test_large_surface_pilot_p1_features(tmp_path: Path) -> None:
+    """B-003 P1: exercise LLM seed mutation, grouping, bifurcation, and judge on pilot IR."""
+
+    # --- Phase 1: Discovery + Extraction (with LLM seed mutation) ---
+    mock_llm = _MockPilotLLMClient()
+    mock_transport = build_large_surface_transport()
+    discovery_client = httpx.Client(transport=mock_transport, follow_redirects=True)
+    extractor = RESTExtractor(
+        client=discovery_client,
+        max_pages=20,
+        llm_client=mock_llm,
+    )
+
+    try:
+        service_ir = extractor.extract(
+            SourceConfig(
+                url="https://large-surface.example.com/api",
+                hints={"protocol": "rest", "service_name": "large-surface-p1"},
+            )
+        )
+    finally:
+        extractor.close()
+
+    # Seed mutation should have been attempted
+    assert service_ir.metadata.get("llm_seed_mutation") is True
+
+    # --- Phase 2: Discovery/Action bifurcation ---
+    service_ir = derive_tool_intents(service_ir)
+    service_ir = bifurcate_descriptions(service_ir)
+
+    # All operations should now have tool_intent set
+    for op in service_ir.operations:
+        assert op.tool_intent is not None, f"Operation {op.id} missing tool_intent"
+
+    # GET operations should be discovery, others should be action
+    discovery_ops = [op for op in service_ir.operations if op.tool_intent == ToolIntent.discovery]
+    action_ops = [op for op in service_ir.operations if op.tool_intent == ToolIntent.action]
+    assert len(discovery_ops) > 0, "Expected at least some discovery tools"
+    assert len(action_ops) > 0, "Expected at least some action tools"
+
+    # Descriptions should be prefixed
+    for op in discovery_ops:
+        assert op.description.startswith("[DISCOVERY] "), f"Missing prefix on {op.id}"
+    for op in action_ops:
+        assert op.description.startswith("[ACTION] "), f"Missing prefix on {op.id}"
+
+    # --- Phase 3: Semantic tool grouping ---
+    grouper = ToolGrouper(mock_llm)
+    grouping_result = grouper.group(service_ir)
+    service_ir = apply_grouping(service_ir, grouping_result)
+
+    assert len(service_ir.tool_grouping) > 0, "Expected at least one tool group"
+    # All grouped operations should reference valid IDs
+    op_ids = {op.id for op in service_ir.operations}
+    for group in service_ir.tool_grouping:
+        for oid in group.operation_ids:
+            assert oid in op_ids, f"Group {group.id} references unknown op {oid}"
+
+    # --- Phase 4: LLM-as-a-Judge evaluation ---
+    judge = LLMJudge(mock_llm)
+    evaluation = judge.evaluate(service_ir)
+
+    assert evaluation.tools_evaluated > 0, "Expected judge to evaluate at least some tools"
+    assert evaluation.average_overall > 0, "Expected non-zero quality scores"
+    assert len(evaluation.scores) > 0, "Expected per-tool scores"
+
+    # --- Phase 5: Report ---
+    print(f"\n{'='*60}")
+    print("B-003 P1 FEATURES PILOT REPORT")
+    print(f"{'='*60}")
+    print(f"Total operations:       {len(service_ir.operations)}")
+    print(f"Discovery tools:        {len(discovery_ops)}")
+    print(f"Action tools:           {len(action_ops)}")
+    print(f"Tool groups:            {len(service_ir.tool_grouping)}")
+    for g in service_ir.tool_grouping:
+        print(f"  - {g.label}: {len(g.operation_ids)} ops")
+    print(f"Ungrouped operations:   {len(grouping_result.ungrouped_operations)}")
+    print(f"Judge evaluations:      {evaluation.tools_evaluated}")
+    print(f"Average quality:        {evaluation.average_overall:.2f}")
+    print(f"  Accuracy:             {evaluation.average_accuracy:.2f}")
+    print(f"  Completeness:         {evaluation.average_completeness:.2f}")
+    print(f"  Clarity:              {evaluation.average_clarity:.2f}")
+    print(f"Low quality tools:      {len(evaluation.low_quality_tools)}")
+    print(f"LLM calls (total):      {len(mock_llm.calls)}")
     print(f"{'='*60}\n")

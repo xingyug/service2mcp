@@ -14,6 +14,10 @@ from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse
 import httpx
 
 from libs.extractors.base import SourceConfig
+from libs.extractors.llm_seed_mutation import (
+    SeedMutationLLMClient,
+    generate_seed_candidates,
+)
 from libs.ir.models import (
     AuthConfig,
     AuthType,
@@ -130,11 +134,13 @@ class RESTExtractor:
         client: httpx.Client | None = None,
         classifier: EndpointClassifier | None = None,
         max_pages: int = 8,
+        llm_client: SeedMutationLLMClient | None = None,
     ) -> None:
         self._client = client or httpx.Client(follow_redirects=True, timeout=10.0)
         self._owns_client = client is None
         self._classifier = classifier or HeuristicRESTClassifier()
         self._max_pages = max_pages
+        self._llm_client = llm_client
 
     def detect(self, source: SourceConfig) -> float:
         if source.hints.get("protocol") == "rest":
@@ -190,6 +196,7 @@ class RESTExtractor:
                 "classifier": self._classifier.__class__.__name__,
                 "base_path": urlparse(source.url).path or "/",
                 "discovery_entrypoint": source.url,
+                "llm_seed_mutation": self._llm_client is not None,
             },
         )
 
@@ -248,6 +255,11 @@ class RESTExtractor:
         inferred = self._infer_sub_resources(base_url, observed)
         observed.update(inferred)
 
+        # Phase 3: LLM-driven seed mutation (opt-in).
+        if self._llm_client is not None:
+            llm_inferred = self._llm_seed_mutation(base_url, observed)
+            observed.update(llm_inferred)
+
         observed = _coalesce_sibling_endpoints(observed)
 
         return [
@@ -305,6 +317,39 @@ class RESTExtractor:
                         )
 
         return inferred
+
+    def _llm_seed_mutation(
+        self,
+        base_url: str,
+        observed: dict[str, _ObservedEndpoint],
+    ) -> dict[str, _ObservedEndpoint]:
+        """Use LLM to generate and validate additional endpoint candidates."""
+        assert self._llm_client is not None
+
+        discovered_info = [
+            {"path": ep.path, "methods": sorted(ep.methods)}
+            for ep in observed.values()
+        ]
+
+        candidates = generate_seed_candidates(
+            llm_client=self._llm_client,
+            base_url=base_url,
+            discovered_paths=discovered_info,
+        )
+
+        llm_inferred: dict[str, _ObservedEndpoint] = {}
+        for candidate in candidates:
+            if candidate.path in observed:
+                continue
+            candidate_url = urljoin(base_url, candidate.path)
+            self._probe_and_register(
+                candidate.path,
+                candidate_url,
+                llm_inferred,
+                source="llm_seed",
+            )
+
+        return llm_inferred
 
     def _probe_and_register(
         self,

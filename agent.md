@@ -278,21 +278,23 @@ See `devlog.md` for detailed progress tracking.
 **Latest verification:** Published `compiler-api:20260326-b0e27e6-r28` (`sha256:e5c5e84ed7e388143d297bcad8ddc54a0d5e9315752b29ab3b340dfe276a2df8`) and `compiler-worker:20260326-b0e27e6-r28` (`sha256:9589ecb89c9d5f94c9aa96154574679f201e76890edf83a0ae84f609bf733756`). First reran `PROTOCOL=rest AUDIT_ALL_GENERATED_TOOLS=1` in namespace `tool-compiler-b002-rest-followup-065216`, where the follow-up REST extractor fix stayed clean with `discovered=1`, `generated=1`, `audited=1`, `passed=1`, `failed=0`, `skipped=0` for service `rest-llm-e2e-065216` (`job_id=7c517e3c-a7b7-49ce-ab21-ee4e8fbfd810`). The first `PROTOCOL=all` rerun then exposed an unrelated GKE harness issue: `llm-proof-sql` Postgres could restart during initialization and permanently lose the `order_summaries` view, so `scripts/smoke-gke-llm-e2e.sh` now adds a `startupProbe` before liveness takes over.
 **Current conversion posture:** The follow-up REST fix is now live-proven, and the authoritative cross-protocol audit baseline has also been captured in namespace `tool-compiler-llm-all-audit-075849` with the same `r28` images. The audit returned GraphQL `2/2/1/1/0/1`, REST `1/1/1/1/0/0`, gRPC `3/3/1/1/0/2`, SOAP `2/2/1/1/0/1`, and SQL `5/5/3/3/0/2` for `discovered/generated/audited/passed/failed/skipped`, for an aggregate `13/13/7/7/0/6`. The earlier `18`-tool structure-only total is now superseded by this stricter audit baseline: the missing `5` were the fake REST endpoints eliminated by `B-002`, not a new regression, and SQL again returns `query_order_summaries` successfully under the fixed harness.
 **Repository state:** The working tree has also been synced to the private GitHub repository `xingyug/service2mcp` on branch `main` (latest pushed commit at this pause point: `31a5747`, `Import service2mcp project state`). `gitleaks` reported `no leaks found` for both the working tree and the local git history before that push.
-**Next up:** P0 response field pruning complete. `ResponseStrategy` now supports `max_array_items` and nested dot/bracket field filtering (`user.name`, `items[].id`). Runtime pipeline: parse → unwrap → field_filter → array_limit → truncation. 349 tests, ruff/mypy clean. Next priority per the API-to-tool conversion research paper: (P1) LLM-driven seed mutation for 88%+ route discovery, semantic tool aggregation via intent clustering, and Discovery/Action tool bifurcation.
-**Handoff-ready next slice:** The `LargeSurfacePilotReport` from `libs/validator/audit.py` and the `tests/fixtures/large_surface_rest_mock.py` fixture establish the measurement baseline. Key files for the next agent:
-- `libs/extractors/rest.py` — `_infer_sub_resources()`, `_probe_and_register()`, `_common_sub_resources()` implement the resource dependency tree
-- `libs/validator/audit.py` — `AuditPolicy`, `AuditThresholds`, `LargeSurfacePilotReport`
-- `libs/validator/post_deploy.py` — `validate_with_audit()` for combined validation + audit
-- `docs/post-sdd-modular-expansion-plan.md` — B-003 section has paper-informed P1 roadmap items
-- `devlog.md` — B-003 second slice entry has detailed paper methodology references
+**Next up:** B-003 P1 tasks complete. All four paper-informed P1 features are implemented: (1) LLM-driven seed mutation for REST endpoint discovery via `libs/extractors/llm_seed_mutation.py` (RESTSpecIT-style candidate generation + HTTP probe validation, opt-in via `llm_client` param on `RESTExtractor`); (2) semantic tool aggregation via LLM-ITL intent clustering in `libs/enhancer/tool_grouping.py` (new `ToolGroup` model and `tool_grouping` field on `ServiceIR`); (3) Discovery vs Action tool bifurcation in `libs/enhancer/tool_intent.py` (new `ToolIntent` enum on `Operation`, `[DISCOVERY]`/`[ACTION]` description prefixes derived from `RiskMetadata`); (4) LLM-as-a-Judge evaluation pipeline in `libs/validator/llm_judge.py` (accuracy/completeness/clarity scoring with weighted overall quality). 410 tests, ruff/mypy clean.
+**Key files for the P1 features:**
+- `libs/extractors/llm_seed_mutation.py` — `generate_seed_candidates()`, `SeedCandidate`, RESTSpecIT-style LLM prompt
+- `libs/extractors/rest.py` — `_llm_seed_mutation()` phase in `_discover()`, opt-in `llm_client` param
+- `libs/enhancer/tool_grouping.py` — `ToolGrouper`, `apply_grouping()`, LLM-ITL clustering prompt
+- `libs/enhancer/tool_intent.py` — `derive_tool_intents()`, `bifurcate_descriptions()`, intent derivation rules
+- `libs/validator/llm_judge.py` — `LLMJudge`, `ToolQualityScore`, `JudgeEvaluation`, judge prompt
+- `libs/ir/models.py` — `ToolIntent` enum, `ToolGroup` model, `tool_grouping` on `ServiceIR`, `tool_intent` on `Operation`
+- `tests/integration/test_large_surface_pilot.py` — P1 pilot test exercising all four features with mock LLM
 **Open-source posture:** If/when this project is published publicly, prefer creating a fresh public repository without carrying over the current private/internal history. That keeps internal handoff notes, environment-specific defaults, and intermediate hardening history separate from the eventual public release.
 
 ## Project Size Expectations
 
-As of `2026-03-26`, the repository contains approximately:
-- `23,122` lines of production code (`apps/`, `libs/`, `migrations/`)
-- `10,492` lines of test code
-- `31,141` total Python code lines including repo `scripts/` and excluding virtualenv / generated caches
+As of `2026-03-27`, the repository contains approximately:
+- `24,839` lines of production code (`apps/`, `libs/`, `migrations/`)
+- `10,677` lines of test code
+- `35,675` total Python code lines including repo `scripts/` and excluding virtualenv / generated caches
 
 Original SDD-completion estimate:
 - Production code: roughly `14,000` to `16,000` lines
@@ -311,6 +313,7 @@ Progress tracking guidance:
 - OpenAPI, GraphQL, REST, gRPC unary/server-stream, SOAP, and SQL are now live-proven slices, and the compiler-managed protocols have also passed the authoritative joint `PROTOCOL=all` GKE matrix in namespace `tool-compiler-llm-all-024755`
 - Real GKE Helm validation, real GKE queue-path validation, repeated deployed production-activity validation, the final cross-protocol live matrix, and a published broker-aware worker-image rerun baseline have all been exercised against the test cluster, so further work should be treated as post-backlog hardening, capability expansion, or productionization rather than unfinished SDD scope
 - The next unresolved confidence gap is not protocol support but black-box coverage: proving discovered endpoint coverage, generated-tool coverage, and real invocation pass rate for large services without authoritative specs
+- **Product UI (planned):** Ship a first-party web UI for operators and tenants. **Human review and approval are mandatory scope:** the console must support explicit review/edit of IR, recorded decisions, and gated promotion (e.g. draft → submitted → approved/rejected → publish/deploy), not only read-only views. Also cover compilation and job status, artifact registry, access-control, and gateway workflows. The platform today is API-, script-, and observability-first; this UI remains future work.
 
 ## AI Maintenance Requirements
 

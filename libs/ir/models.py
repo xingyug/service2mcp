@@ -82,6 +82,12 @@ class GrpcStreamMode(StrEnum):
     bidirectional = "bidirectional"
 
 
+class ToolIntent(StrEnum):
+    """Whether a tool is for read-only discovery or state-mutating action."""
+    discovery = "discovery"
+    action = "action"
+
+
 # ── Component Models ───────────────────────────────────────────────────────
 
 class Param(BaseModel):
@@ -334,6 +340,7 @@ class Operation(BaseModel):
     grpc_unary: GrpcUnaryRuntimeConfig | None = None
     soap: SoapOperationConfig | None = None
     tags: list[str] = Field(default_factory=list)
+    tool_intent: ToolIntent | None = None
     source: SourceType = SourceType.extractor
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     enabled: bool = True
@@ -436,6 +443,17 @@ class OperationChain(BaseModel):
     steps: list[str] = Field(description="Ordered list of operation IDs")
 
 
+class ToolGroup(BaseModel):
+    """A semantic grouping of operations by business intent."""
+
+    id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    intent: str = ""
+    operation_ids: list[str] = Field(default_factory=list)
+    source: SourceType = SourceType.extractor
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
 # ── Top-Level IR ───────────────────────────────────────────────────────────
 
 IR_VERSION = "1.0.0"
@@ -460,6 +478,7 @@ class ServiceIR(BaseModel):
     auth: AuthConfig = Field(default_factory=AuthConfig)
     operations: list[Operation] = Field(default_factory=list)
     operation_chains: list[OperationChain] = Field(default_factory=list)
+    tool_grouping: list[ToolGroup] = Field(default_factory=list)
     event_descriptors: list[EventDescriptor] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -498,4 +517,15 @@ class ServiceIR(BaseModel):
                 "Event descriptors reference unknown operations: "
                 f"{sorted(invalid_refs)}"
             )
+        return self
+
+    @model_validator(mode="after")
+    def tool_grouping_must_reference_valid_operations(self) -> ServiceIR:
+        op_ids = {op.id for op in self.operations}
+        for group in self.tool_grouping:
+            invalid = set(group.operation_ids) - op_ids
+            if invalid:
+                raise ValueError(
+                    f"ToolGroup '{group.id}' references unknown operations: {invalid}"
+                )
         return self

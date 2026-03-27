@@ -40,6 +40,8 @@ from libs.ir.models import (
     SqlOperationConfig,
     SqlOperationType,
     SqlRelationKind,
+    ToolGroup,
+    ToolIntent,
     TruncationPolicy,
 )
 from libs.ir.schema import (
@@ -672,3 +674,70 @@ def test_param_round_trip_property(param: Param) -> None:
     assert restored.name == param.name
     assert restored.type == param.type
     assert restored.required == param.required
+
+
+# ── ToolIntent and ToolGroup Tests ──────────────────────────────────────
+
+class TestToolIntent:
+    def test_operation_accepts_discovery_intent(self) -> None:
+        op = make_operation()
+        updated = op.model_copy(update={"tool_intent": ToolIntent.discovery})
+        assert updated.tool_intent == ToolIntent.discovery
+
+    def test_operation_accepts_action_intent(self) -> None:
+        op = make_operation()
+        updated = op.model_copy(update={"tool_intent": ToolIntent.action})
+        assert updated.tool_intent == ToolIntent.action
+
+    def test_operation_defaults_to_none_intent(self) -> None:
+        op = make_operation()
+        assert op.tool_intent is None
+
+
+class TestToolGroup:
+    def test_valid_tool_group(self) -> None:
+        ir = make_service_ir()
+        op_ids = [op.id for op in ir.operations]
+        group = ToolGroup(
+            id="user-management",
+            label="User Management",
+            intent="CRUD operations for user accounts",
+            operation_ids=op_ids,
+        )
+        updated = ir.model_copy(update={"tool_grouping": [group]})
+        assert len(updated.tool_grouping) == 1
+        assert updated.tool_grouping[0].label == "User Management"
+
+    def test_tool_group_rejects_unknown_operations(self) -> None:
+        ir = make_service_ir()
+        group = ToolGroup(
+            id="bad-group",
+            label="Bad Group",
+            operation_ids=["nonexistent_op"],
+        )
+        data = ir.model_dump()
+        data["tool_grouping"] = [group.model_dump()]
+        with pytest.raises(ValidationError, match="unknown operations"):
+            ServiceIR.model_validate(data)
+
+    def test_empty_tool_grouping_is_valid(self) -> None:
+        ir = make_service_ir()
+        assert ir.tool_grouping == []
+
+    def test_tool_group_round_trip(self) -> None:
+        ir = make_service_ir()
+        op_ids = [op.id for op in ir.operations]
+        group = ToolGroup(
+            id="test-group",
+            label="Test Group",
+            intent="Testing",
+            operation_ids=op_ids,
+            source=SourceType.llm,
+            confidence=0.85,
+        )
+        updated = ir.model_copy(update={"tool_grouping": [group]})
+        serialized = serialize_ir(updated)
+        restored = deserialize_ir(serialized)
+        assert len(restored.tool_grouping) == 1
+        assert restored.tool_grouping[0].id == "test-group"
+        assert restored.tool_grouping[0].confidence == 0.85
