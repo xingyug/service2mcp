@@ -2524,6 +2524,79 @@ The four P1 features from B-003 (`derive_tool_intents`, `bifurcate_descriptions`
 
 ---
 
+## 2026-03-27 — Web UI: Complete Frontend Implementation + Tests
+
+### Web UI Implementation ✅
+
+**Scope:** Implement a complete first-party web UI for Tool Compiler v2 as required by the SDD. The backend is fully complete (25K+ lines, 1080 tests), but the frontend directory (`apps/web-ui/`) was empty.
+
+**Tech stack:** Next.js 16.2.1 (App Router, standalone output), TypeScript strict mode, Tailwind CSS + shadcn/ui (20+ components), TanStack React Query (30s staleTime, auto-refresh), Zustand with persist middleware, Monaco Editor for IR viewing/editing, lucide-react icons, next-themes dark/light, sonner toasts.
+
+**Delivered — 102 source files, ~25,500 lines, 16 routes:**
+
+1. **Authentication** — Login page with password + PAT tabs, JWT auth flow, Zustand auth store with localStorage persistence, AuthGuard redirect component
+2. **Dashboard** — Stat cards (services, compilations, success rate, health), recent compilations table, recent audit activity stream, quick action cards
+3. **Compilation wizard** — 4-step multi-form (source selection → service info/protocol → options/auth → review), protocol selector (OpenAPI, REST, GraphQL, gRPC, SOAP, SQL), SSE streaming for real-time compilation events
+4. **Compilation management** — Job list with status badges, filters (status, search, date range), pagination; job detail with stage timeline, SSE event log, retry/rollback actions
+5. **Service registry** — Grid/list toggle view with protocol/risk/intent badges, search, protocol chips, tenant/environment filters
+6. **Service detail** — 4-tab view: Tools (filterable operation cards with risk badges, enabled toggles), Versions (history with diff dialog), IR Editor (Monaco dual code/tree view with source-colored badges: extractor=blue, llm=purple, user_override=green), Gateway tab
+7. **Review/approval workflow** — Client-side Zustand state machine: draft → submitted → in_review → approved/rejected → published → deployed. Workflow stepper UI, operation review checklist, comment textarea for state transitions, approval history timeline
+8. **Version diff viewer** — Field-level change comparison with color-coded added/removed/modified
+9. **Access control** — Policy CRUD with subject/resource/decision fields, evaluation tester; PAT management with create/revoke/copy; audit log with date range presets (1h/24h/7d/30d/all), search, filters, CSV export, detail sheet
+10. **Gateway management** — Route list with sync/drift status, reconciliation trigger, deployment history
+11. **Observability** — 3-tab Grafana iframe embeds (Compilation, Runtime, Access Control), CSS compilation metrics cards
+12. **Infrastructure** — App sidebar navigation (6 groups), breadcrumbs, theme toggle (light/dark/system), Docker multi-stage build, GitHub Actions CI (lint → typecheck → build), Makefile
+
+**Key design decisions:**
+- Review/approval workflow uses client-side Zustand store (backend has no review endpoints yet)
+- Risk classification follows ADR-005: semantic risk (writes_state, destructive, external_side_effect, idempotent), not HTTP verbs
+- IR editor tree view uses recursive component with source-colored badges per SDD provenance model
+- API client organized by namespace (compilationApi, serviceApi, artifactApi, authApi, policyApi, auditApi, gatewayApi)
+- Environment variables: `NEXT_PUBLIC_COMPILER_API_URL` (default: localhost:8000), `NEXT_PUBLIC_ACCESS_CONTROL_URL` (default: localhost:8001), `NEXT_PUBLIC_GRAFANA_URL` (default: localhost:3000)
+
+**Verification:** `npm run lint` — 0 errors; `npx tsc --noEmit` — 0 errors; `npm run build` — 16 routes compiled successfully.
+
+**Branch:** `feat/web-ui`, merged to `main`.
+
+---
+
+### Web UI Test Suite ✅
+
+**Scope:** Add comprehensive unit tests and E2E integration tests for the web UI.
+
+**Unit tests (Vitest + React Testing Library) — 318 tests, 22 files, all passing:**
+
+| Category | Files | Tests | Coverage |
+|---|---|---|---|
+| Stores | auth-store, workflow-store | 43 | Auth lifecycle, persistence, workflow transitions, history |
+| API client | api-client | 27 | Auth headers, error handling, all API namespace methods |
+| Hooks | use-api, use-mobile | 31 | React Query hooks, mutation invalidation, media query |
+| Compilation components | status-badge, event-log, stage-timeline, protocol-selector, wizard-steps | 77 | All status/stage variants, event filtering |
+| Service components | protocol-badge, risk-badge, intent-badge, service-card, tool-card, risk-filter, tool-intent-filter | 54 | All protocol/risk/intent variants, card rendering, filters |
+| Review components | review-status-badge, approval-history | 23 | All 7 workflow states, timeline, actor/comment display |
+| Core + Login | auth-guard, breadcrumbs, login-page | 30 | Auth redirect, breadcrumb trail, form rendering |
+
+**E2E tests (Playwright) — 32 tests, 5 spec files, all passing:**
+- `login.spec.ts` (7) — Page rendering, tab switching, form validation, submission
+- `navigation.spec.ts` (8) — Sidebar groups, page links, navigation, breadcrumbs
+- `compilation-wizard.spec.ts` (7) — Step indicators, form fields, step navigation, review
+- `theme.spec.ts` (5) — Toggle button, dark/light switch, persistence
+- `responsive.spec.ts` (5) — Desktop sidebar, mobile collapse, trigger, mobile rendering
+
+**Infrastructure:** vitest.config.ts, playwright.config.ts, test setup, test-utils with renderWithProviders, package.json scripts (test, test:watch, test:coverage, test:e2e).
+
+**Verification:** `npm run lint` — 0 errors; `npx tsc --noEmit` — 0 errors; `npx vitest run` — 318 passed; CI green.
+
+**Branch:** `feat/web-ui-tests`, merged to `main`.
+
+**Files touched:**
+- `apps/web-ui/` — 102 source files (new), 28 test files (new), config files
+- `.github/workflows/web-ui.yml` — CI workflow (new)
+- `agent.md` (updated — UI status, project size, file references)
+- `devlog.md` (updated — this entry)
+
+---
+
 - **Git remote** — the working tree is periodically pushed to the private GitHub repository `xingyug/service2mcp` on `main`; before each push, run `make gitleaks` (see `agent.md` Git conventions)
 - **VM SA has Vertex AI permissions** — Vertex AI path is wired in the enhancer factory
 - **Provider config** — Anthropic/OpenAI use `LLM_API_KEY`; Vertex AI uses ADC plus optional `VERTEX_PROJECT_ID` / `VERTEX_LOCATION`

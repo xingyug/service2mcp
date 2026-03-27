@@ -32,6 +32,7 @@ Key paths below are relative to the repository root (`tool-compiler-v2/`):
 - `./docs/post-sdd-modular-expansion-plan.md` — post-SDD modular backlog, sequencing, and exit criteria
 - `./docs/context-engineering.md` — context-management rules for future agents
 - `./pyproject.toml` — dependency set plus `pytest` / `ruff` / `mypy` configuration
+- `./apps/web-ui/` — Next.js 16 frontend (TypeScript, Tailwind, shadcn/ui, TanStack React Query, Zustand)
 - `./libs/ir/models.py` — core IR contract and invariants
 - `./libs/ir/schema.py` — IR serialization and JSON Schema helpers
 - `./libs/enhancer/enhancer.py` — LLM enhancement pipeline
@@ -306,8 +307,10 @@ See `devlog.md` for detailed progress tracking.
 ## Project Size Expectations
 
 As of `2026-03-27`, the repository contains approximately:
-- `25,149` lines of production code (`apps/`, `libs/`, `migrations/`)
-- `11,044` lines of test code (Python); plus `1,023` lines of YAML test fixtures
+- `25,149` lines of production Python code (`apps/`, `libs/`, `migrations/`)
+- `25,500` lines of frontend TypeScript/TSX code (`apps/web-ui/src/`)
+- `11,044` lines of Python test code; plus `1,023` lines of YAML test fixtures
+- `5,600` lines of frontend test code (Vitest unit + Playwright E2E)
 - `36,277` total Python code lines including repo `scripts/` and excluding virtualenv / generated caches
 
 Original SDD-completion estimate:
@@ -327,7 +330,7 @@ Progress tracking guidance:
 - OpenAPI, GraphQL, REST, gRPC unary/server-stream, SOAP, and SQL are now live-proven slices, and the compiler-managed protocols have passed the authoritative joint `PROTOCOL=all` GKE matrix in namespace `tool-compiler-llm-all-024755`; the B-003 REST OPTIONS + dedup slice was revalidated with the same aggregate audit (**13/13/7/7/0/6**) in namespace `tool-compiler-llm-b003-032621` at image tag `20260327-75be3a5-r29`
 - Real GKE Helm validation, real GKE queue-path validation, repeated deployed production-activity validation, the final cross-protocol live matrix, and a published broker-aware worker-image rerun baseline have all been exercised against the test cluster, so further work should be treated as post-backlog hardening, capability expansion, or productionization rather than unfinished SDD scope
 - The next unresolved confidence gap is not protocol support but black-box coverage: proving discovered endpoint coverage, generated-tool coverage, and real invocation pass rate for large services without authoritative specs
-- **Product UI (planned):** Ship a first-party web UI for operators and tenants. **Human review and approval are mandatory scope:** the console must support explicit review/edit of IR, recorded decisions, and gated promotion (e.g. draft → submitted → approved/rejected → publish/deploy), not only read-only views. Also cover compilation and job status, artifact registry, access-control, and gateway workflows. The platform today is API-, script-, and observability-first; this UI remains future work.
+- **Product UI (shipped):** A first-party web UI for operators and tenants is now implemented in `apps/web-ui/`. Built with Next.js 16, TypeScript, Tailwind CSS, shadcn/ui, TanStack React Query, and Zustand. **102 source files, ~25,500 lines of code, 16 routes.** Covers: login (password + PAT), dashboard with stat cards and recent activity, compilation wizard (4-step: source → protocol → auth → review), compilation list with filters and job detail with SSE event streaming, service registry (grid/list with protocol/risk/intent badges), Monaco IR editor with dual code/tree views, review/approval workflow state machine (draft → submitted → in_review → approved/rejected → published → deployed), version diff viewer, policy CRUD with evaluation tester, PAT management, audit log with filters and CSV export, gateway route management with reconciliation, and observability dashboards (Grafana iframes). **Human review and approval are mandatory scope**, as required by the SDD: the console supports explicit review/edit of IR, recorded decisions, and gated promotion. **Test suite:** 318 unit tests (Vitest + React Testing Library) covering stores, API client, hooks, and 22 component test files; plus 32 E2E tests (Playwright) covering login, navigation, compilation wizard, theme toggling, and responsive layout. All tests passing. CI workflow at `.github/workflows/web-ui.yml` (lint → typecheck → build). Docker multi-stage build in `apps/web-ui/Dockerfile`.
 
 ## AI Maintenance Requirements
 
