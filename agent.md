@@ -80,6 +80,7 @@ Key paths below are relative to the repository root (`tool-compiler-v2/`):
 - `./observability/grafana/compilation-dashboard.json` — compilation pipeline Grafana dashboard
 - `./observability/grafana/runtime-dashboard.json` — runtime Grafana dashboard
 - `./scripts/setup-dev.sh` — local bootstrap script for Python deps and compose validation
+- `./scripts/git-hooks/pre-push.sample` — optional hook; copy to `.git/hooks/pre-push` to run `gitleaks` before every push (see Git Conventions)
 - `./scripts/smoke-dev.sh` — local smoke checks for ports and health endpoints
 - `./scripts/smoke-gateway-routes.sh` — local route-publication smoke harness using Access Control and Gateway Admin Mock
 - `./scripts/smoke-gke-gateway-routes.sh` — minimal live GKE route-publication and drift-reconciliation smoke harness
@@ -278,8 +279,14 @@ See `devlog.md` for detailed progress tracking.
 **Latest verification:** Published `compiler-api:20260326-b0e27e6-r28` (`sha256:e5c5e84ed7e388143d297bcad8ddc54a0d5e9315752b29ab3b340dfe276a2df8`) and `compiler-worker:20260326-b0e27e6-r28` (`sha256:9589ecb89c9d5f94c9aa96154574679f201e76890edf83a0ae84f609bf733756`). First reran `PROTOCOL=rest AUDIT_ALL_GENERATED_TOOLS=1` in namespace `tool-compiler-b002-rest-followup-065216`, where the follow-up REST extractor fix stayed clean with `discovered=1`, `generated=1`, `audited=1`, `passed=1`, `failed=0`, `skipped=0` for service `rest-llm-e2e-065216` (`job_id=7c517e3c-a7b7-49ce-ab21-ee4e8fbfd810`). The first `PROTOCOL=all` rerun then exposed an unrelated GKE harness issue: `llm-proof-sql` Postgres could restart during initialization and permanently lose the `order_summaries` view, so `scripts/smoke-gke-llm-e2e.sh` now adds a `startupProbe` before liveness takes over.
 **Current conversion posture:** The follow-up REST fix is now live-proven, and the authoritative cross-protocol audit baseline has also been captured in namespace `tool-compiler-llm-all-audit-075849` with the same `r28` images. The audit returned GraphQL `2/2/1/1/0/1`, REST `1/1/1/1/0/0`, gRPC `3/3/1/1/0/2`, SOAP `2/2/1/1/0/1`, and SQL `5/5/3/3/0/2` for `discovered/generated/audited/passed/failed/skipped`, for an aggregate `13/13/7/7/0/6`. The earlier `18`-tool structure-only total is now superseded by this stricter audit baseline: the missing `5` were the fake REST endpoints eliminated by `B-002`, not a new regression, and SQL again returns `query_order_summaries` successfully under the fixed harness.
 **Repository state:** The working tree has also been synced to the private GitHub repository `xingyug/service2mcp` on branch `main` (latest pushed commit at this pause point: `31a5747`, `Import service2mcp project state`). `gitleaks` reported `no leaks found` for both the working tree and the local git history before that push.
-**Next up:** B-003 P1 tasks complete. All four paper-informed P1 features are implemented: (1) LLM-driven seed mutation for REST endpoint discovery via `libs/extractors/llm_seed_mutation.py` (RESTSpecIT-style candidate generation + HTTP probe validation, opt-in via `llm_client` param on `RESTExtractor`); (2) semantic tool aggregation via LLM-ITL intent clustering in `libs/enhancer/tool_grouping.py` (new `ToolGroup` model and `tool_grouping` field on `ServiceIR`); (3) Discovery vs Action tool bifurcation in `libs/enhancer/tool_intent.py` (new `ToolIntent` enum on `Operation`, `[DISCOVERY]`/`[ACTION]` description prefixes derived from `RiskMetadata`); (4) LLM-as-a-Judge evaluation pipeline in `libs/validator/llm_judge.py` (accuracy/completeness/clarity scoring with weighted overall quality). 410 tests, ruff/mypy clean.
-**Key files for the P1 features:**
+**Next up:** B-001/B-002 fourth slice complete. Building on the B-003 P1 features (LLM seed mutation, tool grouping, discovery/action bifurcation, LLM-as-a-Judge), this slice delivers: (1) refined `AuditPolicy` with `audit_safe_methods` and `audit_discovery_intent` overrides so GET/HEAD/OPTIONS and discovery-intent tools are always audited regardless of risk-skip rules; (2) `audit_summary` integrated into `ValidationReport` so audit data flows through the standard validation reporting surface, not just the proof runner; (3) hardened REST OPTIONS probing with HEAD fallback, 405 handling, `Allow: *` support, and Content-Type validation on GET fallback; (4) pilot regression thresholds via `PILOT_BASELINE_THRESHOLDS` using `AuditThresholds` + coverage baselines in the large-surface pilot test. 425 tests, ruff/mypy clean.
+**Key files for the B-001/B-002 fourth slice:**
+- `libs/validator/audit.py` — `AuditPolicy` with `audit_safe_methods`, `audit_discovery_intent` overrides
+- `libs/validator/pre_deploy.py` — `ValidationReport` with embedded `audit_summary: ToolAuditSummary | None`
+- `libs/validator/post_deploy.py` — `validate_with_audit()` now embeds audit_summary in the report
+- `libs/extractors/rest.py` — `_head_probe()`, hardened `_probe_and_register()` and `_probe_allowed_methods()`
+- `tests/integration/test_large_surface_pilot.py` — `PILOT_BASELINE_THRESHOLDS`, coverage regression baselines
+**Key files for the P1 features (previous slice):**
 - `libs/extractors/llm_seed_mutation.py` — `generate_seed_candidates()`, `SeedCandidate`, RESTSpecIT-style LLM prompt
 - `libs/extractors/rest.py` — `_llm_seed_mutation()` phase in `_discover()`, opt-in `llm_client` param
 - `libs/enhancer/tool_grouping.py` — `ToolGrouper`, `apply_grouping()`, LLM-ITL clustering prompt
@@ -292,9 +299,9 @@ See `devlog.md` for detailed progress tracking.
 ## Project Size Expectations
 
 As of `2026-03-27`, the repository contains approximately:
-- `24,839` lines of production code (`apps/`, `libs/`, `migrations/`)
-- `10,677` lines of test code
-- `35,675` total Python code lines including repo `scripts/` and excluding virtualenv / generated caches
+- `25,149` lines of production code (`apps/`, `libs/`, `migrations/`)
+- `11,044` lines of test code
+- `36,034` total Python code lines including repo `scripts/` and excluding virtualenv / generated caches
 
 Original SDD-completion estimate:
 - Production code: roughly `14,000` to `16,000` lines
@@ -340,9 +347,10 @@ Full task definitions are in the SDD (`../tool-compiler-v2-sdd.md`), sections "A
 
 ## Git Conventions
 
-- Local git only (no GitHub remote yet)
-- Commit messages prefixed with task ID: `T-00X: <description>`
-- One commit per task completion
+- **Remote:** The canonical collaboration remote is the private GitHub repository `xingyug/service2mcp` (`main`). If a public copy is published later, prefer a fresh export without importing private history (see README).
+- **Secrets scanning (mandatory before push):** Run `gitleaks` on the repository before every `git push` (and before pushing any commit that adds or changes files that might contain secrets). Use `make gitleaks` from the repo root; fix or allowlist any findings before pushing. Optionally install `scripts/git-hooks/pre-push.sample` as `.git/hooks/pre-push` so the scan runs automatically on push.
+- Commit messages prefixed with task ID: `T-00X: <description>` or backlog id (`B-00X:`, `B-001:`, etc.) when applicable
+- One commit per task completion when practical
 
 ## Environment Notes
 

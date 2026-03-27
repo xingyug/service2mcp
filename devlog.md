@@ -1884,9 +1884,54 @@ The research paper on advanced API-to-tool conversion methodology identifies thr
 
 ---
 
+## Repo policy: gitleaks before push (2026-03-27)
+
+- **Policy:** Run `gitleaks` before every `git push` (and before pushing commits that might introduce secrets); documented in `agent.md` Git Conventions
+- **Automation:** `make gitleaks` runs `gitleaks detect --source . --verbose`; optional hook: `cp scripts/git-hooks/pre-push.sample .git/hooks/pre-push && chmod +x .git/hooks/pre-push`
+- **Docs:** `README.md` project state updated (B-003 complete; next follow-on B-001/B-002/B-003 backlog); Development section documents `make gitleaks` and hook install; `devlog.md` Notes aligned with private GitHub remote
+
+---
+
+## B-001/B-002 Fourth Slice: Audit Policy Refinement, Report Integration, OPTIONS Hardening, Regression Thresholds (2026-03-27)
+
+Context template: `libs/validator/audit.py`, `libs/validator/pre_deploy.py`, `libs/validator/post_deploy.py`, `libs/extractors/rest.py`, `tests/integration/test_large_surface_pilot.py`
+
+### What was built
+
+1. **AuditPolicy refinement** (`libs/validator/audit.py`)
+   - Added `audit_safe_methods: bool = True` — GET/HEAD/OPTIONS operations always audited regardless of risk-skip rules
+   - Added `audit_discovery_intent: bool = True` — tools with `tool_intent == ToolIntent.discovery` always audited
+   - Early-exit checks inserted after sample-invocation check, before destructive/side-effect/writes-state checks
+   - 7 new tests in `libs/validator/tests/test_audit.py`
+
+2. **ValidationReport audit integration** (`libs/validator/pre_deploy.py`, `libs/validator/post_deploy.py`)
+   - `ValidationReport` now has `audit_summary: ToolAuditSummary | None = None`
+   - `validate_with_audit()` embeds audit_summary in the report (backward-compatible tuple still returned)
+   - 3 new tests in `test_pre_deploy.py`, 1 assertion added to existing `test_post_deploy.py` test
+
+3. **REST OPTIONS probing hardening** (`libs/extractors/rest.py`)
+   - New `_head_probe()` helper for lightweight HEAD-based endpoint probing
+   - `_probe_and_register()` now: handles OPTIONS 405 → HEAD fallback, supports `Allow: *`, validates Content-Type on GET fallback (rejects binary/octet-stream)
+   - `_probe_allowed_methods()` now: handles 405 → HEAD fallback, supports `Allow: *`
+   - 5 new tests in `libs/extractors/tests/test_rest.py` (`TestOptionsProbing`)
+
+4. **Pilot regression thresholds** (`tests/integration/test_large_surface_pilot.py`)
+   - `PILOT_BASELINE_THRESHOLDS` using `AuditThresholds(min_audited_ratio=0.40, max_failed=2, min_passed=1)`
+   - Coverage baselines: `PILOT_MIN_DISCOVERY_COVERAGE=0.25`, `PILOT_MIN_GENERATION_COVERAGE=0.40`, `PILOT_MIN_AUDIT_PASS_RATE=0.50`
+   - Phase 5b regression block builds `ToolAuditSummary` from pilot report and checks thresholds
+
+### Verification
+
+- `ruff check .` — clean
+- `mypy libs/ apps/ tests/integration tests/contract tests/e2e` — clean (150 files)
+- `pytest -q` — 425 passed
+- Line counts: 25,149 prod / 11,044 test / 36,034 total
+
+---
+
 ## Notes
 
-- **No GitHub remote yet** — git is local only on the VM
+- **Git remote** — the working tree is periodically pushed to the private GitHub repository `xingyug/service2mcp` on `main`; before each push, run `make gitleaks` (see `agent.md` Git conventions)
 - **VM SA has Vertex AI permissions** — Vertex AI path is wired in the enhancer factory
 - **Provider config** — Anthropic/OpenAI use `LLM_API_KEY`; Vertex AI uses ADC plus optional `VERTEX_PROJECT_ID` / `VERTEX_LOCATION`
 - **Celery + Redis** chosen as initial pipeline engine (not Temporal) per decision D1 in SDD

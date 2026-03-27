@@ -31,7 +31,8 @@ from libs.ir.models import (
     ServiceIR,
     SourceType,
 )
-from libs.validator.pre_deploy import PreDeployValidator
+from libs.validator.audit import ToolAuditSummary
+from libs.validator.pre_deploy import PreDeployValidator, ValidationReport
 
 WSDL_FIXTURE_PATH = (
     Path(__file__).resolve().parent.parent.parent.parent
@@ -436,3 +437,45 @@ async def test_supported_sse_event_descriptor_passes_with_operation_reference() 
     assert "approved streaming transports configured" in report.get_result(
         "event_support"
     ).details.lower()
+
+
+class TestValidationReportAuditSummary:
+    def test_report_without_audit_summary(self) -> None:
+        report = ValidationReport(results=[], overall_passed=True)
+        assert report.audit_summary is None
+
+    def test_report_with_audit_summary(self) -> None:
+        summary = ToolAuditSummary(
+            discovered_operations=10,
+            generated_tools=10,
+            audited_tools=7,
+            passed=7,
+            failed=0,
+            skipped=3,
+            results=[],
+        )
+        report = ValidationReport(
+            results=[],
+            overall_passed=True,
+            audit_summary=summary,
+        )
+        assert report.audit_summary is not None
+        assert report.audit_summary.passed == 7
+
+    def test_report_serialization_with_audit(self) -> None:
+        summary = ToolAuditSummary(
+            discovered_operations=5,
+            generated_tools=5,
+            audited_tools=3,
+            passed=3,
+            failed=0,
+            skipped=2,
+            results=[],
+        )
+        report = ValidationReport(
+            results=[],
+            overall_passed=True,
+            audit_summary=summary,
+        )
+        data = report.model_dump()
+        assert data["audit_summary"]["passed"] == 3

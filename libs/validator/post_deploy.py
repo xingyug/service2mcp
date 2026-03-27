@@ -125,10 +125,6 @@ class PostDeployValidator:
         )
 
         results = [health_result, tool_listing_result, invocation_result]
-        report = ValidationReport(
-            results=results,
-            overall_passed=all(result.passed for result in results),
-        )
 
         # Full audit pass over all enabled operations
         audit_summary = await self._audit_all_enabled_operations(
@@ -138,6 +134,12 @@ class PostDeployValidator:
             audit_policy=policy,
             health_passed=health_result.passed,
             tool_listing_passed=tool_listing_result.passed,
+        )
+
+        report = ValidationReport(
+            results=results,
+            overall_passed=all(result.passed for result in results),
+            audit_summary=audit_summary,
         )
         return report, audit_summary
 

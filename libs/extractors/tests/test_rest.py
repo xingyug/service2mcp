@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import httpx
 
 from libs.extractors.base import SourceConfig
 from libs.extractors.rest import (
+    _SUPPORTED_METHODS,
     DiscoveredEndpoint,
     EndpointClassification,
     EndpointClassifier,
     RESTExtractor,
+    _ObservedEndpoint,
 )
 from libs.ir.models import RiskLevel, SourceType
 
@@ -402,3 +406,122 @@ def test_rebases_classifier_relative_paths_against_discovery_base_path() -> None
     params = {param.name: param for param in operation.params}
     assert params["product_id"].required is True
     assert params["view"].default == "detail"
+
+
+# ---------------------------------------------------------------------------
+# OPTIONS probing hardening tests
+# ---------------------------------------------------------------------------
+
+
+class TestOptionsProbing:
+    """Tests for the hardened OPTIONS / HEAD / GET probing logic."""
+
+    @staticmethod
+    def _make_extractor(
+        handler: Callable[[httpx.Request], httpx.Response],
+    ) -> tuple[RESTExtractor, httpx.Client]:
+        transport = httpx.MockTransport(handler)
+        client = httpx.Client(transport=transport, follow_redirects=True)
+        return RESTExtractor(client=client), client
+
+    # 1. HEAD fallback when OPTIONS returns 405
+    def test_head_fallback_when_options_fails(self) -> None:
+        url = "https://probe.test/api/items"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "OPTIONS":
+                return httpx.Response(405, request=request)
+            if request.method == "HEAD":
+                return httpx.Response(200, request=request)
+            return httpx.Response(404, request=request)
+
+        extractor, _ = self._make_extractor(handler)
+        target: dict[str, _ObservedEndpoint] = {}
+        extractor._probe_and_register("/api/items", url, target)
+
+        assert "/api/items" in target
+        assert "GET" in target["/api/items"].methods
+
+    # 2. Allow: * discovers all supported methods
+    def test_allow_star_discovers_all_methods(self) -> None:
+        url = "https://probe.test/api/items"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "OPTIONS":
+                return httpx.Response(200, headers={"allow": "*"}, request=request)
+            return httpx.Response(404, request=request)
+
+        extractor, _ = self._make_extractor(handler)
+        target: dict[str, _ObservedEndpoint] = {}
+        extractor._probe_and_register("/api/items", url, target)
+
+        assert "/api/items" in target
+        assert target["/api/items"].methods == set(_SUPPORTED_METHODS)
+
+    # 3. Content-Type validation rejects binary responses
+    def test_content_type_validation_rejects_binary(self) -> None:
+        url = "https://probe.test/api/download"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method in ("OPTIONS", "HEAD"):
+                return httpx.Response(404, request=request)
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/octet-stream"},
+                    request=request,
+                )
+            return httpx.Response(404, request=request)
+
+        extractor, _ = self._make_extractor(handler)
+        target: dict[str, _ObservedEndpoint] = {}
+        extractor._probe_and_register("/api/download", url, target)
+
+        assert "/api/download" not in target
+
+    # 4. Content-Type validation accepts JSON
+    def test_content_type_validation_accepts_json(self) -> None:
+        url = "https://probe.test/api/data"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method in ("OPTIONS", "HEAD"):
+                return httpx.Response(404, request=request)
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={"ok": True},
+                    request=request,
+                )
+            return httpx.Response(404, request=request)
+
+        extractor, _ = self._make_extractor(handler)
+        target: dict[str, _ObservedEndpoint] = {}
+        extractor._probe_and_register("/api/data", url, target)
+
+        assert "/api/data" in target
+        assert "GET" in target["/api/data"].methods
+
+    # 5. _probe_allowed_methods falls back to HEAD on 405
+    def test_probe_allowed_methods_405_tries_head(self) -> None:
+        url = "https://probe.test/api/resource"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "OPTIONS":
+                return httpx.Response(405, request=request)
+            if request.method == "HEAD":
+                return httpx.Response(200, request=request)
+            return httpx.Response(404, request=request)
+
+        extractor, _ = self._make_extractor(handler)
+        endpoint = _ObservedEndpoint(
+            path="/api/resource",
+            absolute_url=url,
+            methods={"POST"},
+            sources={"html"},
+            confidence=0.7,
+        )
+        extractor._probe_allowed_methods(endpoint)
+
+        assert "GET" in endpoint.methods
+        assert "POST" in endpoint.methods  # original preserved
+        assert "head" in endpoint.sources

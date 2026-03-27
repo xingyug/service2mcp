@@ -483,9 +483,17 @@ Live GKE revalidation completed on `2026-03-26`:
 - The lower generated-tool total relative to the earlier structural `18` is expected and correct: `B-002` removed five fake REST endpoints that had previously inflated the count
 
 Remaining implementation tasks:
-- Carry the new `audit_summary` data into validator/reporting surfaces beyond the proof runner
-- Refine the skip-policy classification so more explicitly safe tools can be audited without widening execution risk accidentally
+- ~~Carry the new `audit_summary` data into validator/reporting surfaces beyond the proof runner~~ ✓ done in fourth slice
+- ~~Refine the skip-policy classification so more explicitly safe tools can be audited without widening execution risk accidentally~~ ✓ done in fourth slice
 - Continue hardening REST discovery for larger and messier undocumented targets beyond the catalog mock (`B-003`)
+
+Implemented in the fourth slice (completed `2026-03-27`):
+- `AuditPolicy` refined with `audit_safe_methods` (GET/HEAD/OPTIONS always audited) and `audit_discovery_intent` (discovery-intent tools always audited), both `True` by default
+- `ValidationReport` now embeds `audit_summary: ToolAuditSummary | None` so audit data flows through the standard validation reporting surface
+- `validate_with_audit()` populates the embedded audit_summary while still returning the backward-compatible tuple
+- REST OPTIONS probing hardened: HEAD fallback via new `_head_probe()`, 405 handling, `Allow: *` support, Content-Type validation on GET fallback
+- Pilot regression thresholds defined: `PILOT_BASELINE_THRESHOLDS` using `AuditThresholds(min_audited_ratio=0.40, max_failed=2, min_passed=1)` plus coverage baselines
+- Quality gates green (ruff, mypy, 425 passed)
 
 Actual write set after follow-up and live harness hardening:
 - `libs/extractors/rest.py`

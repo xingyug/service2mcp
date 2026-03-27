@@ -49,7 +49,8 @@ Useful next references:
 - Post-SDD expansion and protocol-completion tracks are complete
 - Cross-protocol live proof track is complete
 - `B-002` REST black-box hardening is complete and live-validated
-- Current active follow-on is `B-003`: larger-surface black-box hardening plus better audit/reporting surfaces
+- `B-003` large-surface black-box pilot is complete, including the paper-informed P1 slice (LLM seed mutation, semantic tool grouping, discovery/action bifurcation, LLM-as-a-Judge)
+- **Next follow-on work** (see `docs/post-sdd-modular-expansion-plan.md`): extend **B-001** generated-tool audit across protocols and reporting surfaces; **B-002** backlog items (audit summary in validator/reporting, skip-policy refinement); **B-003** remaining discovery research (OPTIONS-heavy probing, large-spec pilot, regression thresholds)
 
 The current clean audit-enabled GKE baseline recorded:
 
@@ -77,6 +78,18 @@ make contract-test
 make test-integration
 make lint
 make typecheck
+```
+
+Before every commit that may be pushed, and **before every `git push`**, run a secrets scan (required project policy):
+
+```bash
+make gitleaks
+```
+
+Optional: install the repo-provided pre-push hook so `gitleaks` runs automatically on push:
+
+```bash
+cp scripts/git-hooks/pre-push.sample .git/hooks/pre-push && chmod +x .git/hooks/pre-push
 ```
 
 ## Naming

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from libs.ir.models import Operation
+from libs.ir.models import Operation, ToolIntent
 
 
 @dataclass(frozen=True)
@@ -48,6 +48,8 @@ class AuditPolicy:
     skip_external_side_effect: bool = True
     skip_writes_state: bool = True
     allow_idempotent_writes: bool = False
+    audit_safe_methods: bool = True
+    audit_discovery_intent: bool = True
 
     def skip_reason(
         self,
@@ -58,6 +60,20 @@ class AuditPolicy:
 
         if operation.id not in sample_invocations:
             return "No sample invocation is available for this tool."
+
+        # Safe-method override — always audit GET/HEAD/OPTIONS
+        if self.audit_safe_methods and operation.method:
+            if operation.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+                return None
+
+        # Discovery-intent override — always audit discovery tools
+        if (
+            self.audit_discovery_intent
+            and operation.tool_intent is not None
+            and operation.tool_intent == ToolIntent.discovery
+        ):
+            return None
+
         if self.skip_destructive and operation.risk.destructive:
             return "Skipped destructive tool by policy."
         if self.skip_external_side_effect and operation.risk.external_side_effect:

@@ -962,6 +962,7 @@ async def test_validate_with_audit_returns_report_and_audit_summary(
         await upstream_client.aclose()
 
     assert report.overall_passed is True
+    assert report.audit_summary is audit_summary
     assert audit_summary.discovered_operations > 0
     assert audit_summary.passed + audit_summary.failed + audit_summary.skipped == len(
         audit_summary.results

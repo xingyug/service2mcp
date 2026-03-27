@@ -24,8 +24,10 @@ from libs.ir.models import ToolIntent
 from libs.ir.schema import serialize_ir
 from libs.validator.audit import (
     AuditPolicy,
+    AuditThresholds,
     LargeSurfacePilotReport,
     ToolAuditSummary,
+    check_thresholds,
 )
 from libs.validator.llm_judge import LLMJudge
 from libs.validator.post_deploy import PostDeployValidator
@@ -33,6 +35,19 @@ from tests.fixtures.large_surface_rest_mock import (
     GROUND_TRUTH,
     build_large_surface_transport,
 )
+
+# Regression thresholds for the large-surface pilot baseline.
+# Future extractor/enhancer changes must not regress below these values.
+PILOT_BASELINE_THRESHOLDS = AuditThresholds(
+    min_audited_ratio=0.40,   # At least 40% of generated tools auditable
+    max_failed=2,             # Allow at most 2 audit failures
+    min_passed=1,             # At least 1 passing tool
+)
+
+# Coverage baselines — minimum acceptable discovery and generation rates.
+PILOT_MIN_DISCOVERY_COVERAGE = 0.25   # 25% of ground-truth endpoints discovered
+PILOT_MIN_GENERATION_COVERAGE = 0.40  # 40% of discovered endpoints get tools
+PILOT_MIN_AUDIT_PASS_RATE = 0.50      # 50% of audited tools pass
 
 
 def _write_service_ir(tmp_path: Path, ir_json: str) -> Path:
@@ -262,6 +277,40 @@ async def test_large_surface_rest_pilot_measures_three_coverage_numbers(
     assert len(pilot_report.unsupported_patterns) >= 1, (
         "Expected at least one unsupported pattern to be captured"
     )
+
+    # --- Phase 5b: Regression Threshold Checks ---
+    # Build a ToolAuditSummary from pilot_report for threshold checking.
+    threshold_summary = ToolAuditSummary(
+        discovered_operations=pilot_report.discovered_endpoints,
+        generated_tools=pilot_report.generated_tools,
+        audited_tools=pilot_report.audited_tools,
+        passed=pilot_report.passed,
+        failed=pilot_report.failed,
+        skipped=pilot_report.skipped,
+        results=[],
+    )
+    violations = check_thresholds(
+        threshold_summary, PILOT_BASELINE_THRESHOLDS
+    )
+    assert not violations, (
+        "Pilot regression thresholds violated: "
+        + "; ".join(violations)
+    )
+
+    # Coverage regression checks
+    assert pilot_report.discovery_coverage >= PILOT_MIN_DISCOVERY_COVERAGE, (
+        f"Discovery coverage {pilot_report.discovery_coverage:.2f} "
+        f"below minimum {PILOT_MIN_DISCOVERY_COVERAGE:.2f}"
+    )
+    assert pilot_report.generation_coverage >= PILOT_MIN_GENERATION_COVERAGE, (
+        f"Generation coverage {pilot_report.generation_coverage:.2f} "
+        f"below minimum {PILOT_MIN_GENERATION_COVERAGE:.2f}"
+    )
+    if pilot_report.audited_tools > 0:
+        assert pilot_report.audit_pass_rate >= PILOT_MIN_AUDIT_PASS_RATE, (
+            f"Audit pass rate {pilot_report.audit_pass_rate:.2f} "
+            f"below minimum {PILOT_MIN_AUDIT_PASS_RATE:.2f}"
+        )
 
     # Print the report for visibility in CI output
     print(f"\n{'='*60}")

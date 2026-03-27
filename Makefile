@@ -1,4 +1,4 @@
-.PHONY: setup test contract-test test-integration test-cov lint typecheck format dev-up dev-down dev-smoke gateway-smoke gke-gateway-smoke gke-grpc-stream-smoke gke-llm-e2e-smoke deepseek-validate e2e-real-deepseek-smoke clean
+.PHONY: setup test contract-test test-integration test-cov lint typecheck format gitleaks dev-up dev-down dev-smoke gateway-smoke gke-gateway-smoke gke-grpc-stream-smoke gke-llm-e2e-smoke deepseek-validate e2e-real-deepseek-smoke clean
 
 PYTHON ?= python3
 VENV := .venv
@@ -28,6 +28,11 @@ lint:
 
 typecheck:
 	$(MYPY) libs/ apps/
+
+# Required before git push: scan repo history and working tree for secrets (install: https://github.com/gitleaks/gitleaks)
+gitleaks:
+	@command -v gitleaks >/dev/null 2>&1 || { echo "gitleaks not found; install: https://github.com/gitleaks/gitleaks — or use a package manager (e.g. brew install gitleaks)"; exit 1; }
+	gitleaks detect --source . --verbose
 
 format:
 	$(RUFF) format libs/ apps/ tests/

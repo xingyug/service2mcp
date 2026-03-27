@@ -8,6 +8,7 @@ from libs.ir.models import (
     RiskLevel,
     RiskMetadata,
     SourceType,
+    ToolIntent,
 )
 from libs.validator.audit import (
     AuditPolicy,
@@ -24,12 +25,14 @@ def _make_operation(
     destructive: bool = False,
     external_side_effect: bool = False,
     idempotent: bool = True,
+    method: str | None = "GET",
+    tool_intent: ToolIntent | None = None,
 ) -> Operation:
     return Operation(
         id=operation_id,
         name=operation_id,
         description="Test operation.",
-        method="GET",
+        method=method,
         path=f"/{operation_id}",
         params=[Param(name="id", type="string", required=True)],
         risk=RiskMetadata(
@@ -42,6 +45,7 @@ def _make_operation(
             idempotent=idempotent,
         ),
         enabled=True,
+        tool_intent=tool_intent,
     )
 
 
@@ -57,21 +61,23 @@ class TestAuditPolicySkipReason:
         assert policy.skip_reason(operation, {"get_item": {"id": "1"}}) is None
 
     def test_default_policy_skips_destructive(self) -> None:
-        operation = _make_operation(destructive=True)
+        operation = _make_operation(destructive=True, method="POST")
         policy = AuditPolicy()
         reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
         assert reason is not None
         assert "destructive" in reason.lower()
 
     def test_default_policy_skips_external_side_effect(self) -> None:
-        operation = _make_operation(external_side_effect=True)
+        operation = _make_operation(
+            external_side_effect=True, method="POST"
+        )
         policy = AuditPolicy()
         reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
         assert reason is not None
         assert "side-effect" in reason.lower()
 
     def test_default_policy_skips_writes_state(self) -> None:
-        operation = _make_operation(writes_state=True)
+        operation = _make_operation(writes_state=True, method="POST")
         policy = AuditPolicy()
         reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
         assert reason is not None
@@ -90,7 +96,9 @@ class TestAuditPolicySkipReason:
         assert policy.skip_reason(operation, {"get_item": {"id": "1"}}) is None
 
     def test_allow_idempotent_writes_still_skips_non_idempotent(self) -> None:
-        operation = _make_operation(writes_state=True, idempotent=False)
+        operation = _make_operation(
+            writes_state=True, idempotent=False, method="POST"
+        )
         policy = AuditPolicy(allow_idempotent_writes=True)
         reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
         assert reason is not None
@@ -98,7 +106,10 @@ class TestAuditPolicySkipReason:
 
     def test_allow_idempotent_writes_still_skips_destructive(self) -> None:
         operation = _make_operation(
-            writes_state=True, destructive=True, idempotent=True
+            writes_state=True,
+            destructive=True,
+            idempotent=True,
+            method="POST",
         )
         policy = AuditPolicy(allow_idempotent_writes=True)
         reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
@@ -115,6 +126,85 @@ class TestAuditPolicySkipReason:
             skip_writes_state=False,
         )
         assert policy.skip_reason(operation, {"get_item": {"id": "1"}}) is None
+
+    # --- audit_safe_methods tests ---
+
+    def test_audit_safe_methods_overrides_destructive_skip(self) -> None:
+        operation = _make_operation(method="GET", destructive=True)
+        policy = AuditPolicy()
+        assert policy.skip_reason(
+            operation, {"get_item": {"id": "1"}}
+        ) is None
+
+    def test_audit_safe_methods_disabled_still_skips_risky_get(
+        self,
+    ) -> None:
+        operation = _make_operation(method="GET", destructive=True)
+        policy = AuditPolicy(audit_safe_methods=False)
+        reason = policy.skip_reason(
+            operation, {"get_item": {"id": "1"}}
+        )
+        assert reason is not None
+        assert "destructive" in reason.lower()
+
+    def test_audit_safe_methods_head_method(self) -> None:
+        operation = _make_operation(
+            method="HEAD", destructive=True
+        )
+        policy = AuditPolicy()
+        assert policy.skip_reason(
+            operation, {"get_item": {"id": "1"}}
+        ) is None
+
+    def test_audit_safe_methods_post_no_override(self) -> None:
+        operation = _make_operation(method="POST", destructive=True)
+        policy = AuditPolicy()
+        reason = policy.skip_reason(
+            operation, {"get_item": {"id": "1"}}
+        )
+        assert reason is not None
+        assert "destructive" in reason.lower()
+
+    # --- audit_discovery_intent tests ---
+
+    def test_audit_discovery_intent_overrides_writes_state_skip(
+        self,
+    ) -> None:
+        operation = _make_operation(
+            writes_state=True,
+            tool_intent=ToolIntent.discovery,
+            method=None,
+        )
+        policy = AuditPolicy()
+        assert policy.skip_reason(
+            operation, {"get_item": {"id": "1"}}
+        ) is None
+
+    def test_audit_discovery_intent_disabled_still_skips(self) -> None:
+        operation = _make_operation(
+            writes_state=True,
+            tool_intent=ToolIntent.discovery,
+            method=None,
+        )
+        policy = AuditPolicy(audit_discovery_intent=False)
+        reason = policy.skip_reason(
+            operation, {"get_item": {"id": "1"}}
+        )
+        assert reason is not None
+        assert "state-mutating" in reason.lower()
+
+    def test_audit_discovery_intent_action_no_override(self) -> None:
+        operation = _make_operation(
+            writes_state=True,
+            tool_intent=ToolIntent.action,
+            method=None,
+        )
+        policy = AuditPolicy()
+        reason = policy.skip_reason(
+            operation, {"get_item": {"id": "1"}}
+        )
+        assert reason is not None
+        assert "state-mutating" in reason.lower()
 
 
 # ---------------------------------------------------------------------------

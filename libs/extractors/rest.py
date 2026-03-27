@@ -351,6 +351,16 @@ class RESTExtractor:
 
         return llm_inferred
 
+    def _head_probe(self, absolute_url: str) -> set[str]:
+        """Lightweight HEAD probe; returns {'GET'} if successful, else empty."""
+        try:
+            response = self._client.head(absolute_url)
+            if response.status_code < 400:
+                return {"GET"}  # HEAD success implies GET works
+        except httpx.HTTPError:
+            pass
+        return set()
+
     def _probe_and_register(
         self,
         path: str,
@@ -362,25 +372,37 @@ class RESTExtractor:
         """Probe a candidate URL via OPTIONS and optionally GET, registering it if valid."""
         methods: set[str] = set()
 
-        # Try OPTIONS first to discover allowed methods.
+        # Phase 1: Try OPTIONS
         try:
             response = self._client.options(absolute_url)
             if response.status_code < 400:
-                allow_header = response.headers.get("allow", "")
-                methods = {
-                    m.strip().upper()
-                    for m in allow_header.split(",")
-                    if m.strip().upper() in _SUPPORTED_METHODS
-                }
+                allow_header = response.headers.get("allow", "").strip()
+                if allow_header == "*":
+                    methods = set(_SUPPORTED_METHODS)
+                else:
+                    methods = {
+                        m.strip().upper()
+                        for m in allow_header.split(",")
+                        if m.strip().upper() in _SUPPORTED_METHODS
+                    }
+            elif response.status_code == 405:
+                # Endpoint exists but OPTIONS not allowed — try HEAD
+                methods = self._head_probe(absolute_url)
         except httpx.HTTPError:
             pass
 
-        # If OPTIONS didn't reveal methods, try a GET probe.
+        # Phase 2: HEAD fallback if OPTIONS produced nothing
+        if not methods:
+            methods = self._head_probe(absolute_url)
+
+        # Phase 3: GET fallback with Content-Type validation
         if not methods:
             try:
                 response = self._client.get(absolute_url)
                 if response.status_code < 400:
-                    methods.add("GET")
+                    ct = response.headers.get("content-type", "").lower()
+                    if any(t in ct for t in ("json", "html", "xml", "text")):
+                        methods.add("GET")
             except httpx.HTTPError:
                 pass
 
@@ -450,14 +472,25 @@ class RESTExtractor:
         except httpx.HTTPError:
             return
 
+        if response.status_code == 405:
+            # OPTIONS not allowed, but endpoint exists — try HEAD
+            head_methods = self._head_probe(endpoint.absolute_url)
+            if head_methods:
+                endpoint.methods.update(head_methods)
+                endpoint.sources.add("head")
+            return
+
         if response.status_code >= 400:
             return
-        allow_header = response.headers.get("allow", "")
-        allowed_methods = {
-            method.strip().upper()
-            for method in allow_header.split(",")
-            if method.strip().upper() in _SUPPORTED_METHODS
-        }
+        allow_header = response.headers.get("allow", "").strip()
+        if allow_header == "*":
+            allowed_methods = set(_SUPPORTED_METHODS)
+        else:
+            allowed_methods = {
+                method.strip().upper()
+                for method in allow_header.split(",")
+                if method.strip().upper() in _SUPPORTED_METHODS
+            }
         if allowed_methods:
             endpoint.methods.update(allowed_methods)
             endpoint.sources.add("options")

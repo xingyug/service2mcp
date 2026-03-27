@@ -10,6 +10,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from libs.ir.models import AuthType, EventSupportLevel, EventTransport, ServiceIR
+from libs.validator.audit import ToolAuditSummary
 
 _APPROVED_STREAM_TRANSPORTS = {EventTransport.sse, EventTransport.websocket}
 
@@ -28,11 +29,12 @@ class ValidationResult(BaseModel):
 class ValidationReport(BaseModel):
     """Aggregate validation results for a single pre-deploy run."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     results: list[ValidationResult]
     overall_passed: bool
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    audit_summary: ToolAuditSummary | None = None
 
     def get_result(self, stage: str) -> ValidationResult:
         """Return the result for the named validation stage."""
