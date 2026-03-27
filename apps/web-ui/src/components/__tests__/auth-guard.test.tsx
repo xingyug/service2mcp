@@ -26,15 +26,20 @@ import { useAuthStore } from "@/stores/auth-store";
 
 const mockedUseAuthStore = vi.mocked(useAuthStore);
 
+function mockAuth(isAuthenticated: boolean) {
+  mockedUseAuthStore.mockImplementation(
+    ((selector: (s: { isAuthenticated: boolean }) => boolean) =>
+      selector({ isAuthenticated })) as never,
+  );
+}
+
 describe("AuthGuard", () => {
   beforeEach(() => {
     mockReplace.mockClear();
   });
 
   it("renders children when authenticated", () => {
-    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
-      selector({ isAuthenticated: true }),
-    );
+    mockAuth(true);
     render(
       <AuthGuard>
         <div>Protected Content</div>
@@ -44,9 +49,7 @@ describe("AuthGuard", () => {
   });
 
   it("does not render children when not authenticated", () => {
-    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
-      selector({ isAuthenticated: false }),
-    );
+    mockAuth(false);
     render(
       <AuthGuard>
         <div>Protected Content</div>
@@ -56,9 +59,7 @@ describe("AuthGuard", () => {
   });
 
   it("redirects to /login when not authenticated", () => {
-    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
-      selector({ isAuthenticated: false }),
-    );
+    mockAuth(false);
     render(
       <AuthGuard>
         <div>Secret</div>
@@ -68,9 +69,7 @@ describe("AuthGuard", () => {
   });
 
   it("does not redirect when authenticated", () => {
-    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
-      selector({ isAuthenticated: true }),
-    );
+    mockAuth(true);
     render(
       <AuthGuard>
         <div>Dashboard</div>
@@ -80,9 +79,7 @@ describe("AuthGuard", () => {
   });
 
   it("renders children element directly (not wrapped)", () => {
-    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
-      selector({ isAuthenticated: true }),
-    );
+    mockAuth(true);
     render(
       <AuthGuard>
         <span data-testid="child">Hello</span>
@@ -92,9 +89,7 @@ describe("AuthGuard", () => {
   });
 
   it("handles multiple children when authenticated", () => {
-    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
-      selector({ isAuthenticated: true }),
-    );
+    mockAuth(true);
     render(
       <AuthGuard>
         <div>Child 1</div>

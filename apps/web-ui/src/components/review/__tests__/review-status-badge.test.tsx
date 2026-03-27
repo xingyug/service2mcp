@@ -12,6 +12,15 @@ import { useWorkflowStore } from "@/stores/workflow-store";
 
 const mockedUseWorkflowStore = vi.mocked(useWorkflowStore);
 
+function mockWorkflow(state?: string) {
+  mockedUseWorkflowStore.mockImplementation(
+    ((selector: (s: { getWorkflow: () => { state: string } | undefined }) => unknown) =>
+      selector({
+        getWorkflow: () => (state ? { state } : undefined),
+      })) as never,
+  );
+}
+
 const states: { state: WorkflowState; label: string; colorFragment: string }[] =
   [
     { state: "draft", label: "Draft", colorFragment: "gray" },
@@ -25,11 +34,7 @@ const states: { state: WorkflowState; label: string; colorFragment: string }[] =
 
 describe("ReviewStatusBadge", () => {
   beforeEach(() => {
-    mockedUseWorkflowStore.mockImplementation((selector: (s: { getWorkflow: () => { state: string } | undefined }) => unknown) =>
-      selector({
-        getWorkflow: () => undefined,
-      }),
-    );
+    mockWorkflow(undefined);
   });
 
   it("defaults to Draft when no workflow exists", () => {
@@ -49,11 +54,7 @@ describe("ReviewStatusBadge", () => {
   it.each(states)(
     "renders correct label for $state state via ReviewStatusBadge",
     ({ state, label }) => {
-      mockedUseWorkflowStore.mockImplementation((selector: (s: { getWorkflow: () => { state: string } | undefined }) => unknown) =>
-        selector({
-          getWorkflow: () => ({ state }),
-        }),
-      );
+      mockWorkflow(state);
       render(<ReviewStatusBadge serviceId="svc-1" versionNumber={1} />);
       expect(screen.getByText(label)).toBeInTheDocument();
     },
