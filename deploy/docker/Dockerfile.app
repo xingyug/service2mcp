@@ -14,6 +14,7 @@ ENV INSTALL_EXTRAS=${INSTALL_EXTRAS}
 WORKDIR /app
 
 COPY pyproject.toml /app/pyproject.toml
+COPY README.md /app/README.md
 COPY apps /app/apps
 COPY libs /app/libs
 COPY migrations /app/migrations
