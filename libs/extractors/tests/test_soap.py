@@ -126,3 +126,21 @@ def test_type_detector_can_select_soap_wsdl_extractor() -> None:
     detection = detector.detect(SourceConfig(file_path=str(WSDL_FIXTURE_PATH)))
 
     assert detection.protocol_name == "soap"
+
+
+def test_soap_operations_have_error_schema() -> None:
+    extractor = SOAPWSDLExtractor()
+
+    service_ir = extractor.extract(SourceConfig(file_path=str(WSDL_FIXTURE_PATH)))
+
+    assert len(service_ir.operations) >= 1
+    for op in service_ir.operations:
+        assert op.error_schema is not None
+        schema = op.error_schema.default_error_schema
+        assert schema is not None
+        assert schema["type"] == "object"
+        props = schema["properties"]
+        assert "faultcode" in props
+        assert "faultstring" in props
+        assert "detail" in props
+        assert schema["required"] == ["faultcode", "faultstring"]

@@ -14,6 +14,7 @@ from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthConfig,
     AuthType,
+    ErrorSchema,
     EventDescriptor,
     EventDirection,
     EventSupportLevel,
@@ -251,6 +252,25 @@ class GraphQLExtractor:
                     source=SourceType.extractor,
                     confidence=0.95,
                     enabled=True,
+                    error_schema=ErrorSchema(
+                        default_error_schema={
+                            "type": "object",
+                            "properties": {
+                                "errors": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "message": {"type": "string"},
+                                            "locations": {"type": "array"},
+                                            "path": {"type": "array"},
+                                        },
+                                        "required": ["message"],
+                                    },
+                                }
+                            },
+                        }
+                    ),
                 )
             )
 
@@ -285,11 +305,7 @@ class GraphQLExtractor:
         invocation = f"{field_name}{argument_block}"
         if selection_set is not None:
             invocation = f"{invocation} {selection_set}"
-        document = (
-            f"{operation_kind} {field_name}{variable_block} {{\n"
-            f"  {invocation}\n"
-            "}"
-        )
+        document = f"{operation_kind} {field_name}{variable_block} {{\n  {invocation}\n}}"
         return GraphQLOperationConfig(
             operation_type=GraphQLOperationType(operation_kind),
             operation_name=field_name,

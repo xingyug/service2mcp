@@ -15,6 +15,8 @@ from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthConfig,
     AuthType,
+    ErrorResponse,
+    ErrorSchema,
     EventDescriptor,
     EventDirection,
     EventSupportLevel,
@@ -149,8 +151,7 @@ class GrpcProtoExtractor:
                     rpc_path = _rpc_path(proto_package, service.name, rpc.name)
                     grpc_stream_mode = _grpc_stream_mode_for_rpc(rpc)
                     supported_native_stream = (
-                        enable_native_stream
-                        and grpc_stream_mode is GrpcStreamMode.server
+                        enable_native_stream and grpc_stream_mode is GrpcStreamMode.server
                     )
                     if supported_native_stream:
                         operations.append(
@@ -371,13 +372,35 @@ def _rpc_to_operation(
             enums=enums,
         ),
         risk=risk,
-        grpc_unary=GrpcUnaryRuntimeConfig(
-            rpc_path=_rpc_path(package_name, service_name, rpc.name)
-        ),
+        grpc_unary=GrpcUnaryRuntimeConfig(rpc_path=_rpc_path(package_name, service_name, rpc.name)),
         tags=["grpc", service_name],
         source=SourceType.extractor,
         confidence=1.0,
         enabled=True,
+        error_schema=ErrorSchema(
+            responses=[
+                ErrorResponse(
+                    error_code="INVALID_ARGUMENT",
+                    description="Client specified an invalid argument.",
+                ),
+                ErrorResponse(
+                    error_code="NOT_FOUND",
+                    description="Requested entity was not found.",
+                ),
+                ErrorResponse(
+                    error_code="PERMISSION_DENIED",
+                    description="Caller does not have permission.",
+                ),
+                ErrorResponse(
+                    error_code="INTERNAL",
+                    description="Internal server error.",
+                ),
+                ErrorResponse(
+                    error_code="UNAVAILABLE",
+                    description="Service is currently unavailable.",
+                ),
+            ]
+        ),
     )
 
 
@@ -414,6 +437,30 @@ def _stream_rpc_to_operation(
         source=SourceType.extractor,
         confidence=1.0,
         enabled=True,
+        error_schema=ErrorSchema(
+            responses=[
+                ErrorResponse(
+                    error_code="INVALID_ARGUMENT",
+                    description="Client specified an invalid argument.",
+                ),
+                ErrorResponse(
+                    error_code="NOT_FOUND",
+                    description="Requested entity was not found.",
+                ),
+                ErrorResponse(
+                    error_code="PERMISSION_DENIED",
+                    description="Caller does not have permission.",
+                ),
+                ErrorResponse(
+                    error_code="INTERNAL",
+                    description="Internal server error.",
+                ),
+                ErrorResponse(
+                    error_code="UNAVAILABLE",
+                    description="Service is currently unavailable.",
+                ),
+            ]
+        ),
     )
 
 

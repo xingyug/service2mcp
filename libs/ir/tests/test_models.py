@@ -14,6 +14,8 @@ from libs.ir.models import (
     AsyncStatusUrlSource,
     AuthConfig,
     AuthType,
+    ErrorResponse,
+    ErrorSchema,
     EventDescriptor,
     EventDirection,
     EventSupportLevel,
@@ -31,6 +33,7 @@ from libs.ir.models import (
     Param,
     RequestBodyMode,
     RequestSigningConfig,
+    ResponseExample,
     ResponseStrategy,
     RiskLevel,
     RiskMetadata,
@@ -741,3 +744,178 @@ class TestToolGroup:
         assert len(restored.tool_grouping) == 1
         assert restored.tool_grouping[0].id == "test-group"
         assert restored.tool_grouping[0].confidence == 0.85
+
+
+# ── ErrorSchema / ResponseExample (DEP-001) ──────────────────────────────
+
+
+class TestErrorResponse:
+    def test_defaults(self) -> None:
+        er = ErrorResponse()
+        assert er.status_code is None
+        assert er.error_code is None
+        assert er.description == ""
+        assert er.error_body_schema is None
+
+    def test_http_error_response(self) -> None:
+        er = ErrorResponse(
+            status_code=404,
+            error_code="NOT_FOUND",
+            description="Resource not found",
+            error_body_schema={"type": "object", "properties": {"message": {"type": "string"}}},
+        )
+        assert er.status_code == 404
+        assert er.error_code == "NOT_FOUND"
+
+    def test_non_http_error_response(self) -> None:
+        er = ErrorResponse(error_code="INVALID_ARGUMENT", description="Bad field value")
+        assert er.status_code is None
+        assert er.error_code == "INVALID_ARGUMENT"
+
+    def test_round_trip(self) -> None:
+        er = ErrorResponse(status_code=500, error_code="INTERNAL", description="Server error")
+        data = er.model_dump(mode="json")
+        restored = ErrorResponse.model_validate(data)
+        assert restored == er
+
+
+class TestErrorSchema:
+    def test_defaults(self) -> None:
+        es = ErrorSchema()
+        assert es.responses == []
+        assert es.default_error_schema is None
+
+    def test_with_responses(self) -> None:
+        es = ErrorSchema(
+            responses=[
+                ErrorResponse(status_code=400, description="Bad request"),
+                ErrorResponse(status_code=500, description="Internal error"),
+            ],
+            default_error_schema={"type": "object", "properties": {"error": {"type": "string"}}},
+        )
+        assert len(es.responses) == 2
+        assert es.default_error_schema is not None
+
+    def test_round_trip(self) -> None:
+        es = ErrorSchema(
+            responses=[ErrorResponse(status_code=422, error_code="VALIDATION_ERROR")],
+            default_error_schema={"type": "object"},
+        )
+        data = es.model_dump(mode="json")
+        restored = ErrorSchema.model_validate(data)
+        assert restored == es
+
+
+class TestResponseExample:
+    def test_minimal(self) -> None:
+        ex = ResponseExample(name="success")
+        assert ex.name == "success"
+        assert ex.description == ""
+        assert ex.status_code is None
+        assert ex.body is None
+        assert ex.source == SourceType.extractor
+
+    def test_full(self) -> None:
+        ex = ResponseExample(
+            name="user-list",
+            description="Example list of users",
+            status_code=200,
+            body={"users": [{"id": 1, "name": "Alice"}]},
+            source=SourceType.llm,
+        )
+        assert ex.status_code == 200
+        assert ex.source == SourceType.llm
+
+    def test_string_body(self) -> None:
+        ex = ResponseExample(name="raw", body="plain text response")
+        assert ex.body == "plain text response"
+
+    def test_empty_name_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ResponseExample(name="")
+
+    def test_round_trip(self) -> None:
+        ex = ResponseExample(
+            name="example-1",
+            status_code=200,
+            body={"id": 42},
+            source=SourceType.extractor,
+        )
+        data = ex.model_dump(mode="json")
+        restored = ResponseExample.model_validate(data)
+        assert restored == ex
+
+
+class TestOperationErrorSchemaAndExamples:
+    def test_operation_defaults_empty_error_schema(self) -> None:
+        op = Operation(
+            id="test-op",
+            name="Test",
+            risk=RiskMetadata(risk_level=RiskLevel.safe),
+        )
+        assert op.error_schema == ErrorSchema()
+        assert op.response_examples == []
+
+    def test_operation_with_error_schema(self) -> None:
+        op = Operation(
+            id="test-op",
+            name="Test",
+            risk=RiskMetadata(risk_level=RiskLevel.safe),
+            error_schema=ErrorSchema(
+                responses=[ErrorResponse(status_code=404, description="Not found")],
+            ),
+        )
+        assert len(op.error_schema.responses) == 1
+        assert op.error_schema.responses[0].status_code == 404
+
+    def test_operation_with_response_examples(self) -> None:
+        op = Operation(
+            id="test-op",
+            name="Test",
+            risk=RiskMetadata(risk_level=RiskLevel.safe),
+            response_examples=[
+                ResponseExample(name="ok", status_code=200, body={"result": "success"}),
+            ],
+        )
+        assert len(op.response_examples) == 1
+        assert op.response_examples[0].name == "ok"
+
+    def test_backward_compat_existing_operations_unaffected(self) -> None:
+        """Existing operations without error_schema/response_examples still work."""
+        op_data = {
+            "id": "legacy-op",
+            "name": "Legacy",
+            "risk": {"risk_level": "safe"},
+        }
+        op = Operation.model_validate(op_data)
+        assert op.error_schema == ErrorSchema()
+        assert op.response_examples == []
+
+    def test_ir_round_trip_with_error_schema_and_examples(self) -> None:
+        ir = make_service_ir()
+        op = ir.operations[0]
+        updated_op = op.model_copy(
+            update={
+                "error_schema": ErrorSchema(
+                    responses=[
+                        ErrorResponse(status_code=400, description="Bad request"),
+                        ErrorResponse(status_code=500, error_code="INTERNAL"),
+                    ],
+                    default_error_schema={"type": "object"},
+                ),
+                "response_examples": [
+                    ResponseExample(name="success", status_code=200, body={"id": 1}),
+                    ResponseExample(name="error", status_code=400, body="bad input"),
+                ],
+            }
+        )
+        updated_ir = ir.model_copy(update={"operations": [updated_op]})
+        serialized = serialize_ir(updated_ir)
+        restored = deserialize_ir(serialized)
+        restored_op = restored.operations[0]
+        assert len(restored_op.error_schema.responses) == 2
+        assert restored_op.error_schema.responses[0].status_code == 400
+        assert restored_op.error_schema.default_error_schema == {"type": "object"}
+        assert len(restored_op.response_examples) == 2
+        assert restored_op.response_examples[0].name == "success"
+        assert restored_op.response_examples[1].body == "bad input"

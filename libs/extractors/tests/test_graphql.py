@@ -6,7 +6,12 @@ from pathlib import Path
 
 from libs.extractors.base import SourceConfig
 from libs.extractors.graphql import GraphQLExtractor
-from libs.ir.models import EventSupportLevel, EventTransport, GraphQLOperationType, RiskLevel
+from libs.ir.models import (
+    EventSupportLevel,
+    EventTransport,
+    GraphQLOperationType,
+    RiskLevel,
+)
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tests" / "fixtures"
 GRAPHQL_FIXTURE_PATH = FIXTURES_DIR / "graphql_schemas" / "catalog_introspection.json"
@@ -100,3 +105,27 @@ def test_extracts_subscription_descriptors_as_explicit_unsupported_metadata() ->
     assert service_ir.event_descriptors[0].transport is EventTransport.graphql_subscription
     assert service_ir.event_descriptors[0].support is EventSupportLevel.unsupported
     assert service_ir.event_descriptors[0].channel == "/graphql"
+
+
+def test_graphql_operations_have_error_schema() -> None:
+    extractor = GraphQLExtractor()
+    service_ir = extractor.extract(
+        SourceConfig(
+            file_path=str(GRAPHQL_FIXTURE_PATH),
+            url="https://catalog.example.com/graphql",
+        )
+    )
+
+    assert len(service_ir.operations) >= 1
+    for op in service_ir.operations:
+        assert op.error_schema is not None
+        assert op.error_schema.default_error_schema is not None
+        schema = op.error_schema.default_error_schema
+        assert schema["type"] == "object"
+        errors_prop = schema["properties"]["errors"]
+        assert errors_prop["type"] == "array"
+        item_props = errors_prop["items"]["properties"]
+        assert "message" in item_props
+        assert "locations" in item_props
+        assert "path" in item_props
+        assert errors_prop["items"]["required"] == ["message"]

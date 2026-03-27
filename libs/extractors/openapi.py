@@ -15,13 +15,18 @@ from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthConfig,
     AuthType,
+    ErrorResponse,
+    ErrorSchema,
     EventDescriptor,
     EventDirection,
     EventSupportLevel,
     EventTransport,
     Operation,
+    PaginationConfig,
     Param,
     RequestBodyMode,
+    ResponseExample,
+    ResponseStrategy,
     RiskLevel,
     RiskMetadata,
     ServiceIR,
@@ -310,6 +315,16 @@ class OpenAPIExtractor:
                             )
                         )
 
+                error_schema = self._extract_error_schema(op_spec, is_swagger)
+                response_examples = self._extract_response_examples(op_spec, is_swagger)
+
+                pagination = self._infer_pagination(op_spec, params, is_swagger)
+                response_strategy = (
+                    ResponseStrategy(pagination=pagination)
+                    if pagination and method.upper() == "GET"
+                    else ResponseStrategy()
+                )
+
                 enabled = risk_level != RiskLevel.unknown
                 op = Operation(
                     id=op_id,
@@ -320,6 +335,9 @@ class OpenAPIExtractor:
                     params=params,
                     request_body_mode=request_body_mode,
                     body_param_name=body_param_name,
+                    error_schema=error_schema,
+                    response_examples=response_examples,
+                    response_strategy=response_strategy,
                     risk=RiskMetadata(
                         writes_state=method.upper() in ("POST", "PUT", "PATCH", "DELETE"),
                         destructive=method.upper() == "DELETE",
@@ -455,9 +473,7 @@ class OpenAPIExtractor:
         if not isinstance(webhooks, dict):
             return []
         ignored_webhooks = [
-            webhook_name
-            for webhook_name in webhooks
-            if isinstance(webhook_name, str)
+            webhook_name for webhook_name in webhooks if isinstance(webhook_name, str)
         ]
         ignored_webhooks.sort()
         return ignored_webhooks
@@ -480,6 +496,288 @@ class OpenAPIExtractor:
         ]
         descriptors.sort(key=lambda descriptor: descriptor.id)
         return descriptors
+
+    # ── Pagination inference ────────────────────────────────────────────
+
+    _CURSOR_PARAM_NAMES: set[str] = {
+        "cursor",
+        "next_cursor",
+        "page_token",
+        "next_page_token",
+        "after",
+        "before",
+        "starting_after",
+        "ending_before",
+    }
+    _CURSOR_RESPONSE_FIELDS: set[str] = {"next_cursor", "next_page_token", "cursor", "next"}
+    _PAGE_SIZE_PARAM_NAMES: set[str] = {"per_page", "page_size", "pageSize", "size", "count"}
+    _PAGINATION_RESPONSE_FIELDS: set[str] = {
+        "total",
+        "total_count",
+        "count",
+        "page",
+        "pages",
+        "has_more",
+        "has_next",
+    }
+
+    def _infer_pagination(
+        self,
+        op_spec: JSONDict,
+        params: list[Param],
+        is_swagger: bool,
+    ) -> PaginationConfig | None:
+        """Detect pagination patterns from params and response schema."""
+        param_names = {p.name for p in params}
+        response_schema = self._get_success_response_schema(op_spec, is_swagger)
+        response_fields = (
+            set(response_schema.get("properties", {}).keys())
+            if isinstance(response_schema, dict)
+            else set()
+        )
+
+        # 1. Cursor-based pagination
+        cursor_params = param_names & self._CURSOR_PARAM_NAMES
+        cursor_response = response_fields & self._CURSOR_RESPONSE_FIELDS
+        if cursor_params or cursor_response:
+            cursor_param = next(iter(sorted(cursor_params))) if cursor_params else "cursor"
+            size_param = self._detect_size_param(param_names, default="limit")
+            return PaginationConfig(style="cursor", page_param=cursor_param, size_param=size_param)
+
+        # 2. Page-based pagination
+        if "page" in param_names:
+            size_match = param_names & self._PAGE_SIZE_PARAM_NAMES
+            if size_match:
+                size_param = next(iter(sorted(size_match)))
+                return PaginationConfig(style="page", page_param="page", size_param=size_param)
+
+        # 3. Offset-based pagination
+        if "offset" in param_names and "limit" in param_names:
+            return PaginationConfig(style="offset", page_param="offset", size_param="limit")
+
+        # 4. Response envelope detection
+        if isinstance(response_schema, dict):
+            props = response_schema.get("properties", {})
+            data_prop = props.get("data", {})
+            data_is_array = isinstance(data_prop, dict) and data_prop.get("type") == "array"
+            has_meta = bool({"meta", "pagination"} & set(props.keys()))
+            if data_is_array and has_meta:
+                meta_key = "meta" if "meta" in props else "pagination"
+                meta_schema = props.get(meta_key, {})
+                meta_fields = (
+                    set(meta_schema.get("properties", {}).keys())
+                    if isinstance(meta_schema, dict)
+                    else set()
+                )
+                if meta_fields & self._PAGINATION_RESPONSE_FIELDS:
+                    size_param = self._detect_size_param(param_names, default="page_size")
+                    return PaginationConfig(
+                        style="offset", page_param="offset", size_param=size_param
+                    )
+
+        return None
+
+    @staticmethod
+    def _detect_size_param(param_names: set[str], *, default: str) -> str:
+        for candidate in ("limit", "per_page", "page_size", "pageSize", "size", "count"):
+            if candidate in param_names:
+                return candidate
+        return default
+
+    def _get_success_response_schema(self, op_spec: JSONDict, is_swagger: bool) -> JSONDict | None:
+        """Return the JSON Schema of the first 2xx response, if any."""
+        responses = op_spec.get("responses", {})
+        if not isinstance(responses, dict):
+            return None
+        for code in ("200", "201", "202", "203", "204"):
+            resp = responses.get(code)
+            if not isinstance(resp, dict):
+                continue
+            if is_swagger:
+                schema = resp.get("schema")
+                if isinstance(schema, dict):
+                    return schema
+            else:
+                content = resp.get("content", {})
+                if not isinstance(content, dict):
+                    continue
+                json_content = content.get("application/json", {})
+                if isinstance(json_content, dict):
+                    schema = json_content.get("schema")
+                    if isinstance(schema, dict):
+                        return schema
+        return None
+
+    # ── Error-schema & response-examples extraction ──────────────────────
+
+    def _extract_error_schema(self, op_spec: JSONDict, is_swagger: bool) -> ErrorSchema:
+        """Extract error responses (4xx/5xx/default) into an ErrorSchema."""
+        responses = op_spec.get("responses", {})
+        if not isinstance(responses, dict):
+            return ErrorSchema()
+
+        error_responses: list[ErrorResponse] = []
+        default_error_schema: dict[str, Any] | None = None
+
+        for status_code_str, resp_obj in responses.items():
+            if not isinstance(resp_obj, dict):
+                continue
+
+            is_default = status_code_str == "default"
+            is_error = False
+            status_int: int | None = None
+
+            if not is_default:
+                try:
+                    status_int = int(status_code_str)
+                    is_error = status_int >= 400
+                except (ValueError, TypeError):
+                    continue
+
+            if not is_error and not is_default:
+                continue
+
+            description = str(resp_obj.get("description", ""))
+            body_schema = self._response_body_schema(resp_obj, is_swagger)
+
+            if is_default:
+                default_error_schema = body_schema
+            else:
+                error_responses.append(
+                    ErrorResponse(
+                        status_code=status_int,
+                        description=description,
+                        error_body_schema=body_schema,
+                    )
+                )
+
+        error_responses.sort(key=lambda r: r.status_code or 0)
+        return ErrorSchema(responses=error_responses, default_error_schema=default_error_schema)
+
+    def _extract_response_examples(
+        self,
+        op_spec: JSONDict,
+        is_swagger: bool,
+    ) -> list[ResponseExample]:
+        """Extract inline examples from 2xx responses."""
+        responses = op_spec.get("responses", {})
+        if not isinstance(responses, dict):
+            return []
+
+        examples: list[ResponseExample] = []
+
+        for status_code_str, resp_obj in responses.items():
+            if not isinstance(resp_obj, dict):
+                continue
+
+            # Only 2xx
+            try:
+                status_int = int(status_code_str)
+            except (ValueError, TypeError):
+                continue
+            if not (200 <= status_int < 300):
+                continue
+
+            if is_swagger:
+                # Swagger 2.x: responses/<code>/examples/application/json
+                swagger_examples = resp_obj.get("examples", {})
+                if isinstance(swagger_examples, dict):
+                    json_example = swagger_examples.get("application/json")
+                    if json_example is not None:
+                        examples.append(
+                            ResponseExample(
+                                name=f"example_{status_int}",
+                                description=str(resp_obj.get("description", "")),
+                                status_code=status_int,
+                                body=self._normalize_example_body(json_example),
+                                source=SourceType.extractor,
+                            )
+                        )
+                # Swagger 2.x: schema-level example
+                schema = resp_obj.get("schema", {})
+                if isinstance(schema, dict) and "example" in schema:
+                    examples.append(
+                        ResponseExample(
+                            name=f"schema_example_{status_int}",
+                            description=f"Schema example for {status_int}",
+                            status_code=status_int,
+                            body=self._normalize_example_body(schema["example"]),
+                            source=SourceType.extractor,
+                        )
+                    )
+            else:
+                # OpenAPI 3.x
+                content = resp_obj.get("content", {})
+                if not isinstance(content, dict):
+                    continue
+                json_content = content.get("application/json", {})
+                if not isinstance(json_content, dict):
+                    continue
+
+                # Single example
+                if "example" in json_content:
+                    examples.append(
+                        ResponseExample(
+                            name=f"example_{status_int}",
+                            description=str(resp_obj.get("description", "")),
+                            status_code=status_int,
+                            body=self._normalize_example_body(json_content["example"]),
+                            source=SourceType.extractor,
+                        )
+                    )
+
+                # Examples map
+                examples_map = json_content.get("examples", {})
+                if isinstance(examples_map, dict):
+                    for ex_name, ex_obj in examples_map.items():
+                        if not isinstance(ex_obj, dict):
+                            continue
+                        examples.append(
+                            ResponseExample(
+                                name=str(ex_name),
+                                description=str(ex_obj.get("summary", "")),
+                                status_code=status_int,
+                                body=self._normalize_example_body(ex_obj.get("value")),
+                                source=SourceType.extractor,
+                            )
+                        )
+
+                # Schema-level example
+                schema = json_content.get("schema", {})
+                if isinstance(schema, dict) and "example" in schema:
+                    examples.append(
+                        ResponseExample(
+                            name=f"schema_example_{status_int}",
+                            description=f"Schema example for {status_int}",
+                            status_code=status_int,
+                            body=self._normalize_example_body(schema["example"]),
+                            source=SourceType.extractor,
+                        )
+                    )
+
+        return examples
+
+    @staticmethod
+    def _normalize_example_body(body: Any) -> dict[str, Any] | str | None:
+        """Coerce an example body to a type accepted by ResponseExample.body."""
+        if body is None or isinstance(body, (dict, str)):
+            return body
+        return json.dumps(body, default=str)
+
+    @staticmethod
+    def _response_body_schema(resp_obj: JSONDict, is_swagger: bool) -> dict[str, Any] | None:
+        """Extract the JSON Schema from a response object."""
+        if is_swagger:
+            schema = resp_obj.get("schema")
+            return schema if isinstance(schema, dict) else None
+        content = resp_obj.get("content", {})
+        if not isinstance(content, dict):
+            return None
+        json_content = content.get("application/json", {})
+        if not isinstance(json_content, dict):
+            return None
+        schema = json_content.get("schema")
+        return schema if isinstance(schema, dict) else None
 
     def _flatten_schema_to_params(self, schema: JSONDict) -> list[Param]:
         """Extract top-level properties from a schema as params."""
@@ -513,6 +811,7 @@ class OpenAPIExtractor:
 def _slugify(text: str) -> str:
     """Convert text to a URL-safe slug."""
     import re
+
     text = text.lower().strip()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     return text.strip("-")

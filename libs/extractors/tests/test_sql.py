@@ -110,3 +110,33 @@ def test_extracts_tables_foreign_keys_and_views(initialized_database: str) -> No
     assert query_view.risk.risk_level is RiskLevel.safe
     assert all(param.required is False for param in query_view.params)
     assert not any(operation.id == "insert_order_summaries" for operation in service_ir.operations)
+
+
+def test_sql_query_operations_have_error_schema(initialized_database: str) -> None:
+    extractor = SQLExtractor()
+
+    service_ir = extractor.extract(SourceConfig(url=initialized_database))
+
+    query_ops = [op for op in service_ir.operations if op.id.startswith("query_")]
+    assert len(query_ops) >= 1
+    expected_codes = {"SYNTAX_ERROR", "TIMEOUT"}
+    for op in query_ops:
+        assert op.error_schema is not None
+        assert len(op.error_schema.responses) == 2
+        actual_codes = {r.error_code for r in op.error_schema.responses}
+        assert actual_codes == expected_codes
+
+
+def test_sql_insert_operations_have_error_schema(initialized_database: str) -> None:
+    extractor = SQLExtractor()
+
+    service_ir = extractor.extract(SourceConfig(url=initialized_database))
+
+    insert_ops = [op for op in service_ir.operations if op.id.startswith("insert_")]
+    assert len(insert_ops) >= 1
+    expected_codes = {"CONSTRAINT_VIOLATION", "SYNTAX_ERROR", "TIMEOUT"}
+    for op in insert_ops:
+        assert op.error_schema is not None
+        assert len(op.error_schema.responses) == 3
+        actual_codes = {r.error_code for r in op.error_schema.responses}
+        assert actual_codes == expected_codes

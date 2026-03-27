@@ -52,10 +52,7 @@ def test_extracts_unary_rpcs_and_skips_streaming_methods() -> None:
         "/catalog.v1.InventoryService/WatchInventory"
     )
     assert service_ir.event_descriptors[0].grpc_stream.mode is GrpcStreamMode.server
-    assert (
-        service_ir.event_descriptors[0].channel
-        == "/catalog.v1.InventoryService/WatchInventory"
-    )
+    assert service_ir.event_descriptors[0].channel == "/catalog.v1.InventoryService/WatchInventory"
     assert len(service_ir.operations) == 2
 
     list_items = next(
@@ -127,3 +124,30 @@ def test_extracts_supported_native_server_stream_when_enabled_via_hint() -> None
     assert descriptor.operation_id == "WatchInventory"
     assert descriptor.grpc_stream is not None
     assert descriptor.grpc_stream.mode is GrpcStreamMode.server
+
+
+def test_grpc_operations_have_error_schema() -> None:
+    extractor = GrpcProtoExtractor()
+
+    service_ir = extractor.extract(
+        SourceConfig(
+            file_path=str(PROTO_FIXTURE_PATH),
+            url="grpc://inventory.example.internal:443",
+        )
+    )
+
+    expected_codes = {
+        "INVALID_ARGUMENT",
+        "NOT_FOUND",
+        "PERMISSION_DENIED",
+        "INTERNAL",
+        "UNAVAILABLE",
+    }
+    assert len(service_ir.operations) >= 1
+    for op in service_ir.operations:
+        assert op.error_schema is not None
+        assert len(op.error_schema.responses) == 5
+        actual_codes = {r.error_code for r in op.error_schema.responses}
+        assert actual_codes == expected_codes
+        for r in op.error_schema.responses:
+            assert r.description
