@@ -36,7 +36,8 @@ docs/context-engineering.md
 docs/post-sdd-modular-expansion-plan.md
 
 # Local-only helpers and accidental artifacts
-.github/
+# .github/  -- re-enabled for CI workflows
+!.github/
 get_helm.sh
 =0.20,
 =1.62,
