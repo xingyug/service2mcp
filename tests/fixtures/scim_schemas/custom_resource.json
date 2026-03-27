@@ -1,0 +1,26 @@
+{
+  "schemas": {
+    "Resources": [
+      {
+        "id": "urn:ietf:params:scim:schemas:custom:2.0:Device",
+        "name": "Device",
+        "description": "IoT Device",
+        "attributes": [
+          {"name": "deviceName", "type": "string", "mutability": "readWrite", "required": true, "multiValued": false, "description": "Device name"},
+          {"name": "deviceType", "type": "string", "mutability": "readWrite", "required": true, "multiValued": false, "description": "Device type"},
+          {"name": "serialNumber", "type": "string", "mutability": "immutable", "required": true, "multiValued": false, "description": "Serial number"},
+          {"name": "firmwareVersion", "type": "string", "mutability": "readOnly", "required": false, "multiValued": false, "description": "Current firmware version"},
+          {"name": "id", "type": "string", "mutability": "readOnly", "required": false, "multiValued": false, "description": "Unique identifier"},
+          {"name": "lastSeen", "type": "dateTime", "mutability": "readOnly", "required": false, "multiValued": false, "description": "Last seen timestamp"}
+        ]
+      }
+    ]
+  },
+  "service_provider_config": {
+    "patch": {"supported": true},
+    "bulk": {"supported": false},
+    "filter": {"supported": true, "maxResults": 100},
+    "changePassword": {"supported": false},
+    "sort": {"supported": false}
+  }
+}

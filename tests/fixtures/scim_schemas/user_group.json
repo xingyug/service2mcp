@@ -1,0 +1,43 @@
+{
+  "schemas": {
+    "Resources": [
+      {
+        "id": "urn:ietf:params:scim:schemas:core:2.0:User",
+        "name": "User",
+        "description": "User Account",
+        "attributes": [
+          {"name": "userName", "type": "string", "mutability": "readWrite", "required": true, "multiValued": false, "description": "Unique identifier for the user"},
+          {"name": "name", "type": "complex", "mutability": "readWrite", "required": false, "multiValued": false, "description": "Name of the user", "subAttributes": [
+            {"name": "familyName", "type": "string", "mutability": "readWrite", "required": false},
+            {"name": "givenName", "type": "string", "mutability": "readWrite", "required": false}
+          ]},
+          {"name": "emails", "type": "complex", "mutability": "readWrite", "required": false, "multiValued": true, "description": "Email addresses"},
+          {"name": "active", "type": "boolean", "mutability": "readWrite", "required": false, "multiValued": false, "description": "Active status"},
+          {"name": "id", "type": "string", "mutability": "readOnly", "required": false, "multiValued": false, "description": "Unique identifier"},
+          {"name": "meta", "type": "complex", "mutability": "readOnly", "required": false, "multiValued": false, "description": "Resource metadata"}
+        ],
+        "meta": {"resourceType": "Schema", "location": "/v2/Schemas/urn:ietf:params:scim:schemas:core:2.0:User"}
+      },
+      {
+        "id": "urn:ietf:params:scim:schemas:core:2.0:Group",
+        "name": "Group",
+        "description": "Group",
+        "attributes": [
+          {"name": "displayName", "type": "string", "mutability": "readWrite", "required": true, "multiValued": false, "description": "Display name for the group"},
+          {"name": "members", "type": "complex", "mutability": "readWrite", "required": false, "multiValued": true, "description": "Group members"},
+          {"name": "id", "type": "string", "mutability": "readOnly", "required": false, "multiValued": false, "description": "Unique identifier"},
+          {"name": "meta", "type": "complex", "mutability": "readOnly", "required": false, "multiValued": false, "description": "Resource metadata"}
+        ],
+        "meta": {"resourceType": "Schema", "location": "/v2/Schemas/urn:ietf:params:scim:schemas:core:2.0:Group"}
+      }
+    ]
+  },
+  "service_provider_config": {
+    "patch": {"supported": true},
+    "bulk": {"supported": true, "maxOperations": 1000},
+    "filter": {"supported": true, "maxResults": 200},
+    "changePassword": {"supported": true},
+    "sort": {"supported": true},
+    "etag": {"supported": false}
+  }
+}

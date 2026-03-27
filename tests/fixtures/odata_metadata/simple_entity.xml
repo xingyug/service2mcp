@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:DataServices>
+    <Schema Namespace="Example.Model" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+      <EntityType Name="Product">
+        <Key>
+          <PropertyRef Name="Id"/>
+        </Key>
+        <Property Name="Id" Type="Edm.Int32" Nullable="false"/>
+        <Property Name="Name" Type="Edm.String"/>
+        <Property Name="Price" Type="Edm.Decimal"/>
+        <Property Name="Category" Type="Edm.String"/>
+      </EntityType>
+
+      <EntityType Name="Category">
+        <Key>
+          <PropertyRef Name="Id"/>
+        </Key>
+        <Property Name="Id" Type="Edm.Int32" Nullable="false"/>
+        <Property Name="Name" Type="Edm.String"/>
+      </EntityType>
+
+      <Function Name="GetTopProducts" IsBound="false">
+        <ReturnType Type="Collection(Example.Model.Product)"/>
+      </Function>
+
+      <Action Name="ResetProductData" IsBound="false"/>
+
+      <EntityContainer Name="DefaultContainer">
+        <EntitySet Name="Products" EntityType="Example.Model.Product"/>
+        <EntitySet Name="Categories" EntityType="Example.Model.Category"/>
+        <FunctionImport Name="GetTopProducts" Function="Example.Model.GetTopProducts" EntitySet="Products"/>
+        <ActionImport Name="ResetProductData" Action="Example.Model.ResetProductData"/>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>

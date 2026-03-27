@@ -1,0 +1,55 @@
+{
+  "openrpc": "1.3.2",
+  "info": {
+    "title": "Calculator API",
+    "description": "A simple calculator JSON-RPC service",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {"name": "default", "url": "https://calc.example.com/rpc"}
+  ],
+  "methods": [
+    {
+      "name": "add",
+      "summary": "Add two numbers",
+      "description": "Returns the sum of two numbers",
+      "params": [
+        {"name": "a", "description": "First number", "required": true, "schema": {"type": "number"}},
+        {"name": "b", "description": "Second number", "required": true, "schema": {"type": "number"}}
+      ],
+      "result": {
+        "name": "result",
+        "description": "Sum of a and b",
+        "schema": {"type": "number"}
+      }
+    },
+    {
+      "name": "subtract",
+      "summary": "Subtract two numbers",
+      "params": [
+        {"name": "a", "required": true, "schema": {"type": "number"}},
+        {"name": "b", "required": true, "schema": {"type": "number"}}
+      ],
+      "result": {"name": "result", "schema": {"type": "number"}}
+    },
+    {
+      "name": "get_history",
+      "summary": "Get calculation history",
+      "description": "Returns recent calculations",
+      "params": [
+        {"name": "limit", "description": "Max results", "required": false, "schema": {"type": "integer"}}
+      ],
+      "result": {
+        "name": "history",
+        "schema": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    {
+      "name": "delete_history",
+      "summary": "Delete calculation history",
+      "description": "Permanently deletes all calculation history",
+      "params": [],
+      "result": {"name": "result", "schema": {"type": "boolean"}}
+    }
+  ]
+}

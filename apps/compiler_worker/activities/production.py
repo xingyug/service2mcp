@@ -28,8 +28,11 @@ from libs.enhancer.tool_intent import bifurcate_descriptions, derive_tool_intent
 from libs.extractors import (
     GraphQLExtractor,
     GrpcProtoExtractor,
+    JsonRpcExtractor,
+    ODataExtractor,
     OpenAPIExtractor,
     RESTExtractor,
+    SCIMExtractor,
     SOAPWSDLExtractor,
     SQLExtractor,
 )
@@ -834,6 +837,9 @@ def _build_extractors() -> list[ExtractorProtocol]:
         GraphQLExtractor(),
         GrpcProtoExtractor(),
         SOAPWSDLExtractor(),
+        ODataExtractor(),
+        SCIMExtractor(),
+        JsonRpcExtractor(),
         SQLExtractor(),
         RESTExtractor(),
     ]
