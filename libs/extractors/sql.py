@@ -34,6 +34,8 @@ from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthConfig,
     AuthType,
+    ErrorResponse,
+    ErrorSchema,
     Operation,
     Param,
     RiskLevel,
@@ -124,14 +126,10 @@ class SQLExtractor:
             metadata={
                 "database_schema": reflected.schema,
                 "tables": [
-                    relation.name
-                    for relation in reflected.relations
-                    if relation.kind == "table"
+                    relation.name for relation in reflected.relations if relation.kind == "table"
                 ],
                 "views": [
-                    relation.name
-                    for relation in reflected.relations
-                    if relation.kind == "view"
+                    relation.name for relation in reflected.relations if relation.kind == "view"
                 ],
             },
         )
@@ -243,9 +241,7 @@ class SQLExtractor:
             referred_columns = foreign_key.get("referred_columns") or []
             for index, column_name in enumerate(constrained_columns):
                 referred_column = referred_columns[index] if index < len(referred_columns) else "id"
-                descriptions[str(column_name)] = (
-                    f"References {referred_table}.{referred_column}."
-                )
+                descriptions[str(column_name)] = f"References {referred_table}.{referred_column}."
         return descriptions
 
     def _build_operations(self, reflected: ReflectedDatabase) -> list[Operation]:
@@ -305,6 +301,18 @@ class SQLExtractor:
             source=SourceType.extractor,
             confidence=0.95,
             enabled=True,
+            error_schema=ErrorSchema(
+                responses=[
+                    ErrorResponse(
+                        error_code="SYNTAX_ERROR",
+                        description="SQL syntax error in generated query.",
+                    ),
+                    ErrorResponse(
+                        error_code="TIMEOUT",
+                        description="Query execution exceeded timeout.",
+                    ),
+                ]
+            ),
         )
 
     def _build_insert_operation(self, schema: str, relation: ReflectedRelation) -> Operation:
@@ -313,9 +321,7 @@ class SQLExtractor:
                 name=column.name,
                 type=column.ir_type,
                 required=(
-                    not column.nullable
-                    and not column.has_default
-                    and not column.autoincrement
+                    not column.nullable and not column.has_default and not column.autoincrement
                 ),
                 description=column.description,
                 source=SourceType.extractor,
@@ -354,6 +360,22 @@ class SQLExtractor:
             source=SourceType.extractor,
             confidence=0.95,
             enabled=True,
+            error_schema=ErrorSchema(
+                responses=[
+                    ErrorResponse(
+                        error_code="CONSTRAINT_VIOLATION",
+                        description="Insert violates a database constraint.",
+                    ),
+                    ErrorResponse(
+                        error_code="SYNTAX_ERROR",
+                        description="SQL syntax error in generated statement.",
+                    ),
+                    ErrorResponse(
+                        error_code="TIMEOUT",
+                        description="Insert execution exceeded timeout.",
+                    ),
+                ]
+            ),
         )
 
     def _map_column_type(self, sql_type: Any) -> str:
@@ -396,9 +418,7 @@ class SQLExtractor:
 
         parsed = urlparse(database_url)
         database_name = (
-            parsed.path.rsplit("/", 1)[-1].strip("/")
-            or parsed.hostname
-            or "sql-service"
+            parsed.path.rsplit("/", 1)[-1].strip("/") or parsed.hostname or "sql-service"
         )
         return _slugify(database_name)
 

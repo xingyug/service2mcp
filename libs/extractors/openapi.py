@@ -15,6 +15,8 @@ from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthConfig,
     AuthType,
+    ErrorResponse,
+    ErrorSchema,
     EventDescriptor,
     EventDirection,
     EventSupportLevel,
@@ -22,6 +24,7 @@ from libs.ir.models import (
     Operation,
     Param,
     RequestBodyMode,
+    ResponseExample,
     RiskLevel,
     RiskMetadata,
     ServiceIR,
@@ -310,6 +313,9 @@ class OpenAPIExtractor:
                             )
                         )
 
+                error_schema = self._extract_error_schema(op_spec, is_swagger)
+                response_examples = self._extract_response_examples(op_spec, is_swagger)
+
                 enabled = risk_level != RiskLevel.unknown
                 op = Operation(
                     id=op_id,
@@ -320,6 +326,8 @@ class OpenAPIExtractor:
                     params=params,
                     request_body_mode=request_body_mode,
                     body_param_name=body_param_name,
+                    error_schema=error_schema,
+                    response_examples=response_examples,
                     risk=RiskMetadata(
                         writes_state=method.upper() in ("POST", "PUT", "PATCH", "DELETE"),
                         destructive=method.upper() == "DELETE",
@@ -455,9 +463,7 @@ class OpenAPIExtractor:
         if not isinstance(webhooks, dict):
             return []
         ignored_webhooks = [
-            webhook_name
-            for webhook_name in webhooks
-            if isinstance(webhook_name, str)
+            webhook_name for webhook_name in webhooks if isinstance(webhook_name, str)
         ]
         ignored_webhooks.sort()
         return ignored_webhooks
@@ -480,6 +486,177 @@ class OpenAPIExtractor:
         ]
         descriptors.sort(key=lambda descriptor: descriptor.id)
         return descriptors
+
+    # ── Error-schema & response-examples extraction ──────────────────────
+
+    def _extract_error_schema(self, op_spec: JSONDict, is_swagger: bool) -> ErrorSchema:
+        """Extract error responses (4xx/5xx/default) into an ErrorSchema."""
+        responses = op_spec.get("responses", {})
+        if not isinstance(responses, dict):
+            return ErrorSchema()
+
+        error_responses: list[ErrorResponse] = []
+        default_error_schema: dict[str, Any] | None = None
+
+        for status_code_str, resp_obj in responses.items():
+            if not isinstance(resp_obj, dict):
+                continue
+
+            is_default = status_code_str == "default"
+            is_error = False
+            status_int: int | None = None
+
+            if not is_default:
+                try:
+                    status_int = int(status_code_str)
+                    is_error = status_int >= 400
+                except (ValueError, TypeError):
+                    continue
+
+            if not is_error and not is_default:
+                continue
+
+            description = str(resp_obj.get("description", ""))
+            body_schema = self._response_body_schema(resp_obj, is_swagger)
+
+            if is_default:
+                default_error_schema = body_schema
+            else:
+                error_responses.append(
+                    ErrorResponse(
+                        status_code=status_int,
+                        description=description,
+                        error_body_schema=body_schema,
+                    )
+                )
+
+        error_responses.sort(key=lambda r: r.status_code or 0)
+        return ErrorSchema(responses=error_responses, default_error_schema=default_error_schema)
+
+    def _extract_response_examples(
+        self,
+        op_spec: JSONDict,
+        is_swagger: bool,
+    ) -> list[ResponseExample]:
+        """Extract inline examples from 2xx responses."""
+        responses = op_spec.get("responses", {})
+        if not isinstance(responses, dict):
+            return []
+
+        examples: list[ResponseExample] = []
+
+        for status_code_str, resp_obj in responses.items():
+            if not isinstance(resp_obj, dict):
+                continue
+
+            # Only 2xx
+            try:
+                status_int = int(status_code_str)
+            except (ValueError, TypeError):
+                continue
+            if not (200 <= status_int < 300):
+                continue
+
+            if is_swagger:
+                # Swagger 2.x: responses/<code>/examples/application/json
+                swagger_examples = resp_obj.get("examples", {})
+                if isinstance(swagger_examples, dict):
+                    json_example = swagger_examples.get("application/json")
+                    if json_example is not None:
+                        examples.append(
+                            ResponseExample(
+                                name=f"example_{status_int}",
+                                description=str(resp_obj.get("description", "")),
+                                status_code=status_int,
+                                body=self._normalize_example_body(json_example),
+                                source=SourceType.extractor,
+                            )
+                        )
+                # Swagger 2.x: schema-level example
+                schema = resp_obj.get("schema", {})
+                if isinstance(schema, dict) and "example" in schema:
+                    examples.append(
+                        ResponseExample(
+                            name=f"schema_example_{status_int}",
+                            description=f"Schema example for {status_int}",
+                            status_code=status_int,
+                            body=self._normalize_example_body(schema["example"]),
+                            source=SourceType.extractor,
+                        )
+                    )
+            else:
+                # OpenAPI 3.x
+                content = resp_obj.get("content", {})
+                if not isinstance(content, dict):
+                    continue
+                json_content = content.get("application/json", {})
+                if not isinstance(json_content, dict):
+                    continue
+
+                # Single example
+                if "example" in json_content:
+                    examples.append(
+                        ResponseExample(
+                            name=f"example_{status_int}",
+                            description=str(resp_obj.get("description", "")),
+                            status_code=status_int,
+                            body=self._normalize_example_body(json_content["example"]),
+                            source=SourceType.extractor,
+                        )
+                    )
+
+                # Examples map
+                examples_map = json_content.get("examples", {})
+                if isinstance(examples_map, dict):
+                    for ex_name, ex_obj in examples_map.items():
+                        if not isinstance(ex_obj, dict):
+                            continue
+                        examples.append(
+                            ResponseExample(
+                                name=str(ex_name),
+                                description=str(ex_obj.get("summary", "")),
+                                status_code=status_int,
+                                body=self._normalize_example_body(ex_obj.get("value")),
+                                source=SourceType.extractor,
+                            )
+                        )
+
+                # Schema-level example
+                schema = json_content.get("schema", {})
+                if isinstance(schema, dict) and "example" in schema:
+                    examples.append(
+                        ResponseExample(
+                            name=f"schema_example_{status_int}",
+                            description=f"Schema example for {status_int}",
+                            status_code=status_int,
+                            body=self._normalize_example_body(schema["example"]),
+                            source=SourceType.extractor,
+                        )
+                    )
+
+        return examples
+
+    @staticmethod
+    def _normalize_example_body(body: Any) -> dict[str, Any] | str | None:
+        """Coerce an example body to a type accepted by ResponseExample.body."""
+        if body is None or isinstance(body, (dict, str)):
+            return body
+        return json.dumps(body, default=str)
+
+    @staticmethod
+    def _response_body_schema(resp_obj: JSONDict, is_swagger: bool) -> dict[str, Any] | None:
+        """Extract the JSON Schema from a response object."""
+        if is_swagger:
+            schema = resp_obj.get("schema")
+            return schema if isinstance(schema, dict) else None
+        content = resp_obj.get("content", {})
+        if not isinstance(content, dict):
+            return None
+        json_content = content.get("application/json", {})
+        if not isinstance(json_content, dict):
+            return None
+        schema = json_content.get("schema")
+        return schema if isinstance(schema, dict) else None
 
     def _flatten_schema_to_params(self, schema: JSONDict) -> list[Param]:
         """Extract top-level properties from a schema as params."""
@@ -513,6 +690,7 @@ class OpenAPIExtractor:
 def _slugify(text: str) -> str:
     """Convert text to a URL-safe slug."""
     import re
+
     text = text.lower().strip()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     return text.strip("-")

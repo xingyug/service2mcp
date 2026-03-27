@@ -17,6 +17,7 @@ from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthConfig,
     AuthType,
+    ErrorSchema,
     Operation,
     Param,
     RiskLevel,
@@ -103,10 +104,10 @@ class SOAPWSDLExtractor:
         binding_name = _qname_local(port.attrib.get("binding", ""))
         address = port.find("soap:address", NS)
         base_url = (
-            address.attrib.get("location")
-            if address is not None
-            else None
-        ) or source.url or f"https://{_slugify(service_name)}"
+            (address.attrib.get("location") if address is not None else None)
+            or source.url
+            or f"https://{_slugify(service_name)}"
+        )
 
         port_type_map = {
             element.attrib["name"]: element
@@ -130,9 +131,7 @@ class SOAPWSDLExtractor:
         binding_style = _binding_style(binding)
         body_uses = _parse_body_uses(binding)
         if binding_style != "document":
-            raise ValueError(
-                "SOAP extractor currently supports document-style bindings only."
-            )
+            raise ValueError("SOAP extractor currently supports document-style bindings only.")
         unsupported_uses = sorted(
             operation_name
             for operation_name, body_use in body_uses.items()
@@ -307,9 +306,7 @@ def _parse_body_uses(binding: ET.Element) -> dict[str, str]:
         if soap_body is None:
             soap_body = operation.find("wsdl:output/soap:body", NS)
         uses[name] = (
-            soap_body.attrib.get("use", "literal").lower()
-            if soap_body is not None
-            else "literal"
+            soap_body.attrib.get("use", "literal").lower() if soap_body is not None else "literal"
         )
     return uses
 
@@ -331,9 +328,7 @@ def _build_operation(
         raise ValueError("Encountered WSDL operation without a name.")
     input_tag = operation.find("wsdl:input", NS)
     if input_tag is None:
-        raise ValueError(
-            f"WSDL operation '{operation_name}' has no <wsdl:input> child element."
-        )
+        raise ValueError(f"WSDL operation '{operation_name}' has no <wsdl:input> child element.")
     input_message_name = _qname_local(input_tag.attrib.get("message", ""))
     output_element_name = ""
     output_tag = operation.find("wsdl:output", NS)
@@ -380,6 +375,17 @@ def _build_operation(
         source=SourceType.extractor,
         confidence=1.0,
         enabled=True,
+        error_schema=ErrorSchema(
+            default_error_schema={
+                "type": "object",
+                "properties": {
+                    "faultcode": {"type": "string"},
+                    "faultstring": {"type": "string"},
+                    "detail": {"type": "object"},
+                },
+                "required": ["faultcode", "faultstring"],
+            }
+        ),
     )
 
 
@@ -403,8 +409,7 @@ def _response_schema(
     if not fields:
         return None
     properties = {
-        field.name: {"type": _ir_type_for_xsd(field.type_name, complex_types)}
-        for field in fields
+        field.name: {"type": _ir_type_for_xsd(field.type_name, complex_types)} for field in fields
     }
     required = [field.name for field in fields if field.required]
     schema: dict[str, Any] = {"type": "object", "properties": properties}

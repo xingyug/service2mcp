@@ -8,7 +8,7 @@ import pytest
 
 from libs.extractors.base import SourceConfig
 from libs.extractors.openapi import OpenAPIExtractor
-from libs.ir.models import AuthType, EventSupportLevel, EventTransport, RiskLevel
+from libs.ir.models import AuthType, EventSupportLevel, EventTransport, RiskLevel, SourceType
 
 FIXTURES = Path(__file__).parent.parent.parent.parent / "tests" / "fixtures" / "openapi_specs"
 
@@ -19,6 +19,7 @@ def extractor():
 
 
 # ── Detection Tests ────────────────────────────────────────────────────────
+
 
 class TestDetection:
     def test_detect_openapi_3_yaml(self, extractor):
@@ -43,6 +44,7 @@ class TestDetection:
 
 
 # ── OpenAPI 3.0 Extraction Tests ──────────────────────────────────────────
+
 
 class TestOpenAPI30Extraction:
     def test_basic_extraction(self, extractor):
@@ -118,6 +120,7 @@ class TestOpenAPI30Extraction:
 
 # ── Swagger 2.0 Extraction Tests ──────────────────────────────────────────
 
+
 class TestSwagger20Extraction:
     def test_basic_extraction(self, extractor):
         source = SourceConfig(file_path=str(FIXTURES / "petstore_swagger_2_0.json"))
@@ -148,12 +151,12 @@ class TestSwagger20Extraction:
 
 # ── Edge Cases ─────────────────────────────────────────────────────────────
 
+
 class TestEdgeCases:
     def test_empty_paths(self, extractor):
         source = SourceConfig(
             file_content=(
-                '{"openapi": "3.0.0", "info": {"title": "Empty", "version": "1.0"}, '
-                '"paths": {}}'
+                '{"openapi": "3.0.0", "info": {"title": "Empty", "version": "1.0"}, "paths": {}}'
             )
         )
         ir = extractor.extract(source)
@@ -253,3 +256,330 @@ webhooks:
         assert callback.operation_id == "uploadInvoiceAttachment"
         assert callback.support is EventSupportLevel.unsupported
         assert webhook.transport is EventTransport.webhook
+
+
+# ── DEP-002: Error Response Extraction Tests ──────────────────────────────
+
+
+class TestErrorResponseExtraction:
+    def test_extract_error_responses_from_openapi3(self, extractor):
+        """4xx/5xx responses extracted as ErrorResponse entries."""
+        spec = """
+openapi: "3.0.0"
+info:
+  title: ErrorTest
+  version: "1.0"
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Bad Request
+        "404":
+          description: Not Found
+        "500":
+          description: Internal Server Error
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+        op = ir.operations[0]
+
+        assert len(op.error_schema.responses) == 3
+        status_codes = [r.status_code for r in op.error_schema.responses]
+        assert status_codes == [400, 404, 500]
+        assert op.error_schema.responses[0].description == "Bad Request"
+        assert op.error_schema.responses[1].description == "Not Found"
+        assert op.error_schema.responses[2].description == "Internal Server Error"
+
+    def test_extract_default_error_schema(self, extractor):
+        """'default' response becomes default_error_schema."""
+        spec = """
+openapi: "3.0.0"
+info:
+  title: DefaultErrorTest
+  version: "1.0"
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: OK
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: integer
+                  message:
+                    type: string
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+        op = ir.operations[0]
+
+        assert op.error_schema.default_error_schema is not None
+        assert op.error_schema.default_error_schema["type"] == "object"
+        props = op.error_schema.default_error_schema["properties"]
+        assert "code" in props
+        assert "message" in props
+
+    def test_error_responses_with_schema(self, extractor):
+        """Error response includes JSON Schema body when present."""
+        spec = """
+openapi: "3.0.0"
+info:
+  title: SchemaErrorTest
+  version: "1.0"
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: OK
+        "422":
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: array
+                    items:
+                      type: object
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+        op = ir.operations[0]
+
+        assert len(op.error_schema.responses) == 1
+        err = op.error_schema.responses[0]
+        assert err.status_code == 422
+        assert err.description == "Validation Error"
+        assert err.error_body_schema is not None
+        assert err.error_body_schema["type"] == "object"
+        assert "detail" in err.error_body_schema["properties"]
+
+    def test_no_error_responses_default_empty(self, extractor):
+        """Operations without error info get empty ErrorSchema."""
+        spec = """
+openapi: "3.0.0"
+info:
+  title: NoErrorTest
+  version: "1.0"
+paths:
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      responses:
+        "200":
+          description: OK
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+        op = ir.operations[0]
+
+        assert len(op.error_schema.responses) == 0
+        assert op.error_schema.default_error_schema is None
+
+    def test_extract_swagger2_error_responses(self, extractor):
+        """Swagger 2.0 error responses extracted correctly."""
+        spec = """
+{
+  "swagger": "2.0",
+  "info": {"title": "Sw2Err", "version": "1.0"},
+  "host": "api.example.com",
+  "basePath": "/v1",
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "summary": "List pets",
+        "responses": {
+          "200": {"description": "OK"},
+          "401": {
+            "description": "Unauthorized",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "error": {"type": "string"}
+              }
+            }
+          },
+          "500": {"description": "Server Error"}
+        }
+      }
+    }
+  }
+}
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+        op = ir.operations[0]
+
+        assert len(op.error_schema.responses) == 2
+        err_401 = next(r for r in op.error_schema.responses if r.status_code == 401)
+        assert err_401.description == "Unauthorized"
+        assert err_401.error_body_schema is not None
+        assert err_401.error_body_schema["type"] == "object"
+
+        err_500 = next(r for r in op.error_schema.responses if r.status_code == 500)
+        assert err_500.description == "Server Error"
+        assert err_500.error_body_schema is None
+
+
+# ── DEP-003: Response Examples Extraction Tests ───────────────────────────
+
+
+class TestResponseExamplesExtraction:
+    def test_extract_response_examples_from_openapi3(self, extractor):
+        """Inline example extracted from content/application/json/example."""
+        spec = """
+openapi: "3.0.0"
+info:
+  title: ExampleTest
+  version: "1.0"
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              example:
+                - id: 1
+                  name: Fido
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+        op = ir.operations[0]
+
+        assert len(op.response_examples) == 1
+        ex = op.response_examples[0]
+        assert ex.name == "example_200"
+        assert ex.status_code == 200
+        assert ex.body == '[{"id": 1, "name": "Fido"}]'
+        assert ex.source == SourceType.extractor
+
+    def test_extract_response_examples_map(self, extractor):
+        """'examples' map extracted as multiple ResponseExamples."""
+        spec = """
+openapi: "3.0.0"
+info:
+  title: ExamplesMapTest
+  version: "1.0"
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              examples:
+                single_pet:
+                  summary: One pet
+                  value:
+                    - id: 1
+                      name: Fido
+                empty_list:
+                  summary: No pets
+                  value: []
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+        op = ir.operations[0]
+
+        assert len(op.response_examples) == 2
+        names = {ex.name for ex in op.response_examples}
+        assert names == {"single_pet", "empty_list"}
+        single = next(ex for ex in op.response_examples if ex.name == "single_pet")
+        assert single.description == "One pet"
+        assert single.status_code == 200
+        assert single.body == '[{"id": 1, "name": "Fido"}]'
+        empty = next(ex for ex in op.response_examples if ex.name == "empty_list")
+        assert empty.body == "[]"
+
+    def test_extract_swagger2_examples(self, extractor):
+        """Swagger 2.0 examples from responses/<code>/examples/application/json."""
+        spec = """
+{
+  "swagger": "2.0",
+  "info": {"title": "Sw2Ex", "version": "1.0"},
+  "host": "api.example.com",
+  "basePath": "/v1",
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "summary": "List pets",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "examples": {
+              "application/json": [
+                {"id": 1, "name": "Fido"}
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+        op = ir.operations[0]
+
+        assert len(op.response_examples) >= 1
+        ex = op.response_examples[0]
+        assert ex.name == "example_200"
+        assert ex.status_code == 200
+        assert ex.body == '[{"id": 1, "name": "Fido"}]'
+        assert ex.source == SourceType.extractor
+
+    def test_schema_level_example(self, extractor):
+        """Schema-level 'example' on the response schema produces a ResponseExample."""
+        spec = """
+openapi: "3.0.0"
+info:
+  title: SchemaExTest
+  version: "1.0"
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                example:
+                  id: 1
+                  name: Fido
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+        op = ir.operations[0]
+
+        schema_examples = [ex for ex in op.response_examples if "schema" in ex.name]
+        assert len(schema_examples) == 1
+        assert schema_examples[0].body == {"id": 1, "name": "Fido"}
+        assert schema_examples[0].status_code == 200
