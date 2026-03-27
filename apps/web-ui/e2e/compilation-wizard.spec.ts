@@ -23,16 +23,16 @@ test.describe("Compilation Wizard", () => {
   });
 
   test("source input step renders with form fields", async ({ page }) => {
-    // Card title
-    await expect(page.getByRole("heading", { name: "Source Input" })).toBeVisible();
+    // CardTitle renders as <div>, not heading
+    await expect(page.locator("[data-slot='card-title']").getByText("Source Input")).toBeVisible();
 
     // Source type radio buttons
     await expect(page.getByLabel("URL")).toBeVisible();
     await expect(page.getByLabel("Paste Content")).toBeVisible();
     await expect(page.getByLabel("Upload File")).toBeVisible();
 
-    // URL input (default source mode)
-    await expect(page.locator("#source-url")).toBeVisible();
+    // URL input (default source mode) — use type selector to avoid radio button with same id
+    await expect(page.locator("input[type='url']#source-url")).toBeVisible();
 
     // Service name and created-by fields
     await expect(page.locator("#service-name")).toBeVisible();
@@ -45,8 +45,9 @@ test.describe("Compilation Wizard", () => {
 
   test("can fill in source URL and created-by", async ({ page }) => {
     const sourceUrl = "https://api.example.com/openapi.yaml";
-    await page.fill("#source-url", sourceUrl);
-    await expect(page.locator("#source-url")).toHaveValue(sourceUrl);
+    const urlInput = page.locator("input[type='url']#source-url");
+    await urlInput.fill(sourceUrl);
+    await expect(urlInput).toHaveValue(sourceUrl);
 
     await page.fill("#created-by", "test-admin");
     await expect(page.locator("#created-by")).toHaveValue("test-admin");
@@ -64,32 +65,34 @@ test.describe("Compilation Wizard", () => {
   });
 
   test("can navigate between wizard steps", async ({ page }) => {
+    const cardTitle = page.locator("[data-slot='card-title']");
+
     // Fill required fields on step 0
-    await page.fill("#source-url", "https://api.example.com/openapi.yaml");
+    await page.locator("input[type='url']#source-url").fill("https://api.example.com/openapi.yaml");
     await page.fill("#created-by", "test-admin");
 
     // Go to step 1
     await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page.getByRole("heading", { name: "Protocol & Options" })).toBeVisible();
+    await expect(cardTitle.getByText("Protocol & Options")).toBeVisible();
 
     // Go to step 2
     await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page.getByRole("heading", { name: "Auth Configuration" })).toBeVisible();
+    await expect(cardTitle.getByText("Auth Configuration")).toBeVisible();
 
     // Go back to step 1
     await page.getByRole("button", { name: "Back" }).click();
-    await expect(page.getByRole("heading", { name: "Protocol & Options" })).toBeVisible();
+    await expect(cardTitle.getByText("Protocol & Options")).toBeVisible();
 
     // Go back to step 0
     await page.getByRole("button", { name: "Back" }).click();
-    await expect(page.getByRole("heading", { name: "Source Input" })).toBeVisible();
+    await expect(cardTitle.getByText("Source Input")).toBeVisible();
   });
 
   test("review step shows entered data", async ({ page }) => {
     const sourceUrl = "https://api.example.com/petstore.yaml";
 
     // Step 0: fill source
-    await page.fill("#source-url", sourceUrl);
+    await page.locator("input[type='url']#source-url").fill(sourceUrl);
     await page.fill("#service-name", "petstore");
     await page.fill("#created-by", "test-admin");
     await page.getByRole("button", { name: "Continue" }).click();
@@ -119,7 +122,7 @@ test.describe("Compilation Wizard", () => {
   test("can switch source mode to paste content", async ({ page }) => {
     await page.getByLabel("Paste Content").click();
     await expect(page.locator("#source-content")).toBeVisible();
-    await expect(page.locator("#source-url")).not.toBeVisible();
+    await expect(page.locator("input[type='url']#source-url")).not.toBeVisible();
 
     await page.fill("#source-content", "openapi: 3.0.0\ninfo:\n  title: Test");
     await expect(page.locator("#source-content")).toHaveValue("openapi: 3.0.0\ninfo:\n  title: Test");

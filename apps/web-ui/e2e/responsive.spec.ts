@@ -65,8 +65,8 @@ test.describe("Responsive Layout", () => {
     await page.goto("/compilations/new");
     await page.waitForLoadState("networkidle");
 
-    // Wizard should still render on mobile
-    await expect(page.getByRole("heading", { name: "Source Input" })).toBeVisible();
+    // Wizard should still render on mobile — CardTitle is a <div>
+    await expect(page.locator("[data-slot='card-title']").getByText("Source Input")).toBeVisible();
     await expect(page.locator("#created-by")).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue" })).toBeVisible();
   });

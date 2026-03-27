@@ -8,7 +8,8 @@ test.describe("Login Page", () => {
   test("renders login page with title and description", async ({ page }) => {
     await expect(page.getByRole("heading", { name: "Tool Compiler v2" })).toBeVisible();
     await expect(page.getByText("Enterprise API-to-MCP Tool Compilation Platform")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    // CardTitle renders as <div>, not a heading element
+    await expect(page.locator("[data-slot='card-title']").getByText("Sign in")).toBeVisible();
   });
 
   test("renders username and password fields on password tab", async ({ page }) => {

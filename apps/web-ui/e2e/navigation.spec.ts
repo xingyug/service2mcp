@@ -50,7 +50,8 @@ test.describe("Navigation", () => {
     await page.goto("/");
     await page.waitForLoadState("networkidle");
 
-    await page.getByRole("link", { name: "New Compilation" }).click();
+    // Multiple "New Compilation" links may exist (sidebar + dashboard); target sidebar
+    await page.locator("[data-sidebar='menu-button']").filter({ hasText: "New Compilation" }).click();
     await expect(page).toHaveURL(/\/compilations\/new$/);
     await expect(page.getByText("Source Input").first()).toBeVisible();
   });
@@ -105,7 +106,7 @@ test.describe("Navigation", () => {
     await expect(breadcrumbNav.getByText("Compilations")).toBeVisible();
 
     // Navigate to new compilation – breadcrumb should show Compilations > New
-    await page.getByRole("link", { name: "New Compilation" }).click();
+    await page.locator("[data-sidebar='menu-button']").filter({ hasText: "New Compilation" }).click();
     await expect(breadcrumbNav.getByText("New")).toBeVisible();
   });
 });
