@@ -454,6 +454,50 @@ class ToolGroup(BaseModel):
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
+# ── MCP Resource & Prompt Models ──────────────────────────────────────────
+
+
+class ResourceDefinition(BaseModel):
+    """A read-only data resource the agent can access as context."""
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = ""
+    uri: str = Field(min_length=1, description="MCP resource URI, e.g. 'service://petstore/schema'")
+    mime_type: str = "application/json"
+    content_type: Literal["static", "dynamic"] = "static"
+    content: str | None = None
+    operation_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class PromptArgument(BaseModel):
+    """An argument for a prompt template."""
+
+    name: str = Field(min_length=1)
+    description: str = ""
+    required: bool = False
+    default: str | None = None
+
+
+class PromptDefinition(BaseModel):
+    """A reusable prompt template for interacting with the service's tools."""
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = ""
+    template: str = Field(
+        min_length=1,
+        description="Prompt template text with {placeholder} variables",
+    )
+    arguments: list[PromptArgument] = Field(default_factory=list)
+    tool_ids: list[str] = Field(
+        default_factory=list,
+        description="Operations this prompt is designed for",
+    )
+    tags: list[str] = Field(default_factory=list)
+
+
 # ── Top-Level IR ───────────────────────────────────────────────────────────
 
 IR_VERSION = "1.0.0"
@@ -480,6 +524,8 @@ class ServiceIR(BaseModel):
     operation_chains: list[OperationChain] = Field(default_factory=list)
     tool_grouping: list[ToolGroup] = Field(default_factory=list)
     event_descriptors: list[EventDescriptor] = Field(default_factory=list)
+    resource_definitions: list[ResourceDefinition] = Field(default_factory=list)
+    prompt_definitions: list[PromptDefinition] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     tenant: str | None = None
@@ -528,4 +574,46 @@ class ServiceIR(BaseModel):
                 raise ValueError(
                     f"ToolGroup '{group.id}' references unknown operations: {invalid}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def resource_definition_ids_must_be_unique(self) -> ServiceIR:
+        ids = [r.id for r in self.resource_definitions]
+        duplicates = {x for x in ids if ids.count(x) > 1}
+        if duplicates:
+            raise ValueError(f"Duplicate resource definition IDs: {duplicates}")
+        return self
+
+    @model_validator(mode="after")
+    def prompt_definition_ids_must_be_unique(self) -> ServiceIR:
+        ids = [p.id for p in self.prompt_definitions]
+        duplicates = {x for x in ids if ids.count(x) > 1}
+        if duplicates:
+            raise ValueError(f"Duplicate prompt definition IDs: {duplicates}")
+        return self
+
+    @model_validator(mode="after")
+    def prompt_tool_ids_must_reference_valid_operations(self) -> ServiceIR:
+        op_ids = {op.id for op in self.operations}
+        for prompt in self.prompt_definitions:
+            invalid = set(prompt.tool_ids) - op_ids
+            if invalid:
+                raise ValueError(
+                    f"PromptDefinition '{prompt.id}' references unknown operations: {invalid}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def resource_operation_ids_must_reference_valid_operations(self) -> ServiceIR:
+        op_ids = {op.id for op in self.operations}
+        invalid_refs = {
+            resource.operation_id
+            for resource in self.resource_definitions
+            if resource.operation_id is not None and resource.operation_id not in op_ids
+        }
+        if invalid_refs:
+            raise ValueError(
+                "Resource definitions reference unknown operations: "
+                f"{sorted(invalid_refs)}"
+            )
         return self

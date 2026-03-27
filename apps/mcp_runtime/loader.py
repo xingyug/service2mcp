@@ -14,7 +14,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import ValidationError
 
 from libs.ir import ServiceIR, deserialize_ir
-from libs.ir.models import Operation, Param
+from libs.ir.models import Operation, Param, PromptDefinition, ResourceDefinition
 
 ToolResult: TypeAlias = dict[str, Any]
 ToolHandler: TypeAlias = Callable[[Operation, dict[str, Any]], ToolResult | Awaitable[ToolResult]]
@@ -186,3 +186,104 @@ def _default_tool_handler(operation: Operation, arguments: dict[str, Any]) -> To
         "path": operation.path,
         "arguments": arguments,
     }
+
+
+def register_ir_resources(
+    server: FastMCP,
+    service_ir: ServiceIR,
+) -> list[ResourceDefinition]:
+    """Register MCP resources from IR resource definitions."""
+    from mcp.server.fastmcp.resources import FunctionResource
+
+    registered: list[ResourceDefinition] = []
+    for resource_def in service_ir.resource_definitions:
+        if resource_def.content_type != "static":
+            continue
+
+        static_content = resource_def.content or ""
+
+        def _make_fn(content: str) -> Any:
+            async def read_resource() -> str:
+                return content
+            return read_resource
+
+        fn_resource = FunctionResource(
+            uri=resource_def.uri,
+            name=resource_def.name,
+            description=resource_def.description or resource_def.name,
+            mime_type=resource_def.mime_type,
+            fn=_make_fn(static_content),
+        )
+        server.add_resource(fn_resource)
+        registered.append(resource_def)
+
+    return registered
+
+
+def register_ir_prompts(
+    server: FastMCP,
+    service_ir: ServiceIR,
+) -> list[PromptDefinition]:
+    """Register MCP prompts from IR prompt definitions."""
+    from mcp.server.fastmcp.prompts import Prompt
+    from mcp.server.fastmcp.prompts.base import (
+        PromptArgument as MCPPromptArgument,
+    )
+
+    registered: list[PromptDefinition] = []
+    for prompt_def in service_ir.prompt_definitions:
+        template = prompt_def.template
+
+        def _make_fn(
+            tmpl: str,
+            args: list[Any],
+        ) -> Any:
+            arg_names = [a.name for a in args]
+
+            async def get_prompt(**kwargs: str) -> str:
+                result = tmpl
+                for name in arg_names:
+                    if name in kwargs:
+                        result = result.replace(
+                            "{" + name + "}", kwargs[name],
+                        )
+                return result
+
+            # Build proper signature so FastMCP can introspect
+            params = [
+                inspect.Parameter(
+                    a.name,
+                    inspect.Parameter.KEYWORD_ONLY,
+                    annotation=str,
+                    default=(
+                        inspect.Parameter.empty if a.required
+                        else (a.default or "")
+                    ),
+                )
+                for a in args
+            ]
+            get_prompt.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+                parameters=params,
+                return_annotation=str,
+            )
+            return get_prompt
+
+        mcp_args = [
+            MCPPromptArgument(
+                name=a.name,
+                description=a.description or a.name,
+                required=a.required,
+            )
+            for a in prompt_def.arguments
+        ]
+
+        prompt = Prompt(
+            name=prompt_def.name,
+            description=prompt_def.description or prompt_def.name,
+            arguments=mcp_args if mcp_args else None,
+            fn=_make_fn(template, prompt_def.arguments),
+        )
+        server.add_prompt(prompt)
+        registered.append(prompt_def)
+
+    return registered

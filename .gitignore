@@ -41,3 +41,4 @@ docs/post-sdd-modular-expansion-plan.md
 get_helm.sh
 =0.20,
 =1.62,
+.venv

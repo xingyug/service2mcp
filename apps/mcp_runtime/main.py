@@ -20,6 +20,8 @@ from apps.mcp_runtime.loader import (
     RuntimeLoadError,
     create_runtime_server,
     load_service_ir,
+    register_ir_prompts,
+    register_ir_resources,
     register_ir_tools,
 )
 from apps.mcp_runtime.observability import RuntimeObservability
@@ -106,6 +108,8 @@ def build_runtime_state(
         service_ir,
         tool_handler=runtime_state.proxy.invoke,
     )
+    register_ir_resources(runtime_state.mcp_server, service_ir)
+    register_ir_prompts(runtime_state.mcp_server, service_ir)
     for operation_id in runtime_state.registered_operations:
         runtime_state.observability.register_operation(operation_id)
     return runtime_state

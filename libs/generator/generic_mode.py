@@ -323,7 +323,60 @@ __all__ = [
     "DEFAULT_WORKLOAD_PORT",
     "GeneratedManifestSet",
     "GenericManifestConfig",
+    "build_capability_manifest",
     "build_route_config",
     "generate_generic_manifests",
     "render_generic_manifest_yaml",
 ]
+
+
+def build_capability_manifest(service_ir: ServiceIR) -> dict[str, Any]:
+    """Build a capability manifest with tools, resources, and prompts.
+
+    Output structure:
+    {
+      "tools": [{"id": ..., "name": ..., "description": ..., "method": ..., "path": ...}],
+      "resources": [{"uri": ..., "name": ..., "description": ..., "mime_type": ...}],
+      "prompts": [{"name": ..., "description": ..., "arguments": [...]}]
+    }
+    """
+    tools = [
+        {
+            "id": op.id,
+            "name": op.name,
+            "description": op.description,
+            "method": op.method,
+            "path": op.path,
+        }
+        for op in service_ir.operations
+        if op.enabled
+    ]
+    resources = [
+        {
+            "uri": r.uri,
+            "name": r.name,
+            "description": r.description,
+            "mime_type": r.mime_type,
+        }
+        for r in service_ir.resource_definitions
+    ]
+    prompts = [
+        {
+            "name": p.name,
+            "description": p.description,
+            "arguments": [
+                {
+                    "name": a.name,
+                    "description": a.description,
+                    "required": a.required,
+                }
+                for a in p.arguments
+            ],
+        }
+        for p in service_ir.prompt_definitions
+    ]
+    return {
+        "tools": tools,
+        "resources": resources,
+        "prompts": prompts,
+    }
