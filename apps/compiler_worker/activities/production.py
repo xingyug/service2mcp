@@ -24,6 +24,7 @@ from apps.compiler_worker.models import (
 )
 from libs.db_models import ServiceVersion
 from libs.enhancer.enhancer import EnhancerConfig, IREnhancer, create_llm_client
+from libs.enhancer.tool_intent import bifurcate_descriptions, derive_tool_intents
 from libs.extractors import (
     GraphQLExtractor,
     GrpcProtoExtractor,
@@ -531,6 +532,8 @@ def create_default_activity_registry(
     async def enhance_stage(context: CompilationContext) -> StageExecutionResult:
         service_ir = ServiceIR.model_validate(context.payload["service_ir"])
         if not _enhancement_enabled():
+            # Still apply deterministic intent derivation even without LLM.
+            service_ir = _apply_post_enhancement(service_ir)
             return _stage_result(
                 context_updates={
                     "service_ir": service_ir.model_dump(mode="json"),
@@ -551,6 +554,10 @@ def create_default_activity_registry(
             create_llm_client(enhancer_config),
             config=enhancer_config,
         ).enhance(service_ir)
+        enhanced_ir = _apply_post_enhancement(
+            result.enhanced_ir,
+            llm_client_factory=lambda: create_llm_client(enhancer_config),
+        )
         token_usage = {
             "model": result.token_usage.model,
             "input_tokens": result.token_usage.input_tokens,
@@ -559,7 +566,7 @@ def create_default_activity_registry(
         }
         return _stage_result(
             context_updates={
-                "service_ir": result.enhanced_ir.model_dump(mode="json"),
+                "service_ir": enhanced_ir.model_dump(mode="json"),
                 "token_usage": token_usage,
             },
             event_detail={
@@ -567,7 +574,7 @@ def create_default_activity_registry(
                 "operations_skipped": result.operations_skipped,
                 "model": result.token_usage.model,
             },
-            protocol=result.enhanced_ir.protocol,
+            protocol=enhanced_ir.protocol,
             service_name=context.payload.get("service_id"),
         )
 
@@ -874,6 +881,45 @@ def _enhancement_enabled() -> bool:
     if os.getenv("WORKER_ENABLE_LLM_ENHANCEMENT", "").lower() in {"1", "true", "yes"}:
         return True
     return bool(os.getenv("LLM_API_KEY") or os.getenv("VERTEX_PROJECT_ID"))
+
+
+def _tool_grouping_enabled() -> bool:
+    return os.getenv("WORKER_ENABLE_TOOL_GROUPING", "").lower() in {"1", "true", "yes"}
+
+
+def _apply_post_enhancement(
+    ir: ServiceIR,
+    *,
+    llm_client_factory: Callable[[], Any] | None = None,
+) -> ServiceIR:
+    """Apply deterministic post-enhancement transforms to a ServiceIR.
+
+    Always runs:
+    - ``derive_tool_intents`` — tags each operation with discovery/action intent
+    - ``bifurcate_descriptions`` — prepends [DISCOVERY]/[ACTION] to descriptions
+
+    Opt-in (``WORKER_ENABLE_TOOL_GROUPING=1`` + LLM available):
+    - ``ToolGrouper`` — clusters operations into business-intent groups
+    """
+    from libs.enhancer.tool_grouping import ToolGrouper, apply_grouping
+
+    ir = derive_tool_intents(ir)
+    ir = bifurcate_descriptions(ir)
+
+    if _tool_grouping_enabled() and llm_client_factory is not None:
+        try:
+            grouper = ToolGrouper(llm_client_factory())
+            grouping_result = grouper.group(ir)
+            ir = apply_grouping(ir, grouping_result)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Tool grouping failed; continuing without grouping",
+                exc_info=True,
+            )
+
+    return ir
 
 
 def _stage_result(

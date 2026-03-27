@@ -109,6 +109,6 @@ class TypeDetector:
                         protocol_name=ext.protocol_name,
                     ))
             except Exception:
-                pass
+                logger.warning("Extractor %s.detect() failed", ext.protocol_name, exc_info=True)
         results.sort(key=lambda r: r.confidence, reverse=True)
         return results

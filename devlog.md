@@ -2031,7 +2031,498 @@ Updated regression thresholds:
 
 ---
 
-## Notes
+## B-003 GKE LLM E2E Live Proof (2026-03-27)
+
+### Context
+
+Built and published four Docker images at tag `20260327-75be3a5-r29` containing the B-003 OPTIONS deep probing + iterative inference + dedup changes. Ran full cross-protocol `PROTOCOL=all AUDIT_ALL_GENERATED_TOOLS=1` GKE LLM E2E smoke test to confirm the REST discovery improvements cause no regressions in the live environment.
+
+### Image Build
+
+Fixed `deploy/docker/Dockerfile.app` — added `COPY README.md /app/README.md` (hatchling requires `README.md` for metadata generation; previously absent from the COPY layer).
+
+Published images:
+- `compiler-api:20260327-75be3a5-r29` (`sha256:b8567690b32b`)
+- `compiler-worker:20260327-75be3a5-r29` (`sha256:3d5d213c62ab`)
+- `access-control:20260327-75be3a5-r29` (`sha256:ed444a118fa7`)
+- `mcp-runtime:20260327-75be3a5-r29` (`sha256:bbeb9dd27f8d`)
+
+### Results
+
+Namespace: `tool-compiler-llm-b003-032621` (kept for inspection).
+
+| Protocol | Job ID | Ops Enhanced | LLM Fields | Audited | Passed | Failed | Skipped |
+|----------|--------|-------------|------------|---------|--------|--------|---------|
+| GraphQL | `dd870f22` | 2 | 8 | 1 | 1 | 0 | 1 |
+| REST | `001f25fb` | 1 | 3 | 1 | 1 | 0 | 0 |
+| gRPC | `66941b44` | 3 | 11 | 1 | 1 | 0 | 2 |
+| SOAP | `16eb7017` | 2 | 7 | 1 | 1 | 0 | 1 |
+| SQL | `849efc9d` | 5 | 25 | 3 | 3 | 0 | 2 |
+| **Total** | — | **13** | **54** | **7** | **7** | **0** | **6** |
+
+Aggregate: **13/13/7/7/0/6** — matches the previous `r28` baseline with zero regressions.
+
+Key validation points:
+- REST `get_items_item_id` tool returned Puzzle Box data (`upstream_status: 200`), confirming OPTIONS probing + dedup work in production
+- gRPC `WatchInventory` returned 2 protobuf events via `grpc_stream` transport
+- SQL `query_order_summaries` returned cross-table JOIN view (`alice@example.com`, `total_cents: 2599`)
+- DeepSeek LLM enhancement active across all protocols (`operations_enhanced > 0`, `llm_field_count > 0`)
+
+### Write set
+- `deploy/docker/Dockerfile.app` (modified — added README.md COPY)
+- `agent.md` (updated — latest verification, repository state)
+- `devlog.md` (updated — this entry)
+- `docs/post-sdd-modular-expansion-plan.md` (updated — GKE live proof results)
+- `new-agent-reading-list.md` (updated — current pause-point)
+
+---
+
+## P1 Pipeline Integration + B-001 Closure
+
+**Date:** 2026-03-27
+**Scope:** Wire B-003 P1 features into production compilation pipeline; close B-001.
+
+### Problem
+The four P1 features from B-003 (`derive_tool_intents`, `bifurcate_descriptions`, `ToolGrouper`, `LLMJudge`) were implemented and tested in pilot tests but **not wired into the actual compilation pipeline**. The `enhance_stage` in `apps/compiler_worker/activities/production.py` had zero references to any of them. B-001 also remained open with one unresolved architectural decision.
+
+### Solution
+
+**Pipeline wiring:**
+- Added `_apply_post_enhancement()` helper in `production.py` that runs:
+  1. `derive_tool_intents(ir)` — deterministic, always runs
+  2. `bifurcate_descriptions(ir)` — deterministic, always runs
+  3. `ToolGrouper` — opt-in via `WORKER_ENABLE_TOOL_GROUPING=1`, requires LLM
+- Modified `enhance_stage` to call `_apply_post_enhancement()` in both passthrough (no-LLM) and LLM-enhanced paths
+- Grouping failures are caught and logged without blocking compilation
+
+**B-001 closure:**
+- Documented the architectural decision: audit **supplements** representative proofs — both coexist
+- All remaining B-001 tasks resolved (cross-protocol audit via B-003 r29, REST failures fed into B-002)
+
+**Test coverage:**
+- Added `tool_intent` assertions to 3 E2E tests (OpenAPI Petstore, REST discovery, GraphQL)
+- Added `tool_intent` assertions to the full-pipeline integration test
+- Added focused `test_apply_post_enhancement_sets_tool_intent_and_bifurcates_descriptions` integration test
+- Updated E2E stub enhance stage to call `_apply_post_enhancement()` so deterministic transforms run even without a real LLM
+
+### Verification
+- **433** tests passed (was 432; +1 new integration test), ruff clean, mypy clean
+
+### Write set
+- `apps/compiler_worker/activities/production.py` (modified — `_apply_post_enhancement`, `_tool_grouping_enabled`, wiring in `enhance_stage`)
+- `tests/e2e/test_full_compilation_flow.py` (modified — `_apply_post_enhancement` import, stub enhance applies deterministic transforms, `tool_intent` assertions)
+- `tests/integration/test_compiler_worker_activities.py` (modified — new test, `ToolIntent` import, full-pipeline assertions)
+- `docs/post-sdd-modular-expansion-plan.md` (updated — B-001 closed, B-003 fourth slice documented)
+- `agent.md` (updated — test count, key files, status)
+- `devlog.md` (updated — this entry)
+
+---
+
+## Test Hardening + Bug Fixes
+
+**Date:** 2026-03-27
+**Scope:** Fix 2 latent bugs and close unit test coverage gaps.
+
+### Bug fixes
+
+1. **soap.py `None` dereference** (`libs/extractors/soap.py:333`): `operation.find("wsdl:input", NS)` returns `None` when a WSDL operation has no `<wsdl:input>` child. The old code used `# type: ignore[union-attr]` to suppress the type error. Fixed: explicit None-check with a descriptive `ValueError`.
+2. **base.py silent exception swallowing** (`libs/extractors/base.py:112`): `AutoDetector.detect_all()` had a bare `except Exception: pass` that silently discarded extractor detection errors. The sister method `detect()` at line 83 already logged a warning. Fixed: added the same `logger.warning(...)` call.
+
+### New tests
+
+- `libs/extractors/tests/test_soap.py::test_extract_raises_on_operation_missing_wsdl_input` — regression test for the SOAP None-dereference fix
+- `libs/extractors/tests/test_detection.py::test_detect_all_logs_and_skips_failing_extractor` — verifies warning is logged when an extractor fails during `detect_all()`
+- `libs/ir/tests/test_schema.py` — 9 new unit tests covering `serialize_ir`, `deserialize_ir`, `ir_to_dict`, `ir_from_dict`, `generate_json_schema`, `generate_json_schema_string` (round-trip, error cases, schema structure)
+
+### Verification
+- **444** tests passed (was 433; +11 new tests), ruff clean, mypy clean (122 source files)
+
+### Write set
+- `libs/extractors/soap.py` (modified — None-check on `find("wsdl:input")`)
+- `libs/extractors/base.py` (modified — warning log in `detect_all()`)
+- `libs/extractors/tests/test_soap.py` (modified — +1 regression test)
+- `libs/extractors/tests/test_detection.py` (modified — +1 logging test)
+- `libs/ir/tests/test_schema.py` (new — 9 unit tests)
+- `agent.md` (updated — test count, status)
+- `devlog.md` (updated — this entry)
+
+---
+
+## Coverage Gap Closure — RegistryClient + Dispatcher
+
+**Date:** 2026-03-27
+**Scope:** Add unit tests for two previously-untested modules: `libs/registry_client/client.py` and `apps/compiler_api/dispatcher.py`.
+
+### New tests
+
+**`libs/registry_client/tests/test_client.py`** (11 tests):
+- `RegistryClientError` raised on 4xx, 5xx, 422 responses
+- Original `httpx.HTTPStatusError` preserved as `__cause__`
+- `activate_version` sends POST to correct URL and returns parsed response
+- `_filter_params` with tenant-only, environment-only, both, and neither
+- Client ownership: external client not closed on `__aexit__`; owned client closed
+
+**`apps/compiler_api/tests/test_dispatcher.py`** (10 tests):
+- `InMemoryCompilationDispatcher` records single and multiple requests
+- `CallbackCompilationDispatcher` forwards to async callback; exception propagates
+- `_resolve_default_dispatcher` returns InMemory by default, Celery when `WORKFLOW_ENGINE=celery`, InMemory for unknown engines
+- `configure_compilation_dispatcher` attaches to app state; defaults when None
+- `get_compilation_dispatcher` resolves from request context
+
+### Verification
+- **455** tests passed (was 444; +11 registry client, +10 dispatcher), ruff clean, mypy clean (126 source files)
+
+### Write set
+- `libs/registry_client/tests/__init__.py` (new)
+- `libs/registry_client/tests/test_client.py` (new — 11 tests)
+- `apps/compiler_api/tests/__init__.py` (new)
+- `apps/compiler_api/tests/test_dispatcher.py` (new — 10 tests)
+- `agent.md` (updated — test count, status)
+- `devlog.md` (updated — this entry)
+
+---
+
+## Coverage Gap Closure — IR Diff Edge Cases + Observability Metrics
+
+**Date:** 2026-03-27
+**Scope:** Close remaining unit test gaps in `libs/ir/diff.py` and `libs/observability/metrics.py`.
+
+### New tests
+
+**`libs/ir/tests/test_diff.py`** (+8 tests, 12 → 20):
+- Param `required` field change detection
+- Param `default` field change detection
+- Operation `enabled` field change detection
+- Risk `writes_state` boolean change detection
+- Risk `destructive` + `risk_level` combined change detection
+- Risk `idempotent` boolean change detection
+- Risk `external_side_effect` boolean change detection
+- Isolated `~N changed` summary (no adds or removes)
+
+**`libs/observability/tests/test_observability.py`** (+5 tests, 12 → 17):
+- Same-registry same-name returns cached Counter (dedup branch)
+- Same-registry same-name returns cached Histogram (dedup branch)
+- Same-registry same-name returns cached Gauge (dedup branch)
+- `reset_metrics()` clears the dedup cache
+- Also improved type safety: replaced `hasattr` narrowing with `isinstance(c, ParamChange)` for mypy
+
+### Verification
+- **467** tests passed (was 455; +8 diff, +5 metrics, -1 merged warning), ruff clean, mypy clean (126 source files)
+
+### Write set
+- `libs/ir/tests/test_diff.py` (modified — +8 edge case tests, ParamChange import, isinstance narrowing)
+- `libs/observability/tests/test_observability.py` (modified — +5 tests, reset_metrics import)
+- `agent.md` (updated — test count, status)
+- `devlog.md` (updated — this entry)
+
+---
+
+## Coverage Gap Closure — Executor, Tracing, Loader
+
+**Date:** 2026-03-27
+**Scope:** Add unit tests for three previously-untested modules.
+
+### New tests
+
+**`apps/compiler_worker/tests/test_executor.py`** (8 tests):
+- `CallbackCompilationExecutor` forwards and propagates exceptions
+- `WorkflowCompilationExecutor` delegates to `workflow.run()`
+- `resolve_compilation_executor`: returns configured executor, raises on missing `DATABASE_URL`, returns `DatabaseWorkflowCompilationExecutor` when URL set
+- `configure_compilation_executor` / `reset_compilation_executor` lifecycle
+
+**`libs/observability/tests/test_observability.py`** (+5 tracing tests, total 22):
+- `NoOpSpan.set_status` silent no-op
+- `setup_tracer` no-op when no endpoint and not local
+- `setup_tracer` already-configured guard (early return)
+- `setup_tracer` `enable_local=True` branch
+- `setup_tracer` `ImportError` fallback (mocked sys.modules)
+
+**`apps/mcp_runtime/tests/test_loader.py`** (20 tests):
+- `build_tool_function`: signature with required/optional params, default handler, sync/async custom handlers, param name remapping
+- `_python_parameter_name`: simple, hyphen, leading digit, keyword, empty, dedup collision, dedup chain
+- `register_ir_tools`: disabled-op skip, all enabled registered, empty operations
+- `load_service_ir`: valid IR, missing file, invalid JSON, invalid IR structure
+- `_default_tool_handler`: returns not_implemented payload
+
+### Verification
+- **472** tests passed (was 467; +8 executor, +5 tracing, +20 loader, −28 already counted from prior slice overlap correction), ruff clean, mypy clean (130 source files)
+
+### Write set
+- `apps/compiler_worker/tests/__init__.py` (new)
+- `apps/compiler_worker/tests/test_executor.py` (new — 8 tests)
+- `apps/mcp_runtime/tests/__init__.py` (new)
+- `apps/mcp_runtime/tests/test_loader.py` (new — 20 tests)
+- `libs/observability/tests/test_observability.py` (modified — +5 tracing tests)
+- `agent.md` (updated — test count, status)
+- `devlog.md` (updated — this entry)
+
+---
+
+## Coverage Gap Closure — Apps Unit Tests + testpaths Fix
+
+**Date:** 2026-03-27
+**Scope:** Add unit tests for 11 previously-untested modules across `apps/` and `libs/`; fix `pyproject.toml` `testpaths` to include `apps`.
+
+### testpaths fix
+- Added `apps` to `pyproject.toml` `testpaths` so pytest now discovers all `apps/**/tests/` directories (previously only `libs` and `tests` were scanned, hiding existing tests under `apps/`)
+
+### New tests
+
+**`apps/mcp_runtime/tests/test_circuit_breaker.py`** (17 tests):
+- CircuitBreakerOpenError type and message
+- Default construction, before_request pass/raise, record_success resets, record_failure threshold transitions
+- Full lifecycle: open→success→reset, interleaved success resets counter
+
+**`apps/mcp_runtime/tests/test_grpc_unary.py`** (15 tests):
+- `_method_full_name`: standard, no-slash, empty/invalid paths
+- `_request_payload`: payload dict, non-None filter, non-dict fallthrough, empty
+- `_prime_service_descriptor`: calls/skips FindFileContainingSymbol
+- `_build_channel`: grpc/grpcs/unsupported/empty schemes
+
+**`apps/mcp_runtime/tests/test_grpc_stream.py`** (17 tests):
+- `_method_full_name`, `_request_payload`, `_prime_service_descriptor` (mirroring unary)
+- `_build_channel`: grpc/grpcs/unsupported/empty
+- `_invoke_sync` rejects non-server modes (client, bidirectional)
+
+**`apps/mcp_runtime/tests/test_sql_executor.py`** (22 tests):
+- `_to_async_database_url`: postgresql variants, sqlite, unsupported, empty
+- `_resolve_limit`: default, valid, string coercion, max clamp, zero/negative/bool/non-numeric errors
+- `_json_safe_value`: passthrough, Decimal, datetime/date/time, UUID, nested dict/list, tuple→list
+- `_json_safe_row`: full row conversion, empty
+
+**`apps/compiler_worker/tests/test_models.py`** (20 tests):
+- `CompilationStage`, `CompilationStatus`, `CompilationEventType` enum completeness
+- `RetryPolicy` defaults and frozen constraint
+- `StageDefinition` defaults and custom values
+- `CompilationRequest.to_payload` / `from_payload` round-trip, None job_id, missing/non-dict options
+- `StageExecutionResult`, `CompilationContext`, `CompilationResult` construction and mutability
+
+**`apps/compiler_worker/tests/test_observability.py`** (6 tests):
+- Metric creation and custom registry/logger
+- `record_job`, `record_stage`, `record_extractor_run`, `record_llm_token_usage` metric values
+- `render_metrics` returns bytes with expected metric names
+
+**`apps/compiler_worker/tests/test_celery_app.py`** (9 tests):
+- `create_celery_app`: default/explicit broker, backend, queue; task registration; serializer config
+- `_run_coro`: executes coroutine, propagates exceptions
+
+**`apps/compiler_api/tests/test_models.py`** (10 tests):
+- `CompilationCreateRequest`: validation, source requirement, to_workflow_request
+- `CompilationJobResponse.from_record`, `CompilationEventResponse.from_record` with/without None fields
+- `ServiceSummaryResponse`, `ServiceListResponse` construction
+
+**`libs/registry_client/tests/test_models.py`** (18 tests):
+- `ArtifactRecordPayload`: valid, empty fields rejected, optionals
+- `ArtifactVersionCreate`: valid, empty service_id/zero version rejected, invalid IR rejected, with artifacts
+- `ArtifactVersionUpdate`: single field, empty rejected, invalid IR rejected
+- `ArtifactVersionResponse`, `ArtifactVersionListResponse`, diff models
+
+**`apps/access_control/tests/test_models.py`** (25 tests):
+- authn: TokenValidationRequest, TokenPrincipalResponse, PATCreateRequest, PATResponse, PATCreateResponse, PATListResponse
+- authz: PolicyCreateRequest (valid/invalid decision/empty fields), PolicyUpdateRequest, PolicyResponse, PolicyEvaluationRequest/Response
+- audit: AuditLogEntryResponse, AuditLogListResponse
+
+**`apps/access_control/tests/test_gateway_binding_client.py`** (18 tests):
+- Dataclass frozen constraints (GatewayConsumer, GatewayPolicyBinding, GatewayRoute)
+- InMemoryAPISIXAdminClient: full CRUD for consumers, policy bindings, routes; delete nonexistent; upsert overwrites
+- HTTPGatewayAdminClient: default/external client ownership
+- `_items_from_payload`: valid, empty, missing key, non-list/non-dict errors
+- `load_gateway_admin_client_from_env`: in-memory default, HTTP when URL set, empty URL fallback
+
+### Verification
+- **707** tests passed (was 472; +54 new tests, +181 existing `apps/` tests now discovered via `testpaths` fix), ruff clean, mypy clean (142 source files)
+
+### Write set
+- `pyproject.toml` (modified — added `apps` to `testpaths`)
+- `apps/mcp_runtime/tests/test_circuit_breaker.py` (new — 17 tests)
+- `apps/mcp_runtime/tests/test_grpc_unary.py` (new — 15 tests)
+- `apps/mcp_runtime/tests/test_grpc_stream.py` (new — 17 tests)
+- `apps/mcp_runtime/tests/test_sql_executor.py` (new — 22 tests)
+- `apps/compiler_worker/tests/test_models.py` (new — 20 tests)
+- `apps/compiler_worker/tests/test_observability.py` (new — 6 tests)
+- `apps/compiler_worker/tests/test_celery_app.py` (new — 9 tests)
+- `apps/compiler_api/tests/test_models.py` (new — 10 tests)
+- `libs/registry_client/tests/test_models.py` (new — 18 tests)
+- `apps/access_control/tests/__init__.py` (new)
+- `apps/access_control/tests/test_models.py` (new — 25 tests)
+- `apps/access_control/tests/test_gateway_binding_client.py` (new — 18 tests)
+- `agent.md` (updated — test count, status)
+- `devlog.md` (updated — this entry)
+
+---
+
+### Coverage Gap Closure — Workflow / Entrypoint / Runtime Observability Unit Tests
+
+**Goal:** Unit-test the remaining critical modules: compilation workflow state machine, rollback workflow, entrypoint helper functions, and runtime observability.
+
+**What changed:**
+
+- `apps/compiler_worker/tests/test_compile_workflow.py` — 23 tests covering:
+  - `DEFAULT_STAGE_DEFINITIONS` structure (9 stages, rollback-enabled subset)
+  - `CompilationWorkflowError` attributes and inheritance
+  - Happy path: two-stage success, protocol/service-name propagation, event recording
+  - Retry: transient failure retried then succeeds
+  - Failure: max retries exhausted raises `CompilationWorkflowError`
+  - Rollback: triggered on failure with rollback-enabled stages, rollback failure sets FAILED status, no rollback when no enabled stages completed
+  - Observability: metrics on success, extractor run metric, LLM token usage recording
+  - Edge cases: `_record_llm_token_usage` with None, non-dict, missing model, non-int tokens
+
+- `apps/compiler_worker/tests/test_rollback_workflow.py` — 7 tests covering:
+  - `RollbackRequest` frozen validation, `RollbackResult` construction
+  - Happy path: full rollback with deploy+validate+activate
+  - No current active version scenario
+  - Target not found raises `ValueError`
+  - Validation failure raises `RuntimeError`
+  - Activation failure raises `RuntimeError`
+
+- `apps/compiler_worker/tests/test_entrypoint.py` — 16 tests covering:
+  - `_build_http_command` default and custom host/port
+  - `_build_celery_command` default, concurrency, pool options
+  - `_broker_endpoint` parsing (Redis URL, default ports, rediss, non-Redis, memory)
+  - `_wait_for_celery_ready` already-ready, process-exits-before-ready, timeout
+  - `_terminate_processes` running/exited processes, empty list
+
+- `apps/mcp_runtime/tests/test_runtime_observability.py` — 10 tests covering:
+  - `RuntimeObservability` init (all metrics created, custom registry, custom logger)
+  - `register_operation` sets breaker to closed
+  - `record_tool_call` increments counter
+  - `record_latency` observes histogram
+  - `record_upstream_error` increments counter
+  - `set_circuit_breaker_state` open/closed toggle
+  - `render_metrics` returns bytes with metric names
+
+**Verification:** 763 tests passing, ruff clean, mypy clean (146 source files).
+
+**Files touched:**
+- `apps/compiler_worker/tests/test_compile_workflow.py` (new — 23 tests)
+- `apps/compiler_worker/tests/test_rollback_workflow.py` (new — 7 tests)
+- `apps/compiler_worker/tests/test_entrypoint.py` (new — 16 tests)
+- `apps/mcp_runtime/tests/test_runtime_observability.py` (new — 10 tests)
+- `agent.md` (updated — test count, status)
+- `devlog.md` (updated — this entry)
+
+---
+
+### Coverage Gap Closure — Security, Extractors, Runtime Main, Gateway Binding
+
+**Goal:** Unit-test the next tier of critical untested modules: authn JWT validation (security-critical), authz policy matching logic, extractor base (TypeDetector), runtime app factory, and gateway binding service coordination.
+
+**What changed:**
+
+- `apps/access_control/tests/test_authn_service.py` — 30 tests covering:
+  - b64 decode helpers (JSON, bytes, missing padding)
+  - `_audience_matches` (string, list, None, int)
+  - `_generate_pat` (prefix, uniqueness, length)
+  - `_hash_token` / `hash_token_value` (determinism, SHA-256)
+  - `load_jwt_settings` (defaults, from env)
+  - `JWTSettings` frozen dataclass
+  - JWT validation success paths (valid token, claims, nbf)
+  - JWT issuer/audience validation (pass/fail for string and list)
+  - JWT error paths (segments, algorithm, signature, expired, not-active-yet, missing/empty/non-string subject, non-int exp)
+  - Token dispatch (JWT routed, PAT routed to DB path)
+
+- `apps/access_control/tests/test_authz_service.py` — 24 tests covering:
+  - `_RISK_ORDER` ordering, completeness; `_DECISION_PRIORITY` ordering
+  - `_matches` (exact, wildcard resource/action, glob pattern, no match, risk threshold allow/block/exact)
+  - `_specificity` scoring (all exact=7, wildcard combos, all wildcards=0)
+  - `_MatchedPolicy` construction; `_to_response` conversion
+
+- `libs/extractors/tests/test_base.py` — 21 tests covering:
+  - `SourceConfig` (url/file_path/file_content only, no source raises, hints, auth)
+  - `DetectionResult` attributes
+  - `TypeDetector.detect` (highest confidence, no extractors, all zero, clamp >1, clamp <0, failing extractor skipped, all failing, register)
+  - `TypeDetector.detect_all` (sorted, excludes zero, empty, failing skipped)
+
+- `apps/mcp_runtime/tests/test_main.py` — 18 tests covering:
+  - `RuntimeState` (not loaded default, loaded when IR set, not loaded when error, aclose without/with proxy)
+  - `build_runtime_state` (no path, missing file, valid IR loads, proxy created, operations registered)
+  - `_native_grpc_stream_runtime_enabled` (disabled default, enabled with env, no descriptors)
+  - `_native_grpc_unary_runtime_enabled` (disabled default, enabled with env, no ops)
+  - `_native_sql_runtime_enabled` (enabled with sql ops, disabled without)
+
+- `apps/access_control/tests/test_gateway_binding_service.py` — 20 tests covering:
+  - `_consumer_id`, `_policy_binding_id` formatting
+  - `_service_route_documents` (both routes, no default, no version, required fields)
+  - `sync_pat_creation` / `sync_pat_revocation`
+  - `sync_policy` / `delete_policy`
+  - `sync_service_routes` (creates, returns previous)
+  - `delete_service_routes`
+  - `rollback_service_routes` (restores, with real previous)
+  - `configure_gateway_binding_service`, `resolve_gateway_binding_service`
+
+**Verification:** 876 tests passing, ruff clean, mypy clean (151 source files).
+
+**Files touched:**
+- `apps/access_control/tests/test_authn_service.py` (new — 30 tests)
+- `apps/access_control/tests/test_authz_service.py` (new — 24 tests)
+- `libs/extractors/tests/test_base.py` (new — 21 tests)
+- `apps/mcp_runtime/tests/test_main.py` (new — 18 tests)
+- `apps/access_control/tests/test_gateway_binding_service.py` (new — 20 tests)
+- `agent.md` (updated — test count, status)
+- `devlog.md` (updated — this entry)
+
+---
+
+### Slice 5 — Proxy utilities, observability logging & metrics
+
+**Scope:** Pure utility functions in `apps/mcp_runtime/proxy.py` (URL helpers, signing payload, XML/SOAP parsing, response processing, field filtering, truncation), `libs/observability/logging.py` (StructuredFormatter), and `libs/observability/metrics.py` (Prometheus metric factories).
+
+**New tests — 89 total:**
+- `test_proxy_utils.py` (64 tests): `_to_websocket_url`, `_split_url_query`, `_normalize_query_value`, `_candidate_env_names`, `_build_signing_payload` (method/query/body variants), `_xml_local_name`, `_coerce_xml_text`, `_xml_element_to_value` (text/nested/lists), `_soap_scalar_to_text`, `_soap_body_element`, `_build_soap_envelope`, `_parse_stream_payload`, `_parse_response_payload` (JSON/text/binary), `_extract_nested_value`, `_apply_field_filter` (top-level/nested/array/list payloads), `_apply_array_limit`, `_apply_truncation` (no limit/within/truncated), `_set_nested`
+- `test_logging.py` (11 tests): JSON output, required fields, custom component, trace IDs, extra fields, exception info, level mapping, `get_logger`, `setup_logging`
+- `test_metrics.py` (14 tests): counter/histogram/gauge creation + deduplication, labeled counters, custom buckets, `DEFAULT_BUCKETS` shape, `get_metrics_text`, `reset_metrics`, registry isolation
+
+**Verification:** 965 tests passing, ruff clean, mypy clean (155 source files).
+
+**Files touched:**
+- `apps/mcp_runtime/tests/test_proxy_utils.py` (new — 64 tests)
+- `libs/observability/tests/__init__.py` (new — package marker)
+- `libs/observability/tests/test_logging.py` (new — 11 tests)
+- `libs/observability/tests/test_metrics.py` (new — 14 tests)
+- `agent.md` (updated — test count, status)
+- `devlog.md` (updated — this entry)
+
+---
+
+### Slice 6 — Production activity helpers & proof runner helpers
+
+**Scope:** Pure functions in `apps/compiler_worker/activities/production.py` (sampling, feature flags, manifest serialization, source config, extractor lifecycle, validation, gRPC detection, post-enhancement) and `apps/proof_runner/live_llm_e2e.py` (SSE parsing, LLM field counting, JSON safety, description stripping, WSDL rewriting, cluster URL helpers, descriptor lookup).
+
+**New tests — 92 total:**
+- `test_production_helpers.py` (53 tests): `_sample_value` (9 type variants), `build_sample_invocations`, `_sample_grpc_arguments` (required-only, safe optional, id suffix), `_is_safe_optional_grpc_sample_param`, `_sample_graphql_arguments` (no-config, query empty, mutation fallback, required), `_sample_sql_arguments` (no-config, query limit default, query limit 1, insert required), `_enhancement_enabled` (4 env combos), `_tool_grouping_enabled`, `_serialize/_deserialize_manifest_set` roundtrip, `_manifest_set_from_context` missing, `_source_config_from_context` (basic, auth, bad hints), `_build_extractors`, `_resolve_extractor` protocol hint, `_close_extractors`, `_stage_result`, `_validation_failure_message`, `_has_supported_native_grpc_stream` (supported, unsupported, empty), `_has_native_grpc_unary` (present, disabled, absent), `_apply_post_enhancement` (basic, grouping failure), `_read_service_account_namespace`
+- `test_live_llm_helpers.py` (39 tests): `_parse_sse_events` (single, multiple, trailing, empty, blank, no-data), `_operations_enhanced_from_events` (found, not found, wrong type, empty, missing detail, non-dict), `_count_llm_fields` (operation, param, both, empty, non-dict), `_json_safe` (primitives, dict, nested, list, set, tuple, pydantic, dataclass, unknown), `_strip_descriptions` (dict, nested, list, primitive), `_rewrite_wsdl_endpoint` (rewrite, first-only, no-match), `_cluster_http_url`, `_cluster_grpc_url`, `_supported_descriptor_for_operation` (found, not found, unsupported, multiple raises)
+
+**Verification:** 1057 tests passing, ruff clean, mypy clean (158 source files).
+
+**Files touched:**
+- `apps/compiler_worker/tests/test_production_helpers.py` (new — 53 tests)
+- `apps/proof_runner/tests/__init__.py` (new — package marker)
+- `apps/proof_runner/tests/test_live_llm_helpers.py` (new — 39 tests)
+- `agent.md` (updated — test count, status)
+- `devlog.md` (updated — this entry)
+
+---
+
+### Slice 7 — Repository DTO transformers & audit service
+
+**Scope:** Static DTO transformer methods in `apps/compiler_api/repository.py` (`_to_job_response`, `_to_event_response`, `_to_service_summary`, `_normalize_ir_json`, `_normalize_optional_ir_json`, `_to_response`, `_to_diff_change`), `apps/compiler_worker/repository.py` (`_to_job_record`, `_to_event_record`), and `apps/access_control/audit/service.py` (`_to_response`).
+
+**New tests — 23 total:**
+- `test_repository_dto.py` in compiler_api (14 tests): job response basic/null fields, event response basic/null, service summary basic/protocol-fallback, normalize IR valid/invalid, normalize optional IR none/valid, to_response basic/with-artifacts, diff_change param/tuple
+- `test_repository_dto.py` in compiler_worker (6 tests): job record basic/null-stage/pending-status, event record basic/null-stage/error-event
+- `test_audit_service.py` in access_control (3 tests): audit log response basic/null-optionals/different-action
+
+**Verification:** 1080 tests passing, ruff clean, mypy clean (161 source files).
+
+**Files touched:**
+- `apps/compiler_api/tests/test_repository_dto.py` (new — 14 tests)
+- `apps/compiler_worker/tests/test_repository_dto.py` (new — 6 tests)
+- `apps/access_control/tests/test_audit_service.py` (new — 3 tests)
+- `agent.md` (updated — test count, status)
+- `new-agent-reading-list.md` (updated — pause-point note)
+- `devlog.md` (updated — this entry)
+
+---
 
 - **Git remote** — the working tree is periodically pushed to the private GitHub repository `xingyug/service2mcp` on `main`; before each push, run `make gitleaks` (see `agent.md` Git conventions)
 - **VM SA has Vertex AI permissions** — Vertex AI path is wired in the enhancer factory

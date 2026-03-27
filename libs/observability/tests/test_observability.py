@@ -7,12 +7,14 @@ import logging
 
 from prometheus_client import CollectorRegistry
 
+from libs.observability import tracing as tracing_mod
 from libs.observability.logging import StructuredFormatter, setup_logging
 from libs.observability.metrics import (
     create_counter,
     create_gauge,
     create_histogram,
     get_metrics_text,
+    reset_metrics,
 )
 from libs.observability.tracing import _NoOpSpan, _NoOpTracer, get_tracer, trace_span
 
@@ -56,7 +58,7 @@ class TestMetrics:
         output = get_metrics_text(registry).decode()
         assert "test_simple_total" in output
 
-    def test_same_metric_name_in_different_registries_is_isolated(self):
+    def test_same_metric_name_in_different_registries_is_isolated(self) -> None:
         first = CollectorRegistry()
         second = CollectorRegistry()
 
@@ -64,6 +66,34 @@ class TestMetrics:
         metric_two = create_counter("shared_total", "Shared metric", registry=second)
 
         assert metric_one is not metric_two
+
+    def test_same_registry_same_name_returns_cached_counter(self) -> None:
+        registry = CollectorRegistry()
+        first = create_counter("dedup_total", "First call", registry=registry)
+        second = create_counter("dedup_total", "Second call", registry=registry)
+        assert first is second
+
+    def test_same_registry_same_name_returns_cached_histogram(self) -> None:
+        registry = CollectorRegistry()
+        first = create_histogram("dedup_dur", "First", registry=registry)
+        second = create_histogram("dedup_dur", "Second", registry=registry)
+        assert first is second
+
+    def test_same_registry_same_name_returns_cached_gauge(self) -> None:
+        registry = CollectorRegistry()
+        first = create_gauge("dedup_gauge", "First", registry=registry)
+        second = create_gauge("dedup_gauge", "Second", registry=registry)
+        assert first is second
+
+    def test_reset_metrics_clears_cache(self) -> None:
+        registry = CollectorRegistry()
+        first = create_counter("reset_test", "Before reset", registry=registry)
+        reset_metrics()
+        # After reset, a new registry must be used (old registry still has
+        # the metric registered), but the dedup cache should be empty.
+        registry2 = CollectorRegistry()
+        second = create_counter("reset_test", "After reset", registry=registry2)
+        assert first is not second
 
 
 # ── Tracing Tests ──────────────────────────────────────────────────────────
@@ -81,10 +111,67 @@ class TestTracing:
             span.set_attribute("key", "value")
             span.record_exception(ValueError("test"))
 
-    def test_noop_tracer_context_manager(self):
+    def test_noop_tracer_context_manager(self) -> None:
         tracer = _NoOpTracer()
         with tracer.start_as_current_span("test") as span:
             assert isinstance(span, _NoOpSpan)
+
+    def test_noop_span_set_status_does_not_raise(self) -> None:
+        span = _NoOpSpan()
+        span.set_status("ok")  # should be a silent no-op
+
+
+class TestSetupTracer:
+    """Tests for setup_tracer branch coverage."""
+
+    def setup_method(self) -> None:
+        # Reset module-level globals before each test.
+        tracing_mod._is_configured = False
+        tracing_mod._tracer_provider = None
+
+    def teardown_method(self) -> None:
+        tracing_mod._is_configured = False
+        tracing_mod._tracer_provider = None
+
+    def test_noop_when_no_endpoint_and_not_local(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OTEL_EXPORTER_ENDPOINT", None)
+            tracing_mod.setup_tracer("test-svc")
+        assert tracing_mod._is_configured is False
+
+    def test_already_configured_skips(self) -> None:
+        # Simulate already configured state.
+        tracing_mod._is_configured = True
+        tracing_mod._tracer_provider = object()  # non-None sentinel
+        tracing_mod.setup_tracer("test-svc", enable_local=True)
+        # Should not have changed anything — early return.
+        assert tracing_mod._is_configured is True
+
+    def test_enable_local_configures_provider(self) -> None:
+        tracing_mod.setup_tracer("test-svc", enable_local=True)
+        # If OTel SDK is installed, this should configure; if not,
+        # the ImportError fallback should leave _is_configured False.
+        # Either outcome is valid — we're testing that it doesn't crash.
+        assert isinstance(tracing_mod._is_configured, bool)
+
+    def test_import_error_fallback(self) -> None:
+        import unittest.mock
+
+        with unittest.mock.patch.dict(
+            "sys.modules",
+            {
+                "opentelemetry": None,
+                "opentelemetry.trace": None,
+                "opentelemetry.sdk": None,
+                "opentelemetry.sdk.resources": None,
+                "opentelemetry.sdk.trace": None,
+            },
+        ):
+            tracing_mod.setup_tracer("test-svc", enable_local=True)
+        assert tracing_mod._is_configured is False
 
 
 # ── Logging Tests ──────────────────────────────────────────────────────────

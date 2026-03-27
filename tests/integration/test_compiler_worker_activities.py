@@ -32,7 +32,10 @@ from apps.compiler_worker.activities import (
     ProductionActivitySettings,
     create_default_activity_registry,
 )
-from apps.compiler_worker.activities.production import _build_sample_invocations
+from apps.compiler_worker.activities.production import (
+    _apply_post_enhancement,
+    _build_sample_invocations,
+)
 from apps.compiler_worker.models import (
     CompilationContext,
     CompilationRequest,
@@ -65,6 +68,7 @@ from libs.ir.models import (
     SqlOperationConfig,
     SqlOperationType,
     SqlRelationKind,
+    ToolIntent,
 )
 
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
@@ -754,6 +758,14 @@ async def test_default_activity_registry_executes_full_pipeline_with_runtime_har
         assert active.route_config["default_route"]["route_id"] == "petstore-api-active"
         assert active.validation_report is not None
         assert active.validation_report["overall_passed"] is True
+
+        # Verify tool_intent derivation and description bifurcation ran in pipeline.
+        final_ir = ServiceIR.model_validate(result.payload["service_ir"])
+        for op in final_ir.operations:
+            assert op.tool_intent is not None, f"tool_intent not set on {op.id}"
+            assert op.description.startswith("[DISCOVERY] ") or op.description.startswith(
+                "[ACTION] "
+            ), f"description not bifurcated on {op.id}"
     finally:
         await deployment_harness.aclose()
 
@@ -1190,3 +1202,66 @@ async def test_kubernetes_manifest_deployer_applies_and_rolls_back_resources() -
         assert fake_api.resources == {}
     finally:
         await http_client.aclose()
+
+
+def test_apply_post_enhancement_sets_tool_intent_and_bifurcates_descriptions() -> None:
+    """Verify _apply_post_enhancement tags intents and bifurcates descriptions."""
+    ir = ServiceIR(
+        source_hash="a" * 64,
+        protocol="rest",
+        service_name="intent-test",
+        service_description="Fixture for intent derivation test",
+        base_url="https://example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="listItems",
+                name="List Items",
+                description="List all items.",
+                method="GET",
+                path="/items",
+                params=[],
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.safe,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                    writes_state=False,
+                    destructive=False,
+                    external_side_effect=False,
+                    idempotent=True,
+                ),
+                enabled=True,
+            ),
+            Operation(
+                id="createItem",
+                name="Create Item",
+                description="Create a new item.",
+                method="POST",
+                path="/items",
+                params=[Param(name="name", type="string", required=True)],
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.cautious,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                    writes_state=True,
+                    destructive=False,
+                    external_side_effect=False,
+                    idempotent=False,
+                ),
+                enabled=True,
+            ),
+        ],
+    )
+
+    result = _apply_post_enhancement(ir)
+
+    get_op = next(op for op in result.operations if op.id == "listItems")
+    post_op = next(op for op in result.operations if op.id == "createItem")
+
+    assert get_op.tool_intent == ToolIntent.discovery
+    assert post_op.tool_intent == ToolIntent.action
+    assert get_op.description.startswith("[DISCOVERY] ")
+    assert post_op.description.startswith("[ACTION] ")
+
+    # Without grouping env var, tool_grouping should remain empty.
+    assert result.tool_grouping == []

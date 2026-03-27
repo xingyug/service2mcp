@@ -25,6 +25,7 @@ from apps.compiler_api.dispatcher import CeleryCompilationDispatcher
 from apps.compiler_api.main import create_app as create_compiler_api_app
 from apps.compiler_api.repository import ArtifactRegistryRepository
 from apps.compiler_worker.activities import ActivityRegistry
+from apps.compiler_worker.activities.production import _apply_post_enhancement
 from apps.compiler_worker.celery_app import create_celery_app
 from apps.compiler_worker.executor import (
     CallbackCompilationExecutor,
@@ -63,6 +64,7 @@ from libs.ir.models import (
     Param,
     ServiceIR,
     SourceType,
+    ToolIntent,
 )
 from libs.registry_client.models import ArtifactRecordPayload, ArtifactVersionCreate
 from libs.validator import PostDeployValidator, PreDeployValidator
@@ -285,14 +287,23 @@ async def _run_optional_real_deepseek_enhancer(
 ) -> StageExecutionResult:
     config = _optional_real_deepseek_config()
     if config is None:
+        # Apply deterministic post-enhancement (intent derivation, description
+        # bifurcation) even when no real LLM is available, mirroring production
+        # passthrough behaviour.
+        service_ir_payload = context.payload.get("service_ir")
+        stub_updates: dict[str, Any] = {
+            "token_usage": {
+                "model": stub_model,
+                "input_tokens": stub_input_tokens,
+                "output_tokens": stub_output_tokens,
+            }
+        }
+        if isinstance(service_ir_payload, dict):
+            ir = ServiceIR.model_validate(service_ir_payload)
+            ir = _apply_post_enhancement(ir)
+            stub_updates["service_ir"] = ir.model_dump(mode="json")
         return _stage_result(
-            context_updates={
-                "token_usage": {
-                    "model": stub_model,
-                    "input_tokens": stub_input_tokens,
-                    "output_tokens": stub_output_tokens,
-                }
-            },
+            context_updates=stub_updates,
             event_detail={"model": stub_model},
         )
 
@@ -656,6 +667,23 @@ async def test_openapi_spec_compiles_to_running_runtime_and_tool_invocation(
                 active_runtime = deployment_harness.current()
                 service_ir = active_runtime.app.state.runtime_state.service_ir
                 assert service_ir is not None
+                # Verify tool_intent is populated after enhancement.
+                for op in service_ir.operations:
+                    assert op.tool_intent is not None, (
+                        f"tool_intent not set on {op.id}"
+                    )
+                    assert op.description.startswith(
+                        "[DISCOVERY] "
+                    ) or op.description.startswith("[ACTION] "), (
+                        f"description not bifurcated on {op.id}"
+                    )
+                # GET operations should be discovery, POST should be action.
+                get_ops = [op for op in service_ir.operations if op.method == "GET"]
+                post_ops = [op for op in service_ir.operations if op.method == "POST"]
+                for op in get_ops:
+                    assert op.tool_intent == ToolIntent.discovery, op.id
+                for op in post_ops:
+                    assert op.tool_intent == ToolIntent.action, op.id
                 sample_invocations = _build_sample_invocations(service_ir)
                 target_operation = next(
                     operation for operation in service_ir.operations if operation.enabled
@@ -997,6 +1025,12 @@ async def test_rest_discovery_compiles_to_running_runtime_and_tool_invocation(
                 assert item_op is not None
                 assert item_op.source is SourceType.llm
                 assert item_op.path == "/items/{item_id}"
+                # Verify tool_intent populated by pipeline.
+                assert item_op.tool_intent is not None
+                for op in service_ir.operations:
+                    assert op.tool_intent is not None, (
+                        f"tool_intent not set on {op.id}"
+                    )
 
                 tool_result = await deployment_harness.call_tool(
                     "get_items_item_id",
@@ -2129,6 +2163,11 @@ async def test_graphql_introspection_compiles_to_running_runtime_and_tool_invoca
                 assert search_op is not None
                 assert search_op.graphql is not None
                 assert search_op.graphql.operation_name == "searchProducts"
+                # Verify tool_intent populated by pipeline.
+                for op in service_ir.operations:
+                    assert op.tool_intent is not None, (
+                        f"tool_intent not set on {op.id}"
+                    )
 
                 tool_result = await deployment_harness.call_tool(
                     "searchProducts",

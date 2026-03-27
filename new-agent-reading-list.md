@@ -1,9 +1,8 @@
 Current pause-point note:
-- Read `agent.md` first for the latest status (B-003 OPTIONS deep probing + iterative inference complete in tree).
-- Then read `devlog.md`: `B-003 REST OPTIONS Deep Probing + Iterative Inference` for the latest slice — OPTIONS-authoritative probing, resource-specific param naming, generality-ranked deduplication.
-- Three production fixes raised discovery coverage from ~25% to 64.1% and audit pass rate to 100% (0 failures).
-- Quality gates at last verification: **432** tests, ruff/mypy clean (see `devlog.md` OPTIONS deep probing slice).
-- Paper-informed next steps (documented in `post-sdd-modular-expansion-plan.md` B-003 section): all P0 and P1 items complete.
+- Read `agent.md` first for the latest status (all backlogs complete; repository DTO transformers & audit service unit tests added — 1080 tests).
+- Then read `devlog.md`: latest entry is `Slice 7 — Repository DTO transformers & audit service` (3 new test files, 23 new tests).
+- All backlogs complete: T-001–T-033, H-001–H-008, R-001–R-003, P-001–P-006, L-001–L-006, B-001, B-002, B-003 (including P1 pipeline integration).
+- Quality gates at last verification: **1080** tests, ruff/mypy clean (see `devlog.md`).
 - The project has also been synced to the private GitHub repo `xingyug/service2mcp` on `main`; if a public open-source release happens later, treat it as a fresh export into a new public repo without carrying over this private/internal history.
 - Before every `git push`, run `make gitleaks` (mandatory policy; see `agent.md` Git Conventions and `scripts/git-hooks/pre-push.sample`).
 
@@ -21,6 +20,11 @@ Key implementation files for B-003:
 - `libs/validator/post_deploy.py` — `validate_with_audit()` for combined validation + audit
 - `tests/fixtures/large_surface_rest_mock.py` — 62-endpoint mock with HATEOAS detail responses
 - `tests/integration/test_large_surface_pilot.py` — B-003 pilot integration test
+
+Key implementation files for P1 pipeline integration:
+- `apps/compiler_worker/activities/production.py` — `_apply_post_enhancement()`, `_tool_grouping_enabled()`, wiring in `enhance_stage`
+- `tests/e2e/test_full_compilation_flow.py` — `tool_intent` assertions in E2E tests
+- `tests/integration/test_compiler_worker_activities.py` — `test_apply_post_enhancement_sets_tool_intent_and_bifurcates_descriptions`
 
 Key implementation files for B-003 P1:
 - `libs/extractors/llm_seed_mutation.py` — LLM-driven seed mutation for REST endpoint discovery

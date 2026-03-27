@@ -329,9 +329,12 @@ def _build_operation(
     operation_name = operation.attrib.get("name")
     if not operation_name:
         raise ValueError("Encountered WSDL operation without a name.")
-    input_message_name = _qname_local(
-        operation.find("wsdl:input", NS).attrib.get("message", "")  # type: ignore[union-attr]
-    )
+    input_tag = operation.find("wsdl:input", NS)
+    if input_tag is None:
+        raise ValueError(
+            f"WSDL operation '{operation_name}' has no <wsdl:input> child element."
+        )
+    input_message_name = _qname_local(input_tag.attrib.get("message", ""))
     output_element_name = ""
     output_tag = operation.find("wsdl:output", NS)
     if output_tag is not None:

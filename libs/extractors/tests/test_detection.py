@@ -108,6 +108,20 @@ class TestTypeDetector:
         assert results[1].protocol_name == "rest"
         assert results[2].protocol_name == "graphql"
 
+    def test_detect_all_logs_and_skips_failing_extractor(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        detector = TypeDetector([
+            MockExtractor("broken", _should_fail=True),
+            MockExtractor("openapi", _confidence=0.9),
+        ])
+        with caplog.at_level("WARNING", logger="libs.extractors.base"):
+            results = detector.detect_all(SourceConfig(url="https://example.com"))
+        assert len(results) == 1
+        assert results[0].protocol_name == "openapi"
+        assert "broken" in caplog.text
+        assert "detect() failed" in caplog.text
+
     def test_confidence_clamped(self):
         detector = TypeDetector([MockExtractor("openapi", _confidence=1.5)])
         result = detector.detect(SourceConfig(url="https://example.com"))

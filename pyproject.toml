@@ -63,7 +63,7 @@ all = ["service2mcp[dev,extractors,enhancer,observability]"]
 packages = ["libs", "apps"]
 
 [tool.pytest.ini_options]
-testpaths = ["libs", "tests"]
+testpaths = ["libs", "tests", "apps"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
 

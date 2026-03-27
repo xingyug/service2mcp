@@ -50,9 +50,11 @@ Useful next references:
 - Cross-protocol live proof track is complete
 - `B-002` REST black-box hardening is complete and live-validated
 - `B-003` large-surface black-box pilot is complete, including the paper-informed P1 slice (LLM seed mutation, semantic tool grouping, discovery/action bifurcation, LLM-as-a-Judge)
-- **Next follow-on work** (see `docs/post-sdd-modular-expansion-plan.md`): extend **B-001** generated-tool audit across protocols and reporting surfaces; **B-002** backlog items (audit summary in validator/reporting, skip-policy refinement); **B-003** remaining discovery research (OPTIONS-heavy probing, large-spec pilot, regression thresholds)
+- **B-001/B-002 fourth slice (local, `2026-03-27`):** refined `AuditPolicy` (`audit_safe_methods`, `audit_discovery_intent`), `audit_summary` on `ValidationReport`, hardened REST OPTIONS/HEAD probing, pilot regression thresholds (`PILOT_BASELINE_THRESHOLDS`); see `devlog.md` and commit `43d713d`
+- **B-003 REST OPTIONS + dedup (`2026-03-27`):** live-proven on GKE at image tag `20260327-75be3a5-r29`, namespace `tool-compiler-llm-b003-032621`, joint `PROTOCOL=all` + `AUDIT_ALL_GENERATED_TOOLS=1`; aggregate audit **13/13/7/7/0/6** (matches prior `r28` baseline). See `devlog.md` `B-003 GKE LLM E2E Live Proof`.
+- **Still open:** product decision on representative-smoke vs stricter audit-driven gate; REST discovery on **messier real-world** targets beyond fixtures; optional follow-up per-protocol GKE baselines if you need more granularity than the joint matrix (see `docs/post-sdd-modular-expansion-plan.md`)
 
-The current clean audit-enabled GKE baseline recorded:
+The current clean audit-enabled GKE baseline recorded (authoritative joint reruns, including `r29`):
 
 - `discovered=13`
 - `generated=13`

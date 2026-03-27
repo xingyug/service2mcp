@@ -411,7 +411,7 @@ Current starting point:
 
 ### B-001: Generated-Tool Audit Coverage
 
-Status: in progress
+Status: complete
 
 Scope:
 - Add a machine-readable coverage report for one compiled service that records `discovered/endpoints`, `generated/tools`, `audited/tools`, `passed`, `failed`, and `skipped`
@@ -427,10 +427,10 @@ Implemented in the first slice:
 - The first live audit baseline has now been captured on REST discovery in namespace `tool-compiler-llm-rest-audit-041525`: `discovered=6`, `generated=6`, `audited=6`, `passed=1`, `failed=5`, `skipped=0`
 - That baseline proved the audit path itself works and also produced concrete black-box evidence that REST discovery still emits semantically wrong canonicalized paths in some cases (`/rest/active`, `/rest/detail`, `/rest/games`, `/rest/{item_id}`, `/rest/Puzzle Box`)
 
-Remaining implementation tasks:
-- Extend the new audit mode through live GKE across the remaining proven protocol slices beyond the first REST baseline
-- Decide whether the representative `6 / 18` proof path should remain alongside the audit or collapse into a stricter audit-driven gate later
-- Feed the concrete REST audit failures directly into `B-002` canonicalization and naming hardening, because the first live audit already exposed real discovery defects rather than hypothetical ones
+Remaining implementation tasks (all resolved):
+- ~~Extend the new audit mode through live GKE across the remaining proven protocol slices beyond the first REST baseline~~ ✅ completed via B-003 GKE `r29` cross-protocol audit (`13/13/7/7/0/6`)
+- ~~Decide whether the representative `6 / 18` proof path should remain alongside the audit~~ ✅ Decision: audit **supplements** representative proofs — both coexist. Representative proofs give fast smoke coverage; audit gives exhaustive generated-tool coverage. Neither replaces the other.
+- ~~Feed the concrete REST audit failures directly into `B-002`~~ ✅ completed — B-002 hardening driven directly by B-001 audit evidence
 
 Implemented in the second slice (completed `2026-03-26`):
 - Extracted shared audit types (`ToolAuditResult`, `ToolAuditSummary`) into `libs/validator/audit.py`
@@ -541,6 +541,12 @@ OPTIONS deep probing results (`2026-03-27`):
 - Updated thresholds: `max_failed=0`, `min_passed=10`, `PILOT_MIN_DISCOVERY_COVERAGE=0.50`, `PILOT_MIN_AUDIT_PASS_RATE=0.90`
 - 432 tests (was 426; +6 regression tests for OPTIONS replace, iterative inference, param naming, dedup)
 
+Live GKE LLM E2E proof (`2026-03-27`, post-OPTIONS slice):
+- **Images:** `compiler-api`, `compiler-worker`, `access-control`, `mcp-runtime` at tag `20260327-75be3a5-r29` (commits `3e9ff04` B-003 REST fixes + `75be3a5` Dockerfile: `COPY README.md` for hatchling metadata during `pip install .`)
+- **Harness:** `PROTOCOL=all` with `AUDIT_ALL_GENERATED_TOOLS=1` (`scripts/smoke-gke-llm-e2e.sh`)
+- **Namespace:** `tool-compiler-llm-b003-032621`
+- **Aggregate audit:** **13/13/7/7/0/6** (`discovered/generated/audited/passed/failed/skipped`) — matches prior `r28` cross-protocol baseline with **zero regressions**; REST `get_items_item_id` returned `upstream_status: 200` on live discovery catalog
+
 Spec-first pilot results (`2026-03-27`):
 - OpenAPI 3.0 fixture: 62 operations across 9 resource groups, matching the REST mock domain
 - Discovery coverage: 100.0% (39/39 ground-truth paths), Generation: 159% (62 tools from 39 unique paths)
@@ -568,6 +574,15 @@ Implemented in the third slice (completed `2026-03-27`):
 - **LLM-as-a-Judge**: `libs/validator/llm_judge.py` — `LLMJudge` evaluates tool descriptions on accuracy, completeness, clarity (0.0–1.0 each) with weighted overall score. `JudgeEvaluation` with per-tool `ToolQualityScore` and aggregate quality metrics.
 - Pilot test updated: `tests/integration/test_large_surface_pilot.py` exercises all four P1 features with mock LLM clients.
 - Verification: 410 tests passed, ruff clean, mypy clean (150 files).
+
+Implemented in the fourth slice — pipeline integration (completed `2026-03-27`):
+- Wired `derive_tool_intents()` and `bifurcate_descriptions()` into `enhance_stage` in `apps/compiler_worker/activities/production.py` as deterministic post-enhancement transforms that run in **all** code paths (both passthrough and LLM-enhanced).
+- Wired `ToolGrouper` as opt-in behind `WORKER_ENABLE_TOOL_GROUPING=1` env var, only when LLM is available. Failures are caught and logged without blocking compilation.
+- Added `_apply_post_enhancement()` helper encapsulating all post-enhancement transforms.
+- Updated E2E tests (OpenAPI Petstore, REST discovery, GraphQL) to verify `tool_intent` is populated and descriptions are bifurcated after compilation.
+- Added focused integration test `test_apply_post_enhancement_sets_tool_intent_and_bifurcates_descriptions` in `tests/integration/test_compiler_worker_activities.py`.
+- Updated full-pipeline integration test to verify `tool_intent` on all operations in the final IR.
+- Verification: 433 tests passed, ruff clean, mypy clean.
 
 Out of scope:
 - Generalizing one pilot into a universal `100-endpoint service => 100 working MCP tools` guarantee
