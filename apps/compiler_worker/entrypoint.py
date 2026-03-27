@@ -80,23 +80,17 @@ def _wait_for_broker_socket(
         os.getenv("WORKER_BROKER_CONNECT_TIMEOUT_SECONDS", "2")
     )
     deadline = time.monotonic() + timeout_seconds
-    last_error: OSError | None = None
-
     while True:
         try:
             _connect_tcp(host, port, connect_timeout_seconds)
             return
         except OSError as exc:
-            last_error = exc
             if time.monotonic() >= deadline:
                 raise RuntimeError(
                     f"Broker {host}:{port} did not become reachable within "
                     f"{timeout_seconds:.0f}s."
                 ) from exc
             time.sleep(poll_interval_seconds)
-
-    if last_error is not None:  # pragma: no cover
-        raise RuntimeError("Broker wait exited unexpectedly.") from last_error
 
 
 def _stream_celery_output(process: subprocess.Popen[str], ready_event: Event) -> None:
