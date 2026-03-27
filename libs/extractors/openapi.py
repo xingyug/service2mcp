@@ -22,9 +22,11 @@ from libs.ir.models import (
     EventSupportLevel,
     EventTransport,
     Operation,
+    PaginationConfig,
     Param,
     RequestBodyMode,
     ResponseExample,
+    ResponseStrategy,
     RiskLevel,
     RiskMetadata,
     ServiceIR,
@@ -316,6 +318,13 @@ class OpenAPIExtractor:
                 error_schema = self._extract_error_schema(op_spec, is_swagger)
                 response_examples = self._extract_response_examples(op_spec, is_swagger)
 
+                pagination = self._infer_pagination(op_spec, params, is_swagger)
+                response_strategy = (
+                    ResponseStrategy(pagination=pagination)
+                    if pagination and method.upper() == "GET"
+                    else ResponseStrategy()
+                )
+
                 enabled = risk_level != RiskLevel.unknown
                 op = Operation(
                     id=op_id,
@@ -328,6 +337,7 @@ class OpenAPIExtractor:
                     body_param_name=body_param_name,
                     error_schema=error_schema,
                     response_examples=response_examples,
+                    response_strategy=response_strategy,
                     risk=RiskMetadata(
                         writes_state=method.upper() in ("POST", "PUT", "PATCH", "DELETE"),
                         destructive=method.upper() == "DELETE",
@@ -486,6 +496,117 @@ class OpenAPIExtractor:
         ]
         descriptors.sort(key=lambda descriptor: descriptor.id)
         return descriptors
+
+    # ── Pagination inference ────────────────────────────────────────────
+
+    _CURSOR_PARAM_NAMES: set[str] = {
+        "cursor",
+        "next_cursor",
+        "page_token",
+        "next_page_token",
+        "after",
+        "before",
+        "starting_after",
+        "ending_before",
+    }
+    _CURSOR_RESPONSE_FIELDS: set[str] = {"next_cursor", "next_page_token", "cursor", "next"}
+    _PAGE_SIZE_PARAM_NAMES: set[str] = {"per_page", "page_size", "pageSize", "size", "count"}
+    _PAGINATION_RESPONSE_FIELDS: set[str] = {
+        "total",
+        "total_count",
+        "count",
+        "page",
+        "pages",
+        "has_more",
+        "has_next",
+    }
+
+    def _infer_pagination(
+        self,
+        op_spec: JSONDict,
+        params: list[Param],
+        is_swagger: bool,
+    ) -> PaginationConfig | None:
+        """Detect pagination patterns from params and response schema."""
+        param_names = {p.name for p in params}
+        response_schema = self._get_success_response_schema(op_spec, is_swagger)
+        response_fields = (
+            set(response_schema.get("properties", {}).keys())
+            if isinstance(response_schema, dict)
+            else set()
+        )
+
+        # 1. Cursor-based pagination
+        cursor_params = param_names & self._CURSOR_PARAM_NAMES
+        cursor_response = response_fields & self._CURSOR_RESPONSE_FIELDS
+        if cursor_params or cursor_response:
+            cursor_param = next(iter(sorted(cursor_params))) if cursor_params else "cursor"
+            size_param = self._detect_size_param(param_names, default="limit")
+            return PaginationConfig(style="cursor", page_param=cursor_param, size_param=size_param)
+
+        # 2. Page-based pagination
+        if "page" in param_names:
+            size_match = param_names & self._PAGE_SIZE_PARAM_NAMES
+            if size_match:
+                size_param = next(iter(sorted(size_match)))
+                return PaginationConfig(style="page", page_param="page", size_param=size_param)
+
+        # 3. Offset-based pagination
+        if "offset" in param_names and "limit" in param_names:
+            return PaginationConfig(style="offset", page_param="offset", size_param="limit")
+
+        # 4. Response envelope detection
+        if isinstance(response_schema, dict):
+            props = response_schema.get("properties", {})
+            data_prop = props.get("data", {})
+            data_is_array = isinstance(data_prop, dict) and data_prop.get("type") == "array"
+            has_meta = bool({"meta", "pagination"} & set(props.keys()))
+            if data_is_array and has_meta:
+                meta_key = "meta" if "meta" in props else "pagination"
+                meta_schema = props.get(meta_key, {})
+                meta_fields = (
+                    set(meta_schema.get("properties", {}).keys())
+                    if isinstance(meta_schema, dict)
+                    else set()
+                )
+                if meta_fields & self._PAGINATION_RESPONSE_FIELDS:
+                    size_param = self._detect_size_param(param_names, default="page_size")
+                    return PaginationConfig(
+                        style="offset", page_param="offset", size_param=size_param
+                    )
+
+        return None
+
+    @staticmethod
+    def _detect_size_param(param_names: set[str], *, default: str) -> str:
+        for candidate in ("limit", "per_page", "page_size", "pageSize", "size", "count"):
+            if candidate in param_names:
+                return candidate
+        return default
+
+    def _get_success_response_schema(self, op_spec: JSONDict, is_swagger: bool) -> JSONDict | None:
+        """Return the JSON Schema of the first 2xx response, if any."""
+        responses = op_spec.get("responses", {})
+        if not isinstance(responses, dict):
+            return None
+        for code in ("200", "201", "202", "203", "204"):
+            resp = responses.get(code)
+            if not isinstance(resp, dict):
+                continue
+            if is_swagger:
+                schema = resp.get("schema")
+                if isinstance(schema, dict):
+                    return schema
+            else:
+                content = resp.get("content", {})
+                if not isinstance(content, dict):
+                    continue
+                json_content = content.get("application/json", {})
+                if isinstance(json_content, dict):
+                    schema = json_content.get("schema")
+                    if isinstance(schema, dict):
+                        return schema
+        return None
 
     # ── Error-schema & response-examples extraction ──────────────────────
 

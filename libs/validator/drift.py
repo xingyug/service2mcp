@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from libs.extractors.base import ExtractorProtocol, SourceConfig
 from libs.ir.models import ServiceIR
 
 
@@ -90,6 +91,27 @@ def _compare_schema(deployed_ir: ServiceIR, live_ir: ServiceIR) -> list[str]:
         )
 
     return changes
+
+
+def check_drift_from_source(
+    deployed_ir: ServiceIR,
+    source: SourceConfig,
+    extractor: ExtractorProtocol,
+) -> DriftReport:
+    """Re-extract from source and compare against deployed IR.
+
+    This is the entry point for scheduled drift checks.
+
+    Args:
+        deployed_ir: The currently deployed ServiceIR
+        source: The source configuration to re-extract from
+        extractor: The extractor to use for re-extraction
+
+    Returns:
+        DriftReport comparing deployed vs freshly extracted IR
+    """
+    live_ir = extractor.extract(source)
+    return detect_drift(deployed_ir, live_ir)
 
 
 def detect_drift(deployed_ir: ServiceIR, live_ir: ServiceIR) -> DriftReport:

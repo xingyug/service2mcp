@@ -30,7 +30,10 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         runtime=True,
         live_proof=True,
         llm_e2e=True,
-        notes="Primary spec-driven HTTP path with live DeepSeek-enhanced proof.",
+        notes=(
+            "Primary spec-driven HTTP path with live DeepSeek-enhanced proof."
+            " Error model, response examples, drift detection."
+        ),
     ),
     "rest": ProtocolCapability(
         key="rest",
@@ -40,7 +43,10 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         runtime=True,
         live_proof=True,
         llm_e2e=True,
-        notes="Discovered HTTP paths have both local LLM-enabled E2E and live GKE DeepSeek proof.",
+        notes=(
+            "Discovered HTTP paths have both local LLM-enabled E2E and live"
+            " GKE DeepSeek proof. Error model, response examples, drift detection."
+        ),
     ),
     "graphql": ProtocolCapability(
         key="graphql",
@@ -50,7 +56,10 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         runtime=True,
         live_proof=True,
         llm_e2e=True,
-        notes="Typed GraphQL runtime has both local LLM-enabled E2E and live GKE DeepSeek proof.",
+        notes=(
+            "Typed GraphQL runtime has both local LLM-enabled E2E and live"
+            " GKE DeepSeek proof. Error model, response examples, drift detection."
+        ),
     ),
     "grpc": ProtocolCapability(
         key="grpc",
@@ -60,7 +69,10 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         runtime=False,
         live_proof=False,
         llm_e2e=False,
-        notes="Only typed unary/server-stream slices are runtime-capable.",
+        notes=(
+            "Only typed unary/server-stream slices are runtime-capable."
+            " Error model, response examples, drift detection."
+        ),
     ),
     "grpc_unary": ProtocolCapability(
         key="grpc_unary",
@@ -70,7 +82,10 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         runtime=True,
         live_proof=True,
         llm_e2e=True,
-        notes="Native unary runtime has both local LLM-enabled E2E and live GKE DeepSeek proof.",
+        notes=(
+            "Native unary runtime has both local LLM-enabled E2E and live"
+            " GKE DeepSeek proof. Error model, response examples, drift detection."
+        ),
     ),
     "grpc_stream": ProtocolCapability(
         key="grpc_stream",
@@ -80,7 +95,10 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         runtime=True,
         live_proof=True,
         llm_e2e=True,
-        notes="Native server-stream runtime has local LLM-enabled E2E and live GKE proof.",
+        notes=(
+            "Native server-stream runtime has local LLM-enabled E2E and live"
+            " GKE proof. Error model, response examples, drift detection."
+        ),
     ),
     "soap": ProtocolCapability(
         key="soap",
@@ -90,7 +108,10 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         runtime=True,
         live_proof=True,
         llm_e2e=True,
-        notes="SOAP envelope execution has both local LLM-enabled E2E and live GKE DeepSeek proof.",
+        notes=(
+            "SOAP envelope execution has both local LLM-enabled E2E and live"
+            " GKE DeepSeek proof. Error model, response examples, drift detection."
+        ),
     ),
     "sql": ProtocolCapability(
         key="sql",
@@ -102,7 +123,7 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         llm_e2e=True,
         notes=(
             "Reflected SQL query/insert runtime has both local LLM-enabled E2E "
-            "and live GKE DeepSeek proof."
+            "and live GKE DeepSeek proof. Error model, response examples, drift detection."
         ),
     ),
 }

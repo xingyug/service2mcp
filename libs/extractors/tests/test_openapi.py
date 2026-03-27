@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -583,3 +584,230 @@ paths:
         assert len(schema_examples) == 1
         assert schema_examples[0].body == {"id": 1, "name": "Fido"}
         assert schema_examples[0].status_code == 200
+
+
+# ── DEP-007: Pagination Inference Tests ───────────────────────────────
+
+
+class TestPaginationInference:
+    def test_pagination_cursor_detected(self, extractor):
+        """Spec with cursor + limit params → style=cursor."""
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "Test API", "version": "1.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [
+                                {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                                {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+                            ],
+                            "responses": {"200": {"description": "OK"}},
+                        }
+                    }
+                },
+            }
+        )
+        source = SourceConfig(file_content=spec)
+        ir = extractor.extract(source)
+        op = ir.operations[0]
+        assert op.response_strategy.pagination is not None
+        assert op.response_strategy.pagination.style == "cursor"
+        assert op.response_strategy.pagination.page_param == "cursor"
+        assert op.response_strategy.pagination.size_param == "limit"
+
+    def test_pagination_page_detected(self, extractor):
+        """Spec with page + per_page params → style=page."""
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "Test API", "version": "1.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [
+                                {"name": "page", "in": "query", "schema": {"type": "integer"}},
+                                {"name": "per_page", "in": "query", "schema": {"type": "integer"}},
+                            ],
+                            "responses": {"200": {"description": "OK"}},
+                        }
+                    }
+                },
+            }
+        )
+        source = SourceConfig(file_content=spec)
+        ir = extractor.extract(source)
+        op = ir.operations[0]
+        assert op.response_strategy.pagination is not None
+        assert op.response_strategy.pagination.style == "page"
+        assert op.response_strategy.pagination.page_param == "page"
+        assert op.response_strategy.pagination.size_param == "per_page"
+
+    def test_pagination_offset_detected(self, extractor):
+        """Spec with offset + limit params → style=offset."""
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "Test API", "version": "1.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [
+                                {"name": "offset", "in": "query", "schema": {"type": "integer"}},
+                                {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+                            ],
+                            "responses": {"200": {"description": "OK"}},
+                        }
+                    }
+                },
+            }
+        )
+        source = SourceConfig(file_content=spec)
+        ir = extractor.extract(source)
+        op = ir.operations[0]
+        assert op.response_strategy.pagination is not None
+        assert op.response_strategy.pagination.style == "offset"
+        assert op.response_strategy.pagination.page_param == "offset"
+        assert op.response_strategy.pagination.size_param == "limit"
+
+    def test_pagination_page_token_detected(self, extractor):
+        """Spec with page_token param → style=cursor."""
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "Test API", "version": "1.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [
+                                {
+                                    "name": "page_token",
+                                    "in": "query",
+                                    "schema": {"type": "string"},
+                                },
+                            ],
+                            "responses": {"200": {"description": "OK"}},
+                        }
+                    }
+                },
+            }
+        )
+        source = SourceConfig(file_content=spec)
+        ir = extractor.extract(source)
+        op = ir.operations[0]
+        assert op.response_strategy.pagination is not None
+        assert op.response_strategy.pagination.style == "cursor"
+        assert op.response_strategy.pagination.page_param == "page_token"
+
+    def test_pagination_response_envelope_detected(self, extractor):
+        """Response schema with data array + meta.total → pagination detected."""
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "Test API", "version": "1.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [],
+                            "responses": {
+                                "200": {
+                                    "description": "OK",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "data": {
+                                                        "type": "array",
+                                                        "items": {"type": "object"},
+                                                    },
+                                                    "meta": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "total": {"type": "integer"},
+                                                            "page": {"type": "integer"},
+                                                        },
+                                                    },
+                                                },
+                                            }
+                                        }
+                                    },
+                                }
+                            },
+                        }
+                    }
+                },
+            }
+        )
+        source = SourceConfig(file_content=spec)
+        ir = extractor.extract(source)
+        op = ir.operations[0]
+        assert op.response_strategy.pagination is not None
+        assert op.response_strategy.pagination.style == "offset"
+
+    def test_pagination_not_detected_for_non_get(self, extractor):
+        """POST with page params → no pagination (None)."""
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "Test API", "version": "1.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/items": {
+                        "post": {
+                            "operationId": "createItems",
+                            "parameters": [
+                                {"name": "page", "in": "query", "schema": {"type": "integer"}},
+                                {"name": "per_page", "in": "query", "schema": {"type": "integer"}},
+                            ],
+                            "responses": {"200": {"description": "OK"}},
+                        }
+                    }
+                },
+            }
+        )
+        source = SourceConfig(file_content=spec)
+        ir = extractor.extract(source)
+        op = ir.operations[0]
+        assert op.response_strategy.pagination is None
+
+    def test_pagination_not_detected_when_no_hints(self, extractor):
+        """Simple GET without any pagination params → None."""
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "Test API", "version": "1.0"},
+                "servers": [{"url": "https://api.example.com"}],
+                "paths": {
+                    "/items/{id}": {
+                        "get": {
+                            "operationId": "getItem",
+                            "parameters": [
+                                {
+                                    "name": "id",
+                                    "in": "path",
+                                    "required": True,
+                                    "schema": {"type": "string"},
+                                },
+                            ],
+                            "responses": {"200": {"description": "OK"}},
+                        }
+                    }
+                },
+            }
+        )
+        source = SourceConfig(file_content=spec)
+        ir = extractor.extract(source)
+        op = ir.operations[0]
+        assert op.response_strategy.pagination is None

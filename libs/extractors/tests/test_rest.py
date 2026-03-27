@@ -63,8 +63,7 @@ class RelativePathClassifier(EndpointClassifier):
     ) -> list[EndpointClassification]:
         assert base_url == "https://api.example.com/catalog"
         assert any(
-            endpoint.path == "/catalog/products/{product_id}?view=detail"
-            for endpoint in endpoints
+            endpoint.path == "/catalog/products/{product_id}?view=detail" for endpoint in endpoints
         )
         return [
             EndpointClassification(
@@ -99,7 +98,7 @@ def _build_transport() -> httpx.MockTransport:
             ): httpx.Response(
                 200,
                 text=(
-                    '<html><body>'
+                    "<html><body>"
                     '<a href="/catalog/products/{product_id}?view=detail">Product</a>'
                     "</body></html>"
                 ),
@@ -258,9 +257,7 @@ def test_json_body_values_not_promoted_to_endpoints() -> None:
     extractor = RESTExtractor(client=client)
 
     try:
-        service_ir = extractor.extract(
-            SourceConfig(url="https://mock.example.com/rest/catalog")
-        )
+        service_ir = extractor.extract(SourceConfig(url="https://mock.example.com/rest/catalog"))
     finally:
         extractor.close()
 
@@ -332,9 +329,7 @@ def test_sibling_coalescing_merges_value_like_leaves() -> None:
     extractor = RESTExtractor(client=client)
 
     try:
-        service_ir = extractor.extract(
-            SourceConfig(url="https://items.example.com/shop")
-        )
+        service_ir = extractor.extract(SourceConfig(url="https://items.example.com/shop"))
     finally:
         extractor.close()
 
@@ -373,9 +368,7 @@ def test_sibling_coalescing_preserves_shared_query_defaults() -> None:
     extractor = RESTExtractor(client=client)
 
     try:
-        service_ir = extractor.extract(
-            SourceConfig(url="https://items.example.com/shop")
-        )
+        service_ir = extractor.extract(SourceConfig(url="https://items.example.com/shop"))
     finally:
         extractor.close()
 
@@ -534,7 +527,9 @@ class TestOptionsProbing:
         def handler(request: httpx.Request) -> httpx.Response:
             if request.method == "OPTIONS":
                 return httpx.Response(
-                    200, headers={"allow": "POST, OPTIONS"}, request=request,
+                    200,
+                    headers={"allow": "POST, OPTIONS"},
+                    request=request,
                 )
             return httpx.Response(404, request=request)
 
@@ -592,15 +587,21 @@ class TestIterativeSubResourceInference:
                 # items/{item_id} exists, items/{item_id}/comments exists
                 if "items/" in path and "/comments" in path:
                     return httpx.Response(
-                        200, headers={"allow": "GET"}, request=request,
+                        200,
+                        headers={"allow": "GET"},
+                        request=request,
                     )
                 if "items/" in path:
                     return httpx.Response(
-                        200, headers={"allow": "GET, PUT, DELETE"}, request=request,
+                        200,
+                        headers={"allow": "GET, PUT, DELETE"},
+                        request=request,
                     )
                 if path == "/api/items":
                     return httpx.Response(
-                        200, headers={"allow": "GET, POST"}, request=request,
+                        200,
+                        headers={"allow": "GET, POST"},
+                        request=request,
                     )
             return httpx.Response(404, request=request)
 
@@ -646,7 +647,9 @@ class TestIterativeSubResourceInference:
                 )
             if request.method == "OPTIONS":
                 return httpx.Response(
-                    200, headers={"allow": "GET"}, request=request,
+                    200,
+                    headers={"allow": "GET"},
+                    request=request,
                 )
             return httpx.Response(404, request=request)
 
@@ -744,3 +747,56 @@ class TestDeduplicateConcretePaths:
         }
         result = _deduplicate_concrete_paths(observed)
         assert "/api/users/1" in result
+
+
+class TestPaginationInference:
+    """Tests for RESTExtractor._infer_pagination_from_response."""
+
+    def _make_extractor(self) -> RESTExtractor:
+        transport = httpx.MockTransport(lambda r: httpx.Response(404, request=r))
+        return RESTExtractor(client=httpx.Client(transport=transport))
+
+    def test_rest_pagination_offset_limit_params(self) -> None:
+        extractor = self._make_extractor()
+        endpoint = DiscoveredEndpoint(
+            path="/api/items?offset=0&limit=20",
+            absolute_url="https://api.example.com/api/items?offset=0&limit=20",
+            methods=("GET",),
+            discovery_sources=("json",),
+            confidence=0.8,
+        )
+        result = extractor._infer_pagination_from_response(endpoint, "GET")
+
+        assert result is not None
+        assert result.style == "offset"
+        assert result.page_param == "offset"
+        assert result.size_param == "limit"
+
+    def test_rest_pagination_page_params(self) -> None:
+        extractor = self._make_extractor()
+        endpoint = DiscoveredEndpoint(
+            path="/api/items?page=1&per_page=10",
+            absolute_url="https://api.example.com/api/items?page=1&per_page=10",
+            methods=("GET",),
+            discovery_sources=("json",),
+            confidence=0.8,
+        )
+        result = extractor._infer_pagination_from_response(endpoint, "GET")
+
+        assert result is not None
+        assert result.style == "page"
+        assert result.page_param == "page"
+        assert result.size_param == "per_page"
+
+    def test_rest_no_pagination_for_post(self) -> None:
+        extractor = self._make_extractor()
+        endpoint = DiscoveredEndpoint(
+            path="/api/items?offset=0&limit=20",
+            absolute_url="https://api.example.com/api/items?offset=0&limit=20",
+            methods=("POST",),
+            discovery_sources=("form",),
+            confidence=0.8,
+        )
+        result = extractor._infer_pagination_from_response(endpoint, "POST")
+
+        assert result is None

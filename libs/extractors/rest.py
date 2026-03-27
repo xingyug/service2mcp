@@ -22,7 +22,9 @@ from libs.ir.models import (
     AuthConfig,
     AuthType,
     Operation,
+    PaginationConfig,
     Param,
+    ResponseStrategy,
     RiskLevel,
     RiskMetadata,
     ServiceIR,
@@ -269,8 +271,7 @@ class RESTExtractor:
         observed = _coalesce_sibling_endpoints(observed)
 
         return [
-            endpoint.freeze()
-            for endpoint in sorted(observed.values(), key=lambda item: item.path)
+            endpoint.freeze() for endpoint in sorted(observed.values(), key=lambda item: item.path)
         ]
 
     def _infer_sub_resources(
@@ -307,7 +308,10 @@ class RESTExtractor:
                 if candidate not in observed and candidate not in probed:
                     probed.add(candidate)
                     self._probe_and_register(
-                        candidate, candidate_url, inferred, source="inferred",
+                        candidate,
+                        candidate_url,
+                        inferred,
+                        source="inferred",
                     )
 
             # If this looks like a detail endpoint (has {param} leaf),
@@ -323,7 +327,10 @@ class RESTExtractor:
                     if candidate not in observed and candidate not in probed:
                         probed.add(candidate)
                         self._probe_and_register(
-                            candidate, candidate_url, inferred, source="inferred",
+                            candidate,
+                            candidate_url,
+                            inferred,
+                            source="inferred",
                         )
 
         return inferred
@@ -337,8 +344,7 @@ class RESTExtractor:
         assert self._llm_client is not None
 
         discovered_info = [
-            {"path": ep.path, "methods": sorted(ep.methods)}
-            for ep in observed.values()
+            {"path": ep.path, "methods": sorted(ep.methods)} for ep in observed.values()
         ]
 
         candidates = generate_seed_candidates(
@@ -509,6 +515,65 @@ class RESTExtractor:
             endpoint.sources.add("options")
             endpoint.confidence = max(endpoint.confidence, 0.9)
 
+    def _infer_pagination_from_response(
+        self,
+        endpoint: DiscoveredEndpoint,
+        method: str,
+    ) -> PaginationConfig | None:
+        """Infer pagination style from discovered endpoint's observed response shape.
+
+        Since DiscoveredEndpoint does not carry response body keys, inference
+        is based on query-parameter names present in the endpoint path.
+        """
+        if method.upper() != "GET":
+            return None
+
+        parsed = urlparse(endpoint.path)
+        query_param_names = {k.lower() for k, _ in parse_qsl(parsed.query, keep_blank_values=True)}
+
+        # Cursor-style hints
+        cursor_hints = {"next", "cursor", "page_token"}
+        if query_param_names & cursor_hints:
+            cursor_param = (
+                "cursor"
+                if "cursor" in query_param_names
+                else next(iter(sorted(query_param_names & cursor_hints)))
+            )
+            return PaginationConfig(
+                style="cursor",
+                page_param=cursor_param,
+                size_param="page_size",
+            )
+
+        # Page-style hints
+        page_hints = {"page", "total_pages", "current_page"}
+        if query_param_names & page_hints:
+            page_param = (
+                "page"
+                if "page" in query_param_names
+                else next(iter(sorted(query_param_names & page_hints)))
+            )
+            size_param = next(
+                (p for p in sorted(query_param_names) if p in {"per_page", "page_size", "size"}),
+                "page_size",
+            )
+            return PaginationConfig(
+                style="page",
+                page_param=page_param,
+                size_param=size_param,
+            )
+
+        # Offset-style hints
+        offset_hints = {"offset", "limit"}
+        if query_param_names & offset_hints:
+            return PaginationConfig(
+                style="offset",
+                page_param="offset" if "offset" in query_param_names else "page",
+                size_param="limit" if "limit" in query_param_names else "page_size",
+            )
+
+        return None
+
     def _classification_to_operation(
         self,
         classification: EndpointClassification,
@@ -523,9 +588,8 @@ class RESTExtractor:
         path = normalized_path.split("?", 1)[0]
         params = _params_from_path_and_query(normalized_path)
         body_param_name: str | None = None
-        if (
-            method in {"POST", "PUT", "PATCH"}
-            and not any(param.name == "payload" for param in params)
+        if method in {"POST", "PUT", "PATCH"} and not any(
+            param.name == "payload" for param in params
         ):
             params.append(
                 Param(
@@ -539,6 +603,15 @@ class RESTExtractor:
             )
             body_param_name = "payload"
 
+        pagination_endpoint = DiscoveredEndpoint(
+            path=normalized_path,
+            absolute_url="",
+            methods=(method,),
+            discovery_sources=(),
+            confidence=classification.confidence,
+        )
+        pagination = self._infer_pagination_from_response(pagination_endpoint, method)
+
         return Operation(
             id=_operation_id(method, path),
             name=classification.name,
@@ -547,16 +620,17 @@ class RESTExtractor:
             path=path,
             params=params,
             body_param_name=body_param_name,
+            response_strategy=ResponseStrategy(pagination=pagination),
             risk=RiskMetadata(
-                    writes_state=method in {"POST", "PUT", "PATCH", "DELETE"},
-                    destructive=method == "DELETE",
-                    external_side_effect=method in {"POST", "PUT", "PATCH", "DELETE"},
-                    idempotent=method in {"GET", "PUT", "DELETE"},
-                    risk_level=_risk_for_method(method),
-                    confidence=classification.confidence,
-                    source=self._operation_source(),
-                ),
-                tags=list(classification.tags),
+                writes_state=method in {"POST", "PUT", "PATCH", "DELETE"},
+                destructive=method == "DELETE",
+                external_side_effect=method in {"POST", "PUT", "PATCH", "DELETE"},
+                idempotent=method in {"GET", "PUT", "DELETE"},
+                risk_level=_risk_for_method(method),
+                confidence=classification.confidence,
+                source=self._operation_source(),
+            ),
+            tags=list(classification.tags),
             source=self._operation_source(),
             confidence=classification.confidence,
             enabled=True,
@@ -617,7 +691,12 @@ _SUB_RESOURCE_HINTS: dict[str, list[str]] = {
 
 # Fallback sub-resource names tried for any collection not in the hints map.
 _DEFAULT_SUB_RESOURCES = [
-    "items", "details", "status", "history", "settings", "comments",
+    "items",
+    "details",
+    "status",
+    "history",
+    "settings",
+    "comments",
 ]
 
 
@@ -899,8 +978,7 @@ def _is_link_like_json_key(parent_key: str | None) -> bool:
 
 def _shared_query_suffix(paths: list[str]) -> str:
     queries = [
-        tuple(sorted(parse_qsl(urlparse(path).query, keep_blank_values=True)))
-        for path in paths
+        tuple(sorted(parse_qsl(urlparse(path).query, keep_blank_values=True))) for path in paths
     ]
     if not queries or any(not query for query in queries):
         return ""

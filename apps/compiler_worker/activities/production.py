@@ -110,9 +110,7 @@ class ProductionActivitySettings:
     @classmethod
     def from_env(cls) -> ProductionActivitySettings:
         namespace = (
-            os.getenv("COMPILER_TARGET_NAMESPACE")
-            or _read_service_account_namespace()
-            or "default"
+            os.getenv("COMPILER_TARGET_NAMESPACE") or _read_service_account_namespace() or "default"
         )
         runtime_image = (
             os.getenv("MCP_RUNTIME_IMAGE")
@@ -442,21 +440,19 @@ def create_default_activity_registry(
             resolved_route_publisher = DeferredRoutePublisher(mode="deferred")
         elif resolved_settings.route_publish_mode == "access-control":
             if not resolved_settings.access_control_url:
-                raise RuntimeError(
-                    "ROUTE_PUBLISH_MODE=access-control requires ACCESS_CONTROL_URL."
-                )
+                raise RuntimeError("ROUTE_PUBLISH_MODE=access-control requires ACCESS_CONTROL_URL.")
             resolved_route_publisher = AccessControlRoutePublisher(
                 base_url=resolved_settings.access_control_url,
                 timeout_seconds=resolved_settings.route_publish_timeout_seconds,
             )
         else:
             raise RuntimeError(
-                "Unsupported ROUTE_PUBLISH_MODE: "
-                f"{resolved_settings.route_publish_mode}."
+                f"Unsupported ROUTE_PUBLISH_MODE: {resolved_settings.route_publish_mode}."
             )
     else:
         resolved_route_publisher = route_publisher
     if deployer is None:
+
         def deployer_factory() -> ManifestDeployer:
             return KubernetesManifestDeployer(
                 api=KubernetesAPISession.from_in_cluster(namespace=resolved_settings.namespace)
@@ -469,23 +465,27 @@ def create_default_activity_registry(
 
     resolved_runtime_http_client_factory: RuntimeHttpClientFactory
     if runtime_http_client_factory is None:
+
         def default_runtime_http_client_factory(base_url: str) -> httpx.AsyncClient:
             return httpx.AsyncClient(
                 base_url=base_url,
                 follow_redirects=True,
                 timeout=resolved_settings.proxy_timeout_seconds,
             )
+
         resolved_runtime_http_client_factory = default_runtime_http_client_factory
     else:
         resolved_runtime_http_client_factory = runtime_http_client_factory
 
     resolved_tool_invoker_factory: ToolInvokerFactory
     if tool_invoker_factory is None:
+
         def default_tool_invoker_factory(base_url: str) -> ToolInvoker:
             return build_streamable_http_tool_invoker(
                 base_url,
                 http_client_factory=resolved_runtime_http_client_factory,
             )
+
         resolved_tool_invoker_factory = default_tool_invoker_factory
     else:
         resolved_tool_invoker_factory = tool_invoker_factory
@@ -733,10 +733,10 @@ def create_default_activity_registry(
                 ),
                 ArtifactRecordPayload(
                     artifact_type="service_ir",
-                    content_hash=hashlib.sha256(serialize_ir(service_ir).encode("utf-8")).hexdigest(),
-                    storage_path=(
-                        f"inline://service-ir/{service_id}/v{version_number}"
-                    ),
+                    content_hash=hashlib.sha256(
+                        serialize_ir(service_ir).encode("utf-8")
+                    ).hexdigest(),
+                    storage_path=(f"inline://service-ir/{service_id}/v{version_number}"),
                 ),
             ],
         )
@@ -806,10 +806,7 @@ def _source_config_from_context(context: CompilationContext) -> SourceConfig:
     options = context.request.options
     raw_hints = options.get("hints", {})
     hints = (
-        {
-            str(key): str(value)
-            for key, value in raw_hints.items()
-        }
+        {str(key): str(value) for key, value in raw_hints.items()}
         if isinstance(raw_hints, Mapping)
         else {}
     )
@@ -897,10 +894,16 @@ def _apply_post_enhancement(
     Always runs:
     - ``derive_tool_intents`` — tags each operation with discovery/action intent
     - ``bifurcate_descriptions`` — prepends [DISCOVERY]/[ACTION] to descriptions
+    - ``normalize_error_schemas`` — ensures every operation has a non-empty error model
 
     Opt-in (``WORKER_ENABLE_TOOL_GROUPING=1`` + LLM available):
     - ``ToolGrouper`` — clusters operations into business-intent groups
+
+    Opt-in (LLM available):
+    - ``ExamplesGenerator`` — synthesises response examples from schema
     """
+    from libs.enhancer.error_normalizer import normalize_error_schemas
+    from libs.enhancer.examples_generator import ExamplesGenerator
     from libs.enhancer.tool_grouping import ToolGrouper, apply_grouping
 
     ir = derive_tool_intents(ir)
@@ -916,6 +919,22 @@ def _apply_post_enhancement(
 
             logging.getLogger(__name__).warning(
                 "Tool grouping failed; continuing without grouping",
+                exc_info=True,
+            )
+
+    # Error normalization: always run (deterministic, no LLM needed)
+    ir = normalize_error_schemas(ir)
+
+    # Examples generation: only if LLM client is available
+    if llm_client_factory is not None:
+        try:
+            generator = ExamplesGenerator(llm_client_factory())
+            ir = generator.generate(ir)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Examples generation failed; continuing without examples",
                 exc_info=True,
             )
 
@@ -1083,18 +1102,12 @@ def _sample_sql_arguments(operation: Operation) -> dict[str, Any]:
                 arguments[param.name] = _sample_value(param)
         return arguments
 
-    return {
-        param.name: _sample_value(param)
-        for param in operation.params
-        if param.required
-    }
+    return {param.name: _sample_value(param) for param in operation.params if param.required}
 
 
 def _validation_failure_message(prefix: str, report: Any) -> str:
     failed_results = [
-        f"{result.stage}: {result.details}"
-        for result in report.results
-        if not result.passed
+        f"{result.stage}: {result.details}" for result in report.results if not result.passed
     ]
     if not failed_results:
         return prefix
@@ -1124,8 +1137,7 @@ async def _wait_for_runtime_http_ready(
             if health_response.status_code == 200 and ready_response.status_code == 200:
                 return
             last_error = (
-                "healthz="
-                f"{health_response.status_code}, readyz={ready_response.status_code}"
+                f"healthz={health_response.status_code}, readyz={ready_response.status_code}"
             )
         finally:
             await client.aclose()
@@ -1142,8 +1154,7 @@ async def _wait_for_runtime_http_ready(
     if last_error is None:
         last_error = "runtime did not become reachable"
     raise RuntimeError(
-        "Runtime readiness check timed out after "
-        f"{timeout_seconds:.1f}s: {last_error}"
+        f"Runtime readiness check timed out after {timeout_seconds:.1f}s: {last_error}"
     )
 
 

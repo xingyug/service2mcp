@@ -227,7 +227,10 @@ def _build_rest_discovery_ir() -> ServiceIR:
                 enabled=True,
             )
         ],
-        metadata={"base_path": "/catalog", "discovery_entrypoint": "https://catalog.example.test/catalog"},
+        metadata={
+            "base_path": "/catalog",
+            "discovery_entrypoint": "https://catalog.example.test/catalog",
+        },
     )
 
 
@@ -1191,7 +1194,10 @@ async def test_kubernetes_manifest_deployer_applies_and_rolls_back_resources() -
         deployment = await deployer.deploy(manifest_set)
 
         assert deployment.deployment_revision.startswith("billing-runtime-v2@")
-        assert deployment.runtime_base_url == "http://billing-runtime-v2.test-ns.svc.cluster.local:8003"
+        assert (
+            deployment.runtime_base_url
+            == "http://billing-runtime-v2.test-ns.svc.cluster.local:8003"
+        )
         assert ("configmaps", "test-ns/billing-runtime-v2-ir") in fake_api.resources
         assert ("deployments", "test-ns/billing-runtime-v2") in fake_api.resources
         assert ("services", "test-ns/billing-runtime-v2") in fake_api.resources
@@ -1265,3 +1271,121 @@ def test_apply_post_enhancement_sets_tool_intent_and_bifurcates_descriptions() -
 
     # Without grouping env var, tool_grouping should remain empty.
     assert result.tool_grouping == []
+
+
+def test_apply_post_enhancement_normalizes_errors() -> None:
+    """Verify _apply_post_enhancement populates error_schema on every operation."""
+    ir = ServiceIR(
+        source_hash="a" * 64,
+        protocol="rest",
+        service_name="error-norm-test",
+        service_description="Fixture for error normalization test",
+        base_url="https://example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="getWidget",
+                name="Get Widget",
+                description="Return a single widget.",
+                method="GET",
+                path="/widgets/{id}",
+                params=[Param(name="id", type="string", required=True)],
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.safe,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                    writes_state=False,
+                    destructive=False,
+                    external_side_effect=False,
+                    idempotent=True,
+                ),
+                enabled=True,
+            ),
+            Operation(
+                id="deleteWidget",
+                name="Delete Widget",
+                description="Remove a widget.",
+                method="DELETE",
+                path="/widgets/{id}",
+                params=[Param(name="id", type="string", required=True)],
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.dangerous,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                    writes_state=True,
+                    destructive=True,
+                    external_side_effect=False,
+                    idempotent=True,
+                ),
+                enabled=True,
+            ),
+        ],
+    )
+
+    result = _apply_post_enhancement(ir)
+
+    for op in result.operations:
+        assert op.error_schema.responses, (
+            f"Operation {op.id!r} should have non-empty error_schema.responses"
+        )
+
+
+def test_apply_post_enhancement_generates_examples_with_llm() -> None:
+    """Verify _apply_post_enhancement generates examples when LLM client is available."""
+    from unittest.mock import MagicMock
+
+    example_json = json.dumps(
+        [
+            {
+                "name": "success",
+                "description": "Successful response",
+                "body": {"id": "w-1", "label": "Widget"},
+            }
+        ]
+    )
+    mock_response = MagicMock()
+    mock_response.content = example_json
+    mock_llm = MagicMock()
+    mock_llm.complete.return_value = mock_response
+
+    ir = ServiceIR(
+        source_hash="a" * 64,
+        protocol="rest",
+        service_name="examples-test",
+        service_description="Fixture for examples generation test",
+        base_url="https://example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="getWidget",
+                name="Get Widget",
+                description="Return a single widget.",
+                method="GET",
+                path="/widgets/{id}",
+                params=[Param(name="id", type="string", required=True)],
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                    },
+                },
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.safe,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                    writes_state=False,
+                    destructive=False,
+                    external_side_effect=False,
+                    idempotent=True,
+                ),
+                enabled=True,
+            ),
+        ],
+    )
+
+    result = _apply_post_enhancement(ir, llm_client_factory=lambda: mock_llm)
+
+    get_op = next(op for op in result.operations if op.id == "getWidget")
+    assert get_op.response_examples, "Expected response_examples to be populated"
+    assert get_op.error_schema.responses, "Error schema should also be populated"

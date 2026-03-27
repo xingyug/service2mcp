@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthConfig,
     AuthType,
@@ -11,7 +12,7 @@ from libs.ir.models import (
     RiskMetadata,
     ServiceIR,
 )
-from libs.validator.drift import DriftReport, detect_drift
+from libs.validator.drift import DriftReport, check_drift_from_source, detect_drift
 
 
 def _make_op(op_id: str, **kwargs: object) -> Operation:
@@ -36,6 +37,48 @@ def _make_ir(operations: list[Operation] | None = None, **kwargs: object) -> Ser
     }
     defaults.update(kwargs)
     return ServiceIR(**defaults)  # type: ignore[arg-type]
+
+
+class MockExtractor:
+    """Extractor double that returns a pre-built IR."""
+
+    protocol_name: str = "mock"
+
+    def __init__(self, ir: ServiceIR) -> None:
+        self._ir = ir
+
+    def detect(self, source: SourceConfig) -> float:
+        return 1.0
+
+    def extract(self, source: SourceConfig) -> ServiceIR:
+        return self._ir
+
+
+class TestCheckDriftFromSource:
+    def test_check_drift_from_source_no_drift(self) -> None:
+        ops = [_make_op("list-users"), _make_op("get-user")]
+        deployed = _make_ir(ops)
+        live = _make_ir(ops)
+        extractor = MockExtractor(live)
+        source = SourceConfig(url="https://api.example.com")
+
+        report = check_drift_from_source(deployed, source, extractor)
+
+        assert report.has_drift is False
+        assert report.added_operations == []
+        assert report.removed_operations == []
+        assert report.modified_operations == []
+
+    def test_check_drift_from_source_with_drift(self) -> None:
+        deployed = _make_ir([_make_op("list-users")])
+        live = _make_ir([_make_op("list-users"), _make_op("create-user")])
+        extractor = MockExtractor(live)
+        source = SourceConfig(url="https://api.example.com")
+
+        report = check_drift_from_source(deployed, source, extractor)
+
+        assert report.has_drift is True
+        assert report.added_operations == ["create-user"]
 
 
 class TestNoDrift:

@@ -158,3 +158,12 @@ def test_protocol_capability_key_distinguishes_grpc_runtime_slices() -> None:
     assert protocol_capability_for_service(grpc_unary_ir).runtime is True
     assert protocol_capability_for_service(grpc_stream_ir).live_proof is True
     assert protocol_capability_for_service(generic_grpc_ir).runtime is False
+
+
+def test_all_protocols_mention_error_model() -> None:
+    """Every main protocol capability note must reference 'error model'."""
+    rows = protocol_capability_matrix()
+    for row in rows:
+        assert "error model" in row.notes.lower(), (
+            f"Protocol {row.key!r} notes should mention 'error model', got: {row.notes!r}"
+        )
