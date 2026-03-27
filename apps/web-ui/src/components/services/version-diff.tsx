@@ -10,7 +10,6 @@ import {
   ChevronRight,
 } from "lucide-react";
 
-import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -56,7 +55,6 @@ function formatValue(val: unknown): string {
 
 function OperationSummary({
   operation,
-  variant,
 }: {
   operation: Operation;
   variant: "added" | "removed";

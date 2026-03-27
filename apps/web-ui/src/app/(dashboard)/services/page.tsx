@@ -12,7 +12,6 @@ import {
   Layers,
 } from "lucide-react";
 
-import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,7 +34,6 @@ import {
 import { ServiceCard } from "@/components/services/service-card";
 import { ProtocolBadge } from "@/components/services/protocol-badge";
 import { useServices } from "@/hooks/use-api";
-import type { ServiceSummary } from "@/types/api";
 
 const PROTOCOLS = [
   "all",
@@ -71,7 +69,7 @@ export default function ServicesPage() {
   const [view, setView] = React.useState<"grid" | "list">("grid");
 
   const { data, isLoading, error } = useServices();
-  const services = data?.services ?? [];
+  const services = React.useMemo(() => data?.services ?? [], [data]);
 
   // Derive unique tenants / environments for filter dropdowns
   const tenants = React.useMemo(

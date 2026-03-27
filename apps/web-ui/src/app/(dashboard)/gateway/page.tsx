@@ -53,7 +53,6 @@ import {
   CollapsibleContent,
 } from "@/components/ui/collapsible";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { useServices } from "@/hooks/use-api";
@@ -61,7 +60,6 @@ import { gatewayApi } from "@/lib/api-client";
 import type {
   ReconcileResponse,
   ServiceSummary,
-  ServiceRouteResponse,
 } from "@/types/api";
 
 // ---------------------------------------------------------------------------
@@ -331,7 +329,7 @@ function DeploymentHistory({ entries }: { entries: DeploymentEntry[] }) {
 
 export default function GatewayPage() {
   const { data: servicesData, isLoading, refetch } = useServices();
-  const services = servicesData?.services ?? [];
+  const services = React.useMemo(() => servicesData?.services ?? [], [servicesData]);
 
   // Simulate route status based on service data
   const serviceRoutes: ServiceRoute[] = React.useMemo(

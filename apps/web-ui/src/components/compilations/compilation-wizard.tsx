@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Upload, AlertCircle } from "lucide-react";
@@ -252,16 +252,11 @@ export function CompilationWizard() {
   const createMutation = useCreateCompilation();
 
   const [step, setStep] = useState(0);
-  const [form, setForm] = useState<WizardFormData>(INITIAL_FORM_DATA);
+  const [form, setForm] = useState<WizardFormData>(() => ({
+    ...INITIAL_FORM_DATA,
+    createdBy: username || INITIAL_FORM_DATA.createdBy,
+  }));
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (username) {
-      setForm((prev) =>
-        prev.createdBy ? prev : { ...prev, createdBy: username },
-      );
-    }
-  }, [username]);
 
   const updateField = useCallback(
     <K extends keyof WizardFormData>(field: K, value: WizardFormData[K]) => {

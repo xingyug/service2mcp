@@ -31,12 +31,6 @@ function barTrackColor(value: number): string {
   return "bg-red-100 dark:bg-red-900/40";
 }
 
-function ringGradient(value: number): string {
-  if (value > 0.8) return "border-green-500 dark:border-green-400";
-  if (value > 0.5) return "border-yellow-500 dark:border-yellow-400";
-  return "border-red-500 dark:border-red-400";
-}
-
 function ScoreBar({
   label,
   value,
@@ -97,7 +91,6 @@ function OverallGauge({
   const pct = Math.round(value * 100);
   // CSS-only ring gauge using conic-gradient emulated with border
   const size = compact ? "size-14" : "size-20";
-  const borderWidth = compact ? "border-[3px]" : "border-4";
   const deg = Math.round(value * 360);
 
   return (

@@ -1,7 +1,6 @@
 import type {
   CompilationCreateRequest,
   CompilationJobResponse,
-  CompilationEvent,
   ServiceSummary,
   ServiceListResponse,
   ArtifactVersionResponse,

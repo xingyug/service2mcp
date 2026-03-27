@@ -3,7 +3,6 @@
 import { useMemo, useState } from "react";
 import {
   ScrollText,
-  Search,
   Download,
   RefreshCw,
   Filter,
@@ -135,7 +134,7 @@ export default function AuditLogPage() {
   // Detail sheet
   const [selectedEntry, setSelectedEntry] = useState<AuditLogEntry | null>(null);
 
-  const { data, isLoading, refetch, dataUpdatedAt } = useAuditLogs(
+  const { data, isLoading } = useAuditLogs(
     appliedFilters,
     {
       refetchInterval: autoRefresh ? 30_000 : false,

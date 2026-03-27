@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CompilationEvent } from "@/types/api";
 
 export interface UseCompilationEventsReturn {
@@ -21,23 +21,23 @@ export function useCompilationEvents(
   const [error, setError] = useState<Error | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
 
-  const cleanup = useCallback(() => {
-    if (sourceRef.current) {
-      sourceRef.current.close();
-      sourceRef.current = null;
-    }
+  // Reset state when jobId changes (recommended React pattern for derived state)
+  const [prevJobId, setPrevJobId] = useState(jobId);
+  if (prevJobId !== jobId) {
+    setPrevJobId(jobId);
+    setEvents([]);
+    setError(null);
     setIsConnected(false);
-  }, []);
+  }
 
   useEffect(() => {
     if (!jobId) {
-      cleanup();
+      if (sourceRef.current) {
+        sourceRef.current.close();
+        sourceRef.current = null;
+      }
       return;
     }
-
-    // Reset state for a new connection
-    setEvents([]);
-    setError(null);
 
     const baseUrl =
       process.env.NEXT_PUBLIC_COMPILER_API_URL || "http://localhost:8000";
@@ -77,9 +77,12 @@ export function useCompilationEvents(
     };
 
     return () => {
-      cleanup();
+      if (sourceRef.current) {
+        sourceRef.current.close();
+        sourceRef.current = null;
+      }
     };
-  }, [jobId, cleanup]);
+  }, [jobId]);
 
   return { events, isConnected, error };
 }

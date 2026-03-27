@@ -60,18 +60,6 @@ import type { Operation, ServiceIR } from "@/types/api";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function relativeTime(iso?: string): string {
-  if (!iso) return "Never";
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
-}
-
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString();
 }
@@ -186,7 +174,7 @@ function VersionsTab({ serviceId }: { serviceId: string }) {
   const [deleteTarget, setDeleteTarget] = React.useState<number | null>(null);
   const [deleting, setDeleting] = React.useState(false);
 
-  async function handleDelete(version: number) {
+  async function handleDelete() {
     setDeleting(true);
     try {
       // Placeholder — call a real delete API when available
@@ -317,7 +305,7 @@ function VersionsTab({ serviceId }: { serviceId: string }) {
             <Button
               variant="destructive"
               disabled={deleting}
-              onClick={() => deleteTarget && handleDelete(deleteTarget)}
+              onClick={() => deleteTarget && handleDelete()}
             >
               {deleting ? "Deleting…" : "Delete"}
             </Button>

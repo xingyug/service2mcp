@@ -109,11 +109,12 @@ export default function CompilationsPage() {
   const [search, setSearch] = useState("");
   const [dateRange, setDateRange] = useState<DateRange>("all");
   const [page, setPage] = useState(0);
+  const [filterNow, setFilterNow] = useState(Date.now);
 
   const hasRunningJobs = (data?: CompilationJobResponse[]) =>
     data?.some((j) => IN_PROGRESS_STATUSES.has(j.status));
 
-  const { data: jobs, isLoading, refetch, dataUpdatedAt } = useCompilations({
+  const { data: jobs, isLoading, refetch } = useCompilations({
     refetchInterval: (query) =>
       hasRunningJobs(query.state.data) ? 10_000 : false,
   });
@@ -139,7 +140,6 @@ export default function CompilationsPage() {
     }
 
     if (dateRange !== "all") {
-      const now = Date.now();
       const ms =
         dateRange === "24h"
           ? 86_400_000
@@ -147,12 +147,12 @@ export default function CompilationsPage() {
             ? 604_800_000
             : 2_592_000_000;
       result = result.filter(
-        (j) => now - new Date(j.created_at).getTime() < ms,
+        (j) => filterNow - new Date(j.created_at).getTime() < ms,
       );
     }
 
     return result;
-  }, [jobs, statusFilter, search, dateRange]);
+  }, [jobs, statusFilter, search, dateRange, filterNow]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / ITEMS_PER_PAGE));
   const paged = filtered.slice(
@@ -245,7 +245,7 @@ export default function CompilationsPage() {
             <button
               key={range}
               type="button"
-              onClick={() => { setDateRange(range); setPage(0); }}
+              onClick={() => { setDateRange(range); setPage(0); setFilterNow(Date.now()); }}
               className={cn(
                 "px-2.5 py-1 text-xs font-medium transition-colors",
                 dateRange === range

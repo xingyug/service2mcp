@@ -73,7 +73,7 @@ const STATUS_CATEGORIES: {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function buildProtocolDistribution(compilations: CompilationJobResponse[]) {
+function buildProtocolDistribution() {
   // We don't have protocol on CompilationJobResponse, but we can derive it
   // from the source_url or options – for now we'll count by status distribution.
   // Actually the compilations don't have protocol in the list endpoint.
@@ -120,12 +120,12 @@ function buildDailyTrend(compilations: CompilationJobResponse[]) {
 // ── Component ──────────────────────────────────────────────────────────────
 
 export function CompilationMetrics() {
-  const { data: compilations, isLoading } = useCompilations();
+  const { data: compilationsData, isLoading } = useCompilations();
 
   const { protocolDist, statusDist, trend, maxTrend, totalCompilations } =
     useMemo(() => {
-      const items = compilations ?? [];
-      const pd = buildProtocolDistribution(items);
+      const items = compilationsData ?? [];
+      const pd = buildProtocolDistribution();
       const sd = buildStatusDistribution(items);
       const t = buildDailyTrend(items);
       const mx = Math.max(...t.map((d) => d.count), 1);
@@ -136,7 +136,7 @@ export function CompilationMetrics() {
         maxTrend: mx,
         totalCompilations: items.length,
       };
-    }, [compilations]);
+    }, [compilationsData]);
 
   if (isLoading) {
     return (

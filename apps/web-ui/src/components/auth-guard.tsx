@@ -1,18 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/stores/auth-store";
 import { Skeleton } from "@/components/ui/skeleton";
 
+const emptySubscribe = () => () => {};
+
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  const [hydrated, setHydrated] = useState(false);
-
-  useEffect(() => {
-    setHydrated(true);
-  }, []);
+  const hydrated = useSyncExternalStore(emptySubscribe, () => true, () => false);
 
   useEffect(() => {
     if (hydrated && !isAuthenticated) {

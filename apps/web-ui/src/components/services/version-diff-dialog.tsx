@@ -48,7 +48,7 @@ export function VersionDiffDialog({
   trigger,
 }: VersionDiffDialogProps) {
   const { data: versionsData } = useArtifactVersions(serviceId);
-  const versions = versionsData?.versions ?? [];
+  const versions = React.useMemo(() => versionsData?.versions ?? [], [versionsData]);
 
   const [from, setFrom] = React.useState<number>(initialFrom ?? 0);
   const [to, setTo] = React.useState<number>(initialTo ?? 0);

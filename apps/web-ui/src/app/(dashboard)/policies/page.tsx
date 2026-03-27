@@ -17,7 +17,6 @@ import { toast } from "sonner";
 import { policyApi } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { usePolicies } from "@/hooks/use-api";
-import { cn } from "@/lib/utils";
 import type {
   PolicyResponse,
   PolicyCreateRequest,

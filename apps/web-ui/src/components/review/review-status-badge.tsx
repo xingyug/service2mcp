@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import {
-  FileCheck,
   Send,
   Eye,
   ThumbsUp,

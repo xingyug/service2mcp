@@ -74,7 +74,7 @@ export default function ReviewPage() {
     setActiveTab("ir");
   }
 
-  function handleCompleteReview(notes: Record<string, string>, overallNote: string) {
+  function handleCompleteReview(notes: Record<string, string>) {
     const noteCount = Object.values(notes).filter(Boolean).length;
     toast.success(
       `Review completed with ${noteCount} operation note${noteCount !== 1 ? "s" : ""}. You can now approve or reject.`,
