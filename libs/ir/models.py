@@ -255,6 +255,16 @@ class SqlOperationType(StrEnum):
     insert = "insert"
 
 
+class JsonRpcOperationConfig(BaseModel):
+    """Typed JSON-RPC 2.0 execution contract for one IR operation."""
+
+    jsonrpc_version: Literal["2.0"] = "2.0"
+    method_name: str = Field(min_length=1, description="JSON-RPC method name (e.g. 'user.getById')")
+    params_type: Literal["positional", "named"] = "named"
+    params_names: list[str] = Field(default_factory=list)
+    result_schema: dict[str, Any] | None = None
+
+
 class GraphQLOperationConfig(BaseModel):
     """Typed GraphQL execution contract for one IR operation."""
 
@@ -367,6 +377,7 @@ class Operation(BaseModel):
     sql: SqlOperationConfig | None = None
     grpc_unary: GrpcUnaryRuntimeConfig | None = None
     soap: SoapOperationConfig | None = None
+    jsonrpc: JsonRpcOperationConfig | None = None
     tags: list[str] = Field(default_factory=list)
     tool_intent: ToolIntent | None = None
     source: SourceType = SourceType.extractor
@@ -393,6 +404,8 @@ class Operation(BaseModel):
             raise ValueError("grpc_unary execution contract cannot be combined with sql.")
         if self.soap is not None:
             raise ValueError("grpc_unary execution contract cannot be combined with soap.")
+        if self.jsonrpc is not None:
+            raise ValueError("grpc_unary execution contract cannot be combined with jsonrpc.")
         if self.method is not None and self.method.upper() != "POST":
             raise ValueError("grpc_unary operations must use method='POST'.")
         if self.path is not None and self.path != self.grpc_unary.rpc_path:
@@ -410,6 +423,8 @@ class Operation(BaseModel):
             raise ValueError("soap execution contract cannot be combined with sql.")
         if self.grpc_unary is not None:
             raise ValueError("soap execution contract cannot be combined with grpc_unary.")
+        if self.jsonrpc is not None:
+            raise ValueError("soap execution contract cannot be combined with jsonrpc.")
         if self.method is not None and self.method.upper() != "POST":
             raise ValueError("soap operations must use method='POST'.")
         return self
@@ -425,6 +440,8 @@ class Operation(BaseModel):
             raise ValueError("sql execution contract cannot be combined with grpc_unary.")
         if self.soap is not None:
             raise ValueError("sql execution contract cannot be combined with soap.")
+        if self.jsonrpc is not None:
+            raise ValueError("sql execution contract cannot be combined with jsonrpc.")
 
         expected_method = "GET" if self.sql.action is SqlOperationType.query else "POST"
         if self.method is not None and self.method.upper() != expected_method:
@@ -432,6 +449,25 @@ class Operation(BaseModel):
                 f"sql {self.sql.action.value} operations must use "
                 f"method='{expected_method}'."
             )
+        return self
+
+    @model_validator(mode="after")
+    def jsonrpc_contract_must_be_coherent(self) -> Operation:
+        if self.jsonrpc is None:
+            return self
+
+        for other, label in (
+            (self.graphql, "graphql"),
+            (self.sql, "sql"),
+            (self.grpc_unary, "grpc_unary"),
+            (self.soap, "soap"),
+        ):
+            if other is not None:
+                raise ValueError(
+                    f"jsonrpc execution contract cannot be combined with {label}."
+                )
+        if self.method is not None and self.method.upper() != "POST":
+            raise ValueError("jsonrpc operations must use method='POST'.")
         return self
 
 

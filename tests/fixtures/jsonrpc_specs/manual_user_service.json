@@ -1,0 +1,65 @@
+{
+  "jsonrpc_service": true,
+  "info": {
+    "title": "User Management Service",
+    "description": "CRUD operations for user management",
+    "version": "2.0.0"
+  },
+  "endpoint": "https://users.example.com/api/jsonrpc",
+  "methods": [
+    {
+      "name": "user.getById",
+      "description": "Get a user by their ID",
+      "params": [
+        {"name": "userId", "required": true, "schema": {"type": "string"}, "description": "The user ID"}
+      ],
+      "result": {"schema": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "email": {"type": "string"}}}}
+    },
+    {
+      "name": "user.list",
+      "description": "List all users with optional filtering",
+      "params": [
+        {"name": "page", "required": false, "schema": {"type": "integer"}, "description": "Page number"},
+        {"name": "pageSize", "required": false, "schema": {"type": "integer"}, "description": "Items per page"},
+        {"name": "filter", "required": false, "schema": {"type": "string"}, "description": "Filter expression"}
+      ],
+      "result": {"schema": {"type": "object", "properties": {"users": {"type": "array"}, "total": {"type": "integer"}}}}
+    },
+    {
+      "name": "user.create",
+      "description": "Create a new user",
+      "params": [
+        {"name": "name", "required": true, "schema": {"type": "string"}},
+        {"name": "email", "required": true, "schema": {"type": "string"}},
+        {"name": "role", "required": false, "schema": {"type": "string"}}
+      ],
+      "result": {"schema": {"type": "object"}}
+    },
+    {
+      "name": "user.update",
+      "description": "Update an existing user",
+      "params": [
+        {"name": "userId", "required": true, "schema": {"type": "string"}},
+        {"name": "name", "required": false, "schema": {"type": "string"}},
+        {"name": "email", "required": false, "schema": {"type": "string"}}
+      ],
+      "result": {"schema": {"type": "object"}}
+    },
+    {
+      "name": "user.delete",
+      "description": "Delete a user",
+      "params": [
+        {"name": "userId", "required": true, "schema": {"type": "string"}}
+      ],
+      "result": {"schema": {"type": "boolean"}}
+    },
+    {
+      "name": "user.query",
+      "description": "Advanced user query",
+      "params": [
+        {"name": "query", "required": true, "schema": {"type": "object"}}
+      ],
+      "result": {"schema": {"type": "array", "items": {"type": "object"}}}
+    }
+  ]
+}

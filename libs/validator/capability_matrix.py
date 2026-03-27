@@ -126,6 +126,45 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
             "and live GKE DeepSeek proof. Error model, response examples, drift detection."
         ),
     ),
+    "odata": ProtocolCapability(
+        key="odata",
+        label="OData v4",
+        extract=True,
+        compile=True,
+        runtime=True,
+        live_proof=False,
+        llm_e2e=False,
+        notes=(
+            "OData v4 $metadata extraction produces CRUD operations per EntitySet "
+            "with OData query params. Error model normalized. Uses existing HTTP runtime proxy."
+        ),
+    ),
+    "scim": ProtocolCapability(
+        key="scim",
+        label="SCIM 2.0",
+        extract=True,
+        compile=True,
+        runtime=True,
+        live_proof=False,
+        llm_e2e=False,
+        notes=(
+            "SCIM 2.0 schema extraction produces resource operations respecting "
+            "attribute mutability. Error model normalized. Uses existing HTTP runtime proxy."
+        ),
+    ),
+    "jsonrpc": ProtocolCapability(
+        key="jsonrpc",
+        label="JSON-RPC 2.0",
+        extract=True,
+        compile=True,
+        runtime=True,
+        live_proof=False,
+        llm_e2e=False,
+        notes=(
+            "JSON-RPC 2.0 extraction from OpenRPC specs or manual definitions. "
+            "Error model normalized. Runtime wraps calls in JSON-RPC 2.0 envelope."
+        ),
+    ),
 }
 
 _CAPABILITY_ORDER = (
@@ -137,6 +176,9 @@ _CAPABILITY_ORDER = (
     "grpc_stream",
     "soap",
     "sql",
+    "odata",
+    "scim",
+    "jsonrpc",
 )
 
 

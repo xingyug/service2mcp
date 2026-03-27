@@ -81,6 +81,9 @@ def test_protocol_capability_matrix_contains_expected_rows() -> None:
         "grpc_stream",
         "soap",
         "sql",
+        "odata",
+        "scim",
+        "jsonrpc",
     ]
 
     openapi = next(row for row in rows if row.key == "openapi")
@@ -90,6 +93,9 @@ def test_protocol_capability_matrix_contains_expected_rows() -> None:
     grpc_stream = next(row for row in rows if row.key == "grpc_stream")
     soap = next(row for row in rows if row.key == "soap")
     sql = next(row for row in rows if row.key == "sql")
+    odata = next(row for row in rows if row.key == "odata")
+    scim = next(row for row in rows if row.key == "scim")
+    jsonrpc = next(row for row in rows if row.key == "jsonrpc")
 
     assert openapi.live_proof is True
     assert openapi.llm_e2e is True
@@ -106,6 +112,16 @@ def test_protocol_capability_matrix_contains_expected_rows() -> None:
     assert sql.runtime is True
     assert sql.live_proof is True
     assert sql.llm_e2e is True
+
+    assert odata.extract is True
+    assert odata.runtime is True
+    assert odata.live_proof is False
+    assert scim.extract is True
+    assert scim.runtime is True
+    assert scim.live_proof is False
+    assert jsonrpc.extract is True
+    assert jsonrpc.runtime is True
+    assert jsonrpc.live_proof is False
 
 
 def test_protocol_capability_key_distinguishes_grpc_runtime_slices() -> None:
