@@ -32,7 +32,7 @@ describe("AuthGuard", () => {
   });
 
   it("renders children when authenticated", () => {
-    mockedUseAuthStore.mockImplementation((selector: any) =>
+    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
       selector({ isAuthenticated: true }),
     );
     render(
@@ -44,7 +44,7 @@ describe("AuthGuard", () => {
   });
 
   it("does not render children when not authenticated", () => {
-    mockedUseAuthStore.mockImplementation((selector: any) =>
+    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
       selector({ isAuthenticated: false }),
     );
     render(
@@ -56,7 +56,7 @@ describe("AuthGuard", () => {
   });
 
   it("redirects to /login when not authenticated", () => {
-    mockedUseAuthStore.mockImplementation((selector: any) =>
+    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
       selector({ isAuthenticated: false }),
     );
     render(
@@ -68,7 +68,7 @@ describe("AuthGuard", () => {
   });
 
   it("does not redirect when authenticated", () => {
-    mockedUseAuthStore.mockImplementation((selector: any) =>
+    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
       selector({ isAuthenticated: true }),
     );
     render(
@@ -80,7 +80,7 @@ describe("AuthGuard", () => {
   });
 
   it("renders children element directly (not wrapped)", () => {
-    mockedUseAuthStore.mockImplementation((selector: any) =>
+    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
       selector({ isAuthenticated: true }),
     );
     render(
@@ -92,7 +92,7 @@ describe("AuthGuard", () => {
   });
 
   it("handles multiple children when authenticated", () => {
-    mockedUseAuthStore.mockImplementation((selector: any) =>
+    mockedUseAuthStore.mockImplementation((selector: (s: { isAuthenticated: boolean }) => boolean) =>
       selector({ isAuthenticated: true }),
     );
     render(

@@ -26,10 +26,10 @@ test.describe("Compilation Wizard", () => {
     // CardTitle renders as <div>, not heading
     await expect(page.locator("[data-slot='card-title']").getByText("Source Input")).toBeVisible();
 
-    // Source type radio buttons
-    await expect(page.getByLabel("URL")).toBeVisible();
-    await expect(page.getByLabel("Paste Content")).toBeVisible();
-    await expect(page.getByLabel("Upload File")).toBeVisible();
+    // Source type radio buttons (RadioGroupItem renders both span + hidden input)
+    await expect(page.getByRole("radio", { name: "URL" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Paste Content" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Upload File" })).toBeVisible();
 
     // URL input (default source mode) — use type selector to avoid radio button with same id
     await expect(page.locator("input[type='url']#source-url")).toBeVisible();
@@ -106,7 +106,7 @@ test.describe("Compilation Wizard", () => {
     // Step 3: Review
     await expect(page.getByText("Review & Submit").first()).toBeVisible();
     await expect(page.getByText(sourceUrl)).toBeVisible();
-    await expect(page.getByText("petstore")).toBeVisible();
+    await expect(page.getByText("petstore", { exact: true })).toBeVisible();
     await expect(page.getByText("test-admin")).toBeVisible();
     await expect(page.getByText("generic", { exact: false })).toBeVisible();
     await expect(page.getByText("None").first()).toBeVisible();
@@ -120,7 +120,7 @@ test.describe("Compilation Wizard", () => {
   });
 
   test("can switch source mode to paste content", async ({ page }) => {
-    await page.getByLabel("Paste Content").click();
+    await page.getByRole("radio", { name: "Paste Content" }).click();
     await expect(page.locator("#source-content")).toBeVisible();
     await expect(page.locator("input[type='url']#source-url")).not.toBeVisible();
 

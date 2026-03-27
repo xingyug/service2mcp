@@ -84,7 +84,7 @@ describe("api-client", () => {
     await expect(compilationApi.list()).rejects.toThrow(ApiError);
     try {
       await compilationApi.list();
-    } catch (e) {
+    } catch {
       // secondary call also fails, previous assertion covers it
     }
   });
@@ -97,11 +97,11 @@ describe("api-client", () => {
     try {
       await compilationApi.list();
       expect.unreachable("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(ApiError);
-      const err = e as ApiError;
-      expect(err.status).toBe(422);
-      expect(err.detail).toEqual({ msg: "bad" });
+    } catch (err: unknown) {
+      expect(err).toBeInstanceOf(ApiError);
+      const apiErr = err as ApiError;
+      expect(apiErr.status).toBe(422);
+      expect(apiErr.detail).toEqual({ msg: "bad" });
     }
   });
 

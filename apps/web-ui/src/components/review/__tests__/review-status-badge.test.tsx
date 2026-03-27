@@ -25,7 +25,7 @@ const states: { state: WorkflowState; label: string; colorFragment: string }[] =
 
 describe("ReviewStatusBadge", () => {
   beforeEach(() => {
-    mockedUseWorkflowStore.mockImplementation((selector: any) =>
+    mockedUseWorkflowStore.mockImplementation((selector: (s: { getWorkflow: () => { state: string } | undefined }) => unknown) =>
       selector({
         getWorkflow: () => undefined,
       }),
@@ -49,7 +49,7 @@ describe("ReviewStatusBadge", () => {
   it.each(states)(
     "renders correct label for $state state via ReviewStatusBadge",
     ({ state, label }) => {
-      mockedUseWorkflowStore.mockImplementation((selector: any) =>
+      mockedUseWorkflowStore.mockImplementation((selector: (s: { getWorkflow: () => { state: string } | undefined }) => unknown) =>
         selector({
           getWorkflow: () => ({ state }),
         }),

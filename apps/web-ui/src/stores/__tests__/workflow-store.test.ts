@@ -31,7 +31,7 @@ describe("workflow-store", () => {
 
   it("getOrCreateWorkflow returns existing workflow without recreating", () => {
     const store = useWorkflowStore.getState();
-    const wf1 = store.getOrCreateWorkflow("svc-1", 1);
+    store.getOrCreateWorkflow("svc-1", 1);
     // Transition to move away from draft
     useWorkflowStore.getState().transition("svc-1", 1, "submitted", "alice");
 
