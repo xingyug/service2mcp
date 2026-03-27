@@ -36,6 +36,7 @@ _HTML_FORM_PATTERN = re.compile(
 )
 _PATH_PARAM_PATTERN = re.compile(r"{([^{}]+)}")
 _SUPPORTED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+_MAX_INFERENCE_PASSES = 3
 
 
 @dataclass(frozen=True)
@@ -247,19 +248,24 @@ class RESTExtractor:
         for endpoint in observed.values():
             self._probe_allowed_methods(endpoint)
 
-        # Phase 2: URI-based resource hierarchy inference.
+        # Phase 2: Iterative URI-based resource hierarchy inference.
         # When we discover a collection endpoint like /api/users, probe
         # /api/users/{id} via OPTIONS.  When a detail endpoint like
         # /api/users/{id} is discovered, probe common sub-resource patterns.
-        # This implements the paper's "resource dependency tree" concept.
-        inferred = self._infer_sub_resources(base_url, observed)
-        observed.update(inferred)
+        # Running iteratively lets depth-2+ paths (e.g. /users/{id}/posts)
+        # be discovered from inferred depth-1 endpoints.
+        for _pass in range(_MAX_INFERENCE_PASSES):
+            inferred = self._infer_sub_resources(base_url, observed)
+            if not inferred:
+                break
+            observed.update(inferred)
 
         # Phase 3: LLM-driven seed mutation (opt-in).
         if self._llm_client is not None:
             llm_inferred = self._llm_seed_mutation(base_url, observed)
             observed.update(llm_inferred)
 
+        observed = _deduplicate_concrete_paths(observed)
         observed = _coalesce_sibling_endpoints(observed)
 
         return [
@@ -292,7 +298,11 @@ class RESTExtractor:
             # probe for a detail endpoint with {id}.
             leaf = clean.rsplit("/", 1)[-1] if "/" in clean else clean
             if not (leaf.startswith("{") and leaf.endswith("}")):
-                candidate = f"{clean}/{{id}}"
+                # Use resource-specific param name to avoid duplicate {id}
+                # when depth-2+ paths are inferred iteratively.
+                singular = leaf.rstrip("s") if leaf.endswith("s") and len(leaf) > 2 else leaf
+                param_name = f"{singular}_id"
+                candidate = f"{clean}/{{{param_name}}}"
                 candidate_url = urljoin(base_url, candidate)
                 if candidate not in observed and candidate not in probed:
                     probed.add(candidate)
@@ -492,7 +502,10 @@ class RESTExtractor:
                 if method.strip().upper() in _SUPPORTED_METHODS
             }
         if allowed_methods:
-            endpoint.methods.update(allowed_methods)
+            # OPTIONS is authoritative — replace speculative methods
+            # (e.g. GET added from BFS link discovery) with the server's
+            # declared Allow set.
+            endpoint.methods = allowed_methods
             endpoint.sources.add("options")
             endpoint.confidence = max(endpoint.confidence, 0.9)
 
@@ -621,6 +634,96 @@ def _common_sub_resources(parent_name: str) -> list[str]:
     if hints:
         return hints
     return _DEFAULT_SUB_RESOURCES
+
+
+def _deduplicate_concrete_paths(
+    observed: dict[str, _ObservedEndpoint],
+) -> dict[str, _ObservedEndpoint]:
+    """Remove paths subsumed by more general template paths.
+
+    A template path subsumes a concrete or less-general template path when:
+
+    1. It has **more** template parameters (e.g. ``/users/{id}/posts/{id}``
+       subsumes ``/users/usr-1/posts/{id}``)
+    2. Its regex matches the subsumed path segment-by-segment.
+
+    Methods, sources, and confidence from subsumed paths are merged into
+    the most general template.
+    """
+
+    def _template_count(path: str) -> int:
+        return len(_PATH_PARAM_PATTERN.findall(path.split("?", 1)[0]))
+
+    # Build regex matchers for every template-containing path.
+    template_regexes: list[tuple[str, re.Pattern[str], int]] = []
+    for path in observed:
+        clean = path.split("?", 1)[0]
+        tc = _template_count(path)
+        if tc == 0:
+            continue
+        parts = clean.split("/")
+        regex_parts = []
+        for part in parts:
+            if part.startswith("{") and part.endswith("}"):
+                regex_parts.append("[^/]+")
+            else:
+                regex_parts.append(re.escape(part))
+        pattern = "/".join(regex_parts)
+        template_regexes.append((path, re.compile(f"^{pattern}$"), tc))
+
+    if not template_regexes:
+        return observed
+
+    # Sort most-general first (highest template param count).
+    template_regexes.sort(key=lambda x: -x[2])
+
+    # Map each path to its most general subsuming template (if any).
+    subsumed_by: dict[str, str] = {}
+    for path in observed:
+        clean = path.split("?", 1)[0]
+        my_count = _template_count(path)
+        for tpath, regex, t_count in template_regexes:
+            if tpath == path:
+                continue
+            if t_count <= my_count:
+                break  # Sorted descending — no more general templates remain.
+            if regex.fullmatch(clean):
+                subsumed_by[path] = tpath
+                break
+
+    if not subsumed_by:
+        return observed
+
+    merged: dict[str, _ObservedEndpoint] = {}
+    for path, endpoint in observed.items():
+        if path in subsumed_by:
+            target = subsumed_by[path]
+            tmpl = merged.setdefault(
+                target,
+                _ObservedEndpoint(
+                    path=observed[target].path,
+                    absolute_url=observed[target].absolute_url,
+                    methods=set(observed[target].methods),
+                    sources=set(observed[target].sources),
+                    confidence=observed[target].confidence,
+                ),
+            )
+            tmpl.methods.update(endpoint.methods)
+            tmpl.sources.update(endpoint.sources)
+            tmpl.confidence = max(tmpl.confidence, endpoint.confidence)
+        else:
+            merged.setdefault(
+                path,
+                _ObservedEndpoint(
+                    path=endpoint.path,
+                    absolute_url=endpoint.absolute_url,
+                    methods=set(endpoint.methods),
+                    sources=set(endpoint.sources),
+                    confidence=endpoint.confidence,
+                ),
+            )
+
+    return merged
 
 
 _SIBLING_COALESCE_THRESHOLD = 3

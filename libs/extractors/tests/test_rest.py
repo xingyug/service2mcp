@@ -523,5 +523,224 @@ class TestOptionsProbing:
         extractor._probe_allowed_methods(endpoint)
 
         assert "GET" in endpoint.methods
-        assert "POST" in endpoint.methods  # original preserved
+        assert "POST" in endpoint.methods  # original preserved (405 = non-authoritative)
         assert "head" in endpoint.sources
+
+    # 6. OPTIONS 200 with Allow header replaces speculative methods
+    def test_probe_allowed_methods_replaces_speculative_get(self) -> None:
+        """When OPTIONS returns 200 with Allow: POST, speculative GET is removed."""
+        url = "https://probe.test/api/action"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "OPTIONS":
+                return httpx.Response(
+                    200, headers={"allow": "POST, OPTIONS"}, request=request,
+                )
+            return httpx.Response(404, request=request)
+
+        extractor, _ = self._make_extractor(handler)
+        endpoint = _ObservedEndpoint(
+            path="/api/action",
+            absolute_url=url,
+            methods={"GET"},  # speculative from BFS link discovery
+            sources={"json"},
+            confidence=0.7,
+        )
+        extractor._probe_allowed_methods(endpoint)
+
+        assert "POST" in endpoint.methods
+        assert "GET" not in endpoint.methods  # speculative GET replaced
+        assert "options" in endpoint.sources
+
+
+# ---------------------------------------------------------------------------
+# Iterative sub-resource inference tests
+# ---------------------------------------------------------------------------
+
+
+class TestIterativeSubResourceInference:
+    """Tests for depth-2+ sub-resource discovery via iterative inference."""
+
+    @staticmethod
+    def _make_extractor(
+        handler: Callable[[httpx.Request], httpx.Response],
+    ) -> tuple[RESTExtractor, httpx.Client]:
+        transport = httpx.MockTransport(handler)
+        client = httpx.Client(transport=transport, follow_redirects=True)
+        return RESTExtractor(client=client, max_pages=10), client
+
+    def test_iterative_inference_discovers_depth2_endpoints(self) -> None:
+        """Iterative inference discovers /items/{item_id}/reviews from /items collection."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path or "/"
+            if request.method == "GET" and path == "/api":
+                return httpx.Response(
+                    200,
+                    json={"links": ["/api/items"]},
+                    headers={"content-type": "application/json"},
+                    request=request,
+                )
+            if request.method == "GET" and path == "/api/items":
+                return httpx.Response(
+                    200,
+                    json={"items": [], "links": []},
+                    headers={"content-type": "application/json"},
+                    request=request,
+                )
+            if request.method == "OPTIONS":
+                # items/{item_id} exists, items/{item_id}/comments exists
+                if "items/" in path and "/comments" in path:
+                    return httpx.Response(
+                        200, headers={"allow": "GET"}, request=request,
+                    )
+                if "items/" in path:
+                    return httpx.Response(
+                        200, headers={"allow": "GET, PUT, DELETE"}, request=request,
+                    )
+                if path == "/api/items":
+                    return httpx.Response(
+                        200, headers={"allow": "GET, POST"}, request=request,
+                    )
+            return httpx.Response(404, request=request)
+
+        extractor, _ = self._make_extractor(handler)
+        try:
+            service_ir = extractor.extract(
+                SourceConfig(
+                    url="https://api.example.com/api",
+                    hints={"protocol": "rest"},
+                )
+            )
+        finally:
+            extractor.close()
+
+        op_paths = {op.path for op in service_ir.operations if op.path}
+        # Depth-1: /items/{item_id} inferred from /items collection
+        assert any("/items/{item_id}" in p for p in op_paths), (
+            f"Expected /items/{{item_id}} in {op_paths}"
+        )
+        # Depth-2: /items/{item_id}/comments inferred from /items/{item_id}
+        assert any("comments" in p for p in op_paths), (
+            f"Expected comments sub-resource in {op_paths}"
+        )
+
+    def test_resource_specific_param_names_avoid_duplicates(self) -> None:
+        """Inferred params use resource names (e.g. {item_id}) not generic {id}."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path or "/"
+            if request.method == "GET" and path == "/api":
+                return httpx.Response(
+                    200,
+                    json={"links": ["/api/users"]},
+                    headers={"content-type": "application/json"},
+                    request=request,
+                )
+            if request.method == "GET" and path == "/api/users":
+                return httpx.Response(
+                    200,
+                    json={"items": []},
+                    headers={"content-type": "application/json"},
+                    request=request,
+                )
+            if request.method == "OPTIONS":
+                return httpx.Response(
+                    200, headers={"allow": "GET"}, request=request,
+                )
+            return httpx.Response(404, request=request)
+
+        extractor, _ = self._make_extractor(handler)
+        try:
+            service_ir = extractor.extract(
+                SourceConfig(
+                    url="https://api.example.com/api",
+                    hints={"protocol": "rest"},
+                )
+            )
+        finally:
+            extractor.close()
+
+        # Inferred detail endpoint should use {user_id}, not generic {id}
+        op_paths = {op.path for op in service_ir.operations if op.path}
+        assert any("{user_id}" in p for p in op_paths), (
+            f"Expected {{user_id}} param name in {op_paths}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Concrete path deduplication tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeduplicateConcretePaths:
+    """Tests for the _deduplicate_concrete_paths function."""
+
+    def test_concrete_path_merged_into_template(self) -> None:
+        """A fully concrete path is merged into a matching template."""
+        from libs.extractors.rest import _deduplicate_concrete_paths
+
+        observed = {
+            "/api/users/{user_id}": _ObservedEndpoint(
+                path="/api/users/{user_id}",
+                absolute_url="https://x.com/api/users/{user_id}",
+                methods={"GET"},
+                sources={"inferred"},
+                confidence=0.85,
+            ),
+            "/api/users/usr-1": _ObservedEndpoint(
+                path="/api/users/usr-1",
+                absolute_url="https://x.com/api/users/usr-1",
+                methods={"GET", "PUT"},
+                sources={"json"},
+                confidence=0.75,
+            ),
+        }
+        result = _deduplicate_concrete_paths(observed)
+
+        assert "/api/users/usr-1" not in result
+        assert "/api/users/{user_id}" in result
+        # Methods merged from concrete into template
+        assert result["/api/users/{user_id}"].methods >= {"GET", "PUT"}
+
+    def test_partially_concrete_template_merged_into_general(self) -> None:
+        """A path with fewer template params merges into one with more."""
+        from libs.extractors.rest import _deduplicate_concrete_paths
+
+        observed = {
+            "/api/users/{user_id}/posts/{post_id}": _ObservedEndpoint(
+                path="/api/users/{user_id}/posts/{post_id}",
+                absolute_url="https://x.com/api/users/{user_id}/posts/{post_id}",
+                methods={"GET"},
+                sources={"inferred"},
+                confidence=0.85,
+            ),
+            "/api/users/usr-1/posts/{post_id}": _ObservedEndpoint(
+                path="/api/users/usr-1/posts/{post_id}",
+                absolute_url="https://x.com/api/users/usr-1/posts/{post_id}",
+                methods={"GET", "DELETE"},
+                sources={"json"},
+                confidence=0.75,
+            ),
+        }
+        result = _deduplicate_concrete_paths(observed)
+
+        assert "/api/users/usr-1/posts/{post_id}" not in result
+        assert "/api/users/{user_id}/posts/{post_id}" in result
+        assert result["/api/users/{user_id}/posts/{post_id}"].methods >= {"GET", "DELETE"}
+
+    def test_no_templates_returns_unchanged(self) -> None:
+        """When there are no template paths, all paths are kept."""
+        from libs.extractors.rest import _deduplicate_concrete_paths
+
+        observed = {
+            "/api/users/1": _ObservedEndpoint(
+                path="/api/users/1",
+                absolute_url="https://x.com/api/users/1",
+                methods={"GET"},
+                sources={"json"},
+                confidence=0.7,
+            ),
+        }
+        result = _deduplicate_concrete_paths(observed)
+        assert "/api/users/1" in result

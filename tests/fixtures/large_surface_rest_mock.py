@@ -407,9 +407,22 @@ def build_large_surface_transport() -> httpx.MockTransport:
         if (method, template) not in GROUND_TRUTH:
             return httpx.Response(405, request=request)
 
-
-
         if method == "GET":
+            # Collection endpoints (no path params) return list responses
+            # with HATEOAS links; detail endpoints return detail responses.
+            group = _extract_group(template)
+            is_collection = (
+                group
+                and group in _RESOURCE_GROUPS
+                and template == f"/api/{group}"
+            )
+            if is_collection:
+                return httpx.Response(
+                    200,
+                    json=_resource_list_response(group),
+                    request=request,
+                    headers={"content-type": "application/json"},
+                )
             return httpx.Response(
                 200,
                 json=_detail_response(path),

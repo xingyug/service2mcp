@@ -1929,6 +1929,108 @@ Context template: `libs/validator/audit.py`, `libs/validator/pre_deploy.py`, `li
 
 ---
 
+## B-003 Spec-First Large-Surface Pilot (2026-03-27)
+
+**Context template (per context-engineering.md):**
+
+| Item | Detail |
+|---|---|
+| **Goal** | Add an OpenAPI 3.0 spec-first large-surface pilot to compare extraction coverage against the black-box REST discovery pilot on the same 62-endpoint domain. |
+| **Non-goals** | No REST extractor changes. No live GKE proof. No P1 feature integration. No production code changes. |
+| **Inputs** | OpenAPI 3.0 YAML spec fixture (62 operations, 9 resource groups, same domain as REST mock). |
+| **Outputs** | New pilot test with coverage metrics, regression thresholds, comparison with black-box baseline. |
+| **Invariants** | All existing tests pass; ruff clean; mypy clean; no production code modified. |
+| **Tests** | 1 new test; total suite 426 passed. |
+
+### What was built
+
+1. **Large-surface OpenAPI 3.0 spec fixture** (`tests/fixtures/openapi_specs/large_surface_api.yaml`)
+   - 62 operations across 9 resource groups (users, products, orders, categories, inventory, notifications, reports, webhooks, admin)
+   - Matches the same domain as the B-003 REST mock ground truth for apples-to-apples comparison
+   - Includes path params, query params, request bodies, and component schemas
+
+2. **Spec-first pilot test** (`tests/integration/test_large_surface_pilot.py`)
+   - `test_large_surface_openapi_spec_first_pilot` extracts via `OpenAPIExtractor`, boots runtime with mock transport, runs full validation + audit
+   - Spec-first regression thresholds: `SPEC_FIRST_THRESHOLDS(min_audited_ratio=0.40, max_failed=0, min_passed=5)`, `SPEC_FIRST_MIN_AUDIT_PASS_RATE=0.90`
+   - Type-safe sample invocation builder with `_type_defaults` for integer/number/boolean/array/object params
+   - Side-by-side comparison report printed alongside black-box baseline minimums
+
+### Pilot results
+
+| Metric | Spec-first | Black-box (baseline min) |
+|--------|-----------|--------------------------|
+| Discovery coverage | 100.0% | 25.0% |
+| Generated tools | 62 (159% of ground truth) | 40.0% |
+| Audited tools | 30 | — |
+| Passed | 30 | — |
+| Failed | 0 | — |
+| Skipped | 32 (26 state-mutating + 6 destructive) | — |
+| Audit pass rate | 100.0% | 50.0% |
+
+Key finding: spec-first extraction achieves 100% discovery and 100% audit pass rate for the same domain where black-box REST discovery achieves ~25% discovery coverage, confirming that authoritative specs remain the strongest confidence path.
+
+### Verification
+
+- `ruff check .` — clean
+- `mypy libs/ apps/ tests/integration tests/contract tests/e2e` — clean (150 files)
+- `pytest -q` — 426 passed
+
+**Write set:**
+- `tests/fixtures/openapi_specs/large_surface_api.yaml` (new — 62-operation OpenAPI 3.0 spec)
+- `tests/integration/test_large_surface_pilot.py` (modified — new spec-first pilot test, import, thresholds)
+
+---
+
+## B-003 REST OPTIONS Deep Probing + Iterative Inference (2026-03-27)
+
+### Context (6-item template)
+
+| # | Item | Value |
+|---|------|-------|
+| 1 | Module boundary | `libs/extractors/rest.py`, `tests/integration/test_large_surface_pilot.py`, `libs/extractors/tests/test_rest.py`, `tests/fixtures/large_surface_rest_mock.py` |
+| 2 | Goal | Raise black-box REST discovery coverage beyond ~25% baseline via OPTIONS-authoritative probing, iterative sub-resource inference, and improved deduplication |
+| 3 | Constraints | No new dependencies; ruff + mypy + pytest must stay green; 62-endpoint mock ground truth as benchmark |
+| 4 | API contract | `_probe_allowed_methods()` now replaces speculative methods; `_infer_sub_resources()` iterates 3 passes; `_deduplicate_concrete_paths()` handles partially-concrete templates |
+| 5 | Risk | Changes to OPTIONS probing could lose legitimate GET endpoints — mitigated by 405 fallback preserving original methods |
+| 6 | Verification | 432 tests pass, ruff/mypy clean |
+
+### Three Production Fixes
+
+1. **OPTIONS-authoritative probing** (`_probe_allowed_methods`): When OPTIONS returns 200 with Allow header, replace speculative methods (e.g. GET added from BFS link discovery) with the server's declared method set. Previously used `update()` which merged — leaving false GET tools for POST-only endpoints like `/notifications/{id}/acknowledge`.
+
+2. **Resource-specific param naming** (`_infer_sub_resources`): Inference now generates `{user_id}`, `{post_id}` etc. based on singularized parent collection name, avoiding duplicate `{id}` params in depth-2+ paths like `/users/{user_id}/posts/{post_id}`.
+
+3. **Generality-ranked deduplication** (`_deduplicate_concrete_paths`): Now ranks all template-containing paths by template param count and merges less-general paths into more-general ones. Previously only checked fully-concrete paths, missing partially-concrete templates like `/users/usr-1/posts/{post_id}` that should merge into `/users/{user_id}/posts/{post_id}`.
+
+### Results
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| Discovery coverage | 25.6% | **64.1%** | +38.5pp |
+| Generated tools | 66 (many dupes) | 53 (deduplicated) | -13 |
+| Audit failures | 3 | **0** | -3 |
+| Audit pass rate | 90.6% | **100%** | +9.4pp |
+| Audited tools | 32 | 27 | -5 (dedup removed false tools) |
+
+Updated regression thresholds:
+- `PILOT_BASELINE_THRESHOLDS(min_audited_ratio=0.40, max_failed=0, min_passed=10)`
+- `PILOT_MIN_DISCOVERY_COVERAGE=0.50` (was 0.25)
+- `PILOT_MIN_AUDIT_PASS_RATE=0.90` (was 0.50)
+
+### Verification
+
+- `ruff check .` — clean
+- `mypy libs/ apps/` — clean
+- `pytest -q` — **432 passed** (was 426; +6 new regression tests)
+
+### Write set
+- `libs/extractors/rest.py` (modified — OPTIONS replace, iterative inference, resource-specific params, dedup rewrite)
+- `tests/integration/test_large_surface_pilot.py` (modified — updated thresholds)
+- `libs/extractors/tests/test_rest.py` (modified — 6 new tests: OPTIONS replace, iterative inference, param naming, dedup)
+- `tests/fixtures/large_surface_rest_mock.py` (modified earlier — collection response fix)
+
+---
+
 ## Notes
 
 - **Git remote** — the working tree is periodically pushed to the private GitHub repository `xingyug/service2mcp` on `main`; before each push, run `make gitleaks` (see `agent.md` Git conventions)

@@ -495,12 +495,14 @@ Implemented in the fourth slice (completed `2026-03-27`):
 - Pilot regression thresholds defined: `PILOT_BASELINE_THRESHOLDS` using `AuditThresholds(min_audited_ratio=0.40, max_failed=2, min_passed=1)` plus coverage baselines
 - Quality gates green (ruff, mypy, 425 passed)
 
-Actual write set after follow-up and live harness hardening:
+Actual write set after follow-up and live harness hardening (B-002 catalog slice; pre–fourth-slice):
 - `libs/extractors/rest.py`
 - `libs/extractors/tests/test_rest.py`
 - `scripts/smoke-gke-llm-e2e.sh`
 - `tests/contract/test_local_dev_assets.py`
 - handoff/status docs (`agent.md`, `devlog.md`, this plan)
+
+Fourth slice (`2026-03-27`, commit `43d713d`) additionally modified: `libs/validator/audit.py`, `libs/validator/pre_deploy.py`, `libs/validator/post_deploy.py`, `libs/validator/tests/test_audit.py`, `libs/validator/tests/test_pre_deploy.py`, `libs/validator/tests/test_post_deploy.py`, `tests/integration/test_large_surface_pilot.py`, `README.md`, `new-agent-reading-list.md`, `Makefile`, `scripts/git-hooks/pre-push.sample`
 
 Out of scope:
 - Full browser/JavaScript crawling in the first slice
@@ -528,9 +530,22 @@ Implemented in the first slice (completed `2026-03-26`):
 - Key finding: the REST extractor's GET-based crawl inherently cannot discover POST/PUT/DELETE endpoints or deeply nested resources without explicit links, confirming the need for `OPTIONS`-based and spec-first discovery paths for large surfaces
 
 Remaining implementation tasks:
-- Improve REST discovery to better leverage `OPTIONS` probing on discovered paths to surface additional HTTP methods
-- Consider an OpenAPI-spec-first pilot with a large spec (50+ endpoints) to measure spec-first coverage vs black-box coverage
-- Define regression thresholds for the pilot baseline so future extractor changes can be measured against it
+- ~~Improve REST discovery to better leverage `OPTIONS` probing on discovered paths to surface additional HTTP methods~~ ✅ completed `2026-03-27` (OPTIONS deep probing slice)
+- ~~Consider an OpenAPI-spec-first pilot with a large spec (50+ endpoints) to measure spec-first coverage vs black-box coverage~~ ✅ completed `2026-03-27`
+- ~~Define regression thresholds for the pilot baseline so future extractor changes can be measured against it~~ ✅ completed `2026-03-27` (fourth slice)
+
+OPTIONS deep probing results (`2026-03-27`):
+- Three production fixes: (1) OPTIONS-authoritative method replacement (eliminates false GET tools for POST-only endpoints), (2) resource-specific param naming in iterative inference (avoids `{id}` duplication), (3) generality-ranked deduplication for partially-concrete template paths
+- Discovery coverage: 25.6% → **64.1%** (+38.5pp), audit failures: 3 → **0**, audit pass rate: 90.6% → **100%**
+- Generated tools reduced from 66 (many duplicates) to 53 (properly deduplicated)
+- Updated thresholds: `max_failed=0`, `min_passed=10`, `PILOT_MIN_DISCOVERY_COVERAGE=0.50`, `PILOT_MIN_AUDIT_PASS_RATE=0.90`
+- 432 tests (was 426; +6 regression tests for OPTIONS replace, iterative inference, param naming, dedup)
+
+Spec-first pilot results (`2026-03-27`):
+- OpenAPI 3.0 fixture: 62 operations across 9 resource groups, matching the REST mock domain
+- Discovery coverage: 100.0% (39/39 ground-truth paths), Generation: 159% (62 tools from 39 unique paths)
+- Audit: 30 audited, 30 passed, 0 failed, 32 skipped (26 state-mutating + 6 destructive)
+- Comparison: spec-first achieves 100% discovery and 100% audit pass rate vs black-box ~25% discovery
 
 Implemented in the second slice (completed `2026-03-26`):
 - `RESTExtractor._discover()` now follows JSON links during crawl (not just HTML)

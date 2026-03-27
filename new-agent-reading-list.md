@@ -1,8 +1,8 @@
 Current pause-point note:
-- Read `agent.md` first for the latest status: B-003 complete, all P1 paper-informed features implemented.
-- Then read the latest `devlog.md` section `B-003 Third Slice: P1 Paper-Informed Features` for implementation details.
-- B-003 P1 features: LLM-driven seed mutation (RESTSpecIT-style), semantic tool grouping (LLM-ITL intent clustering), Discovery/Action tool bifurcation, LLM-as-a-Judge evaluation pipeline.
-- All four features are opt-in (LLM client parameter or function call), with mock-based tests. 410 tests, ruff/mypy clean.
+- Read `agent.md` first for the latest status (B-003 OPTIONS deep probing + iterative inference complete in tree).
+- Then read `devlog.md`: `B-003 REST OPTIONS Deep Probing + Iterative Inference` for the latest slice — OPTIONS-authoritative probing, resource-specific param naming, generality-ranked deduplication.
+- Three production fixes raised discovery coverage from ~25% to 64.1% and audit pass rate to 100% (0 failures).
+- Quality gates at last verification: **432** tests, ruff/mypy clean (see `devlog.md` OPTIONS deep probing slice).
 - Paper-informed next steps (documented in `post-sdd-modular-expansion-plan.md` B-003 section): all P0 and P1 items complete.
 - The project has also been synced to the private GitHub repo `xingyug/service2mcp` on `main`; if a public open-source release happens later, treat it as a fresh export into a new public repo without carrying over this private/internal history.
 - Before every `git push`, run `make gitleaks` (mandatory policy; see `agent.md` Git Conventions and `scripts/git-hooks/pre-push.sample`).

@@ -1,9 +1,12 @@
-"""B-003 large-surface black-box pilot integration test.
+"""B-003 large-surface pilot integration tests.
 
 Measures three coverage numbers against a 62-endpoint REST mock:
 1. Endpoint discovery coverage
 2. Generated MCP-tool coverage
 3. Audited invocation pass rate
+
+Includes both a black-box REST discovery pilot and a spec-first OpenAPI
+pilot for side-by-side comparison.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from apps.mcp_runtime import create_app
 from libs.enhancer.tool_grouping import ToolGrouper, apply_grouping
 from libs.enhancer.tool_intent import bifurcate_descriptions, derive_tool_intents
 from libs.extractors.base import SourceConfig
+from libs.extractors.openapi import OpenAPIExtractor
 from libs.extractors.rest import RESTExtractor
 from libs.ir.models import ToolIntent
 from libs.ir.schema import serialize_ir
@@ -38,16 +42,35 @@ from tests.fixtures.large_surface_rest_mock import (
 
 # Regression thresholds for the large-surface pilot baseline.
 # Future extractor/enhancer changes must not regress below these values.
+# Updated after iterative sub-resource inference + OPTIONS-authoritative probing.
 PILOT_BASELINE_THRESHOLDS = AuditThresholds(
     min_audited_ratio=0.40,   # At least 40% of generated tools auditable
-    max_failed=2,             # Allow at most 2 audit failures
-    min_passed=1,             # At least 1 passing tool
+    max_failed=0,             # Zero audit failures after OPTIONS fix
+    min_passed=10,            # At least 10 passing tools (was 1)
 )
 
 # Coverage baselines — minimum acceptable discovery and generation rates.
-PILOT_MIN_DISCOVERY_COVERAGE = 0.25   # 25% of ground-truth endpoints discovered
+# Updated after iterative inference raised discovery from ~25% to ~64%.
+PILOT_MIN_DISCOVERY_COVERAGE = 0.50   # 50% of ground-truth endpoints discovered
 PILOT_MIN_GENERATION_COVERAGE = 0.40  # 40% of discovered endpoints get tools
-PILOT_MIN_AUDIT_PASS_RATE = 0.50      # 50% of audited tools pass
+PILOT_MIN_AUDIT_PASS_RATE = 0.90      # 90% of audited tools pass (was 50%)
+
+# Spec-first pilot thresholds — stricter because spec extraction is deterministic.
+SPEC_FIRST_THRESHOLDS = AuditThresholds(
+    min_audited_ratio=0.40,   # At least 40% of generated tools auditable
+    max_failed=0,             # Zero audit failures for spec-first
+    min_passed=5,             # At least 5 passing tools
+)
+SPEC_FIRST_MIN_GENERATION_RATIO = 1.0   # Every spec op should produce a tool
+SPEC_FIRST_MIN_AUDIT_PASS_RATE = 0.90   # 90% of audited tools pass
+
+# Path to the large-surface OpenAPI spec fixture.
+_LARGE_SURFACE_SPEC = (
+    Path(__file__).resolve().parent.parent
+    / "fixtures"
+    / "openapi_specs"
+    / "large_surface_api.yaml"
+)
 
 
 def _write_service_ir(tmp_path: Path, ir_json: str) -> Path:
@@ -509,4 +532,226 @@ async def test_large_surface_pilot_p1_features(tmp_path: Path) -> None:
     print(f"  Clarity:              {evaluation.average_clarity:.2f}")
     print(f"Low quality tools:      {len(evaluation.low_quality_tools)}")
     print(f"LLM calls (total):      {len(mock_llm.calls)}")
+    print(f"{'='*60}\n")
+
+
+@pytest.mark.asyncio
+async def test_large_surface_openapi_spec_first_pilot(tmp_path: Path) -> None:
+    """B-003 spec-first pilot: measure extraction, generation, and audit coverage
+    from an OpenAPI 3.0 spec covering the same 62-endpoint domain.
+
+    This test provides a quantitative comparison baseline against the black-box
+    REST discovery pilot.  Spec-first extraction should yield near-100% coverage
+    for both discovery and generation, with failures limited to audit-policy
+    skips rather than discovery gaps.
+    """
+
+    # --- Phase 1: Extraction via OpenAPI spec ---
+    extractor = OpenAPIExtractor()
+    service_ir = extractor.extract(
+        SourceConfig(
+            file_path=str(_LARGE_SURFACE_SPEC),
+            hints={"service_name": "large-surface-spec-first"},
+        )
+    )
+
+    # The spec defines all 62 operations; the extractor should capture them all.
+    spec_operations = len(service_ir.operations)
+    ground_truth_paths = {path for _, path in GROUND_TRUTH}
+    ground_truth_count = len(ground_truth_paths)
+
+    # Map spec paths (e.g. /users/{user_id}) to ground-truth paths
+    # (e.g. /api/users/{user_id}) by prepending the /api prefix.
+    spec_path_set = {f"/api{op.path}" for op in service_ir.operations}
+
+    matched_ground_truth = set()
+    for gt_path in ground_truth_paths:
+        if gt_path in spec_path_set:
+            matched_ground_truth.add(gt_path)
+
+    discovery_coverage = (
+        len(matched_ground_truth) / ground_truth_count if ground_truth_count else 0
+    )
+
+    # --- Phase 2: Runtime Boot ---
+    ir_path = _write_service_ir(tmp_path, serialize_ir(service_ir))
+
+    # The mock transport serves responses for all /api/* paths.
+    upstream_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda req: build_large_surface_transport().handle_request(req)
+        ),
+        follow_redirects=True,
+    )
+
+    try:
+        app = create_app(service_ir_path=ir_path, upstream_client=upstream_client)
+        runtime_transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(
+            transport=runtime_transport, base_url="http://testserver"
+        ) as client:
+            # --- Phase 3: Validation + Audit ---
+            async def tool_invoker(
+                tool_name: str,
+                arguments: dict[str, object],
+            ) -> dict[str, object]:
+                _, structured = await app.state.runtime_state.mcp_server.call_tool(
+                    tool_name,
+                    arguments,
+                )
+                return cast(dict[str, object], structured)
+
+            # Build sample invocations from the spec-extracted operations.
+            _param_values: dict[str, str] = {
+                "user_id": "usr-1",
+                "post_id": "post-1",
+                "product_id": "prod-1",
+                "order_id": "ord-1",
+                "item_id": "item-1",
+                "category_id": "cat-1",
+                "sku": "sku-1",
+                "notification_id": "notif-1",
+                "report_id": "rpt-1",
+                "webhook_id": "wh-1",
+                "id": "test-1",
+            }
+            # Type-safe default values for typed params.
+            _type_defaults: dict[str, object] = {
+                "integer": 10,
+                "number": 1.0,
+                "boolean": True,
+                "array": [],
+                "object": {},
+            }
+
+            sample_invocations: dict[str, dict[str, object]] = {}
+            for op in service_ir.operations:
+                args: dict[str, object] = {}
+                for param in op.params:
+                    if param.name == "payload":
+                        args["payload"] = {"test": True}
+                    elif param.default is not None:
+                        args[param.name] = param.default
+                    elif param.name in _param_values:
+                        args[param.name] = _param_values[param.name]
+                    elif param.type in _type_defaults:
+                        args[param.name] = _type_defaults[param.type]
+                    else:
+                        args[param.name] = f"test-{param.name}"
+                sample_invocations[op.id] = args
+
+            validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+            report, audit_summary = await validator.validate_with_audit(
+                "http://testserver",
+                service_ir,
+                sample_invocations=sample_invocations,
+                audit_policy=AuditPolicy(),
+            )
+    finally:
+        await upstream_client.aclose()
+
+    # --- Phase 4: Coverage Calculation ---
+    generation_ratio = spec_operations / ground_truth_count if ground_truth_count else 0
+    audit_pass_rate = (
+        audit_summary.passed / audit_summary.audited_tools
+        if audit_summary.audited_tools > 0
+        else 0
+    )
+
+    spec_unsupported = _identify_unsupported_patterns(
+        ground_truth_count, spec_path_set, audit_summary,
+    )
+
+    spec_report = LargeSurfacePilotReport(
+        ground_truth_endpoints=ground_truth_count,
+        discovered_endpoints=len(matched_ground_truth),
+        generated_tools=spec_operations,
+        audited_tools=audit_summary.audited_tools,
+        passed=audit_summary.passed,
+        failed=audit_summary.failed,
+        skipped=audit_summary.skipped,
+        discovery_coverage=discovery_coverage,
+        generation_coverage=generation_ratio,
+        audit_pass_rate=audit_pass_rate,
+        unsupported_patterns=spec_unsupported,
+    )
+
+    # --- Phase 5: Assertions ---
+    # Standard validation should pass (health + tool listing).
+    assert report.overall_passed is True, (
+        "Standard validation failed: "
+        + "; ".join(
+            f"{r.stage}={r.passed} ({r.details})"
+            for r in report.results
+            if not r.passed
+        )
+    )
+
+    # Spec-first extraction must capture all ground-truth endpoints.
+    assert spec_report.discovered_endpoints >= ground_truth_count - 1, (
+        f"Spec-first discovered {spec_report.discovered_endpoints} of "
+        f"{ground_truth_count} ground-truth endpoints"
+    )
+
+    # Every spec operation must generate a tool (1:1 mapping).
+    assert spec_report.generated_tools == spec_operations
+
+    # Spec-first: generation ratio must cover all ground-truth endpoints.
+    assert spec_report.generation_coverage >= SPEC_FIRST_MIN_GENERATION_RATIO, (
+        f"Generation ratio {spec_report.generation_coverage:.2f} "
+        f"below minimum {SPEC_FIRST_MIN_GENERATION_RATIO:.2f}"
+    )
+
+    # Zero audit failures for spec-first input.
+    assert spec_report.failed == 0, (
+        f"Spec-first pilot had {spec_report.failed} audit failures"
+    )
+
+    # Audit pass rate: spec-first should be very high.
+    if spec_report.audited_tools > 0:
+        assert spec_report.audit_pass_rate >= SPEC_FIRST_MIN_AUDIT_PASS_RATE, (
+            f"Audit pass rate {spec_report.audit_pass_rate:.1%} "
+            f"below minimum {SPEC_FIRST_MIN_AUDIT_PASS_RATE:.1%}"
+        )
+
+    # --- Phase 5b: Regression Threshold Checks ---
+    threshold_summary = ToolAuditSummary(
+        discovered_operations=spec_report.discovered_endpoints,
+        generated_tools=spec_report.generated_tools,
+        audited_tools=spec_report.audited_tools,
+        passed=spec_report.passed,
+        failed=spec_report.failed,
+        skipped=spec_report.skipped,
+        results=[],
+    )
+    violations = check_thresholds(threshold_summary, SPEC_FIRST_THRESHOLDS)
+    assert not violations, (
+        "Spec-first regression thresholds violated: " + "; ".join(violations)
+    )
+
+    # --- Phase 6: Comparison Report ---
+    print(f"\n{'='*60}")
+    print("B-003 SPEC-FIRST PILOT REPORT")
+    print(f"{'='*60}")
+    print(f"Ground truth endpoints:   {spec_report.ground_truth_endpoints}")
+    print(f"Matched from spec:        {spec_report.discovered_endpoints}")
+    print(f"Generated tools:          {spec_report.generated_tools}")
+    print(f"Audited tools:            {spec_report.audited_tools}")
+    print(f"  Passed:                 {spec_report.passed}")
+    print(f"  Failed:                 {spec_report.failed}")
+    print(f"  Skipped:                {spec_report.skipped}")
+    print(f"Discovery coverage:       {spec_report.discovery_coverage:.1%}")
+    print(f"Generation coverage:      {spec_report.generation_coverage:.1%}")
+    print(f"Audit pass rate:          {spec_report.audit_pass_rate:.1%}")
+    print(f"Unsupported patterns ({len(spec_report.unsupported_patterns)}):")
+    for pattern in spec_report.unsupported_patterns:
+        print(f"  - {pattern}")
+    print("\n--- Comparison vs. Black-Box REST Discovery ---")
+    print(f"  Spec-first discovery:   {spec_report.discovery_coverage:.1%}")
+    print(f"  Black-box baseline:     {PILOT_MIN_DISCOVERY_COVERAGE:.1%} (minimum)")
+    print(f"  Spec-first generation:  {spec_report.generation_coverage:.1%}")
+    print(f"  Black-box baseline:     {PILOT_MIN_GENERATION_COVERAGE:.1%} (minimum)")
+    print(f"  Spec-first audit pass:  {spec_report.audit_pass_rate:.1%}")
+    print(f"  Black-box baseline:     {PILOT_MIN_AUDIT_PASS_RATE:.1%} (minimum)")
     print(f"{'='*60}\n")
