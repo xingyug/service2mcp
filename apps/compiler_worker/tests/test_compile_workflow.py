@@ -87,14 +87,16 @@ class FakeJobStore:
         detail: dict[str, object] | None = None,
         error_detail: str | None = None,
     ) -> None:
-        self.events.append({
-            "job_id": job_id,
-            "event_type": event_type,
-            "stage": stage,
-            "attempt": attempt,
-            "detail": detail,
-            "error_detail": error_detail,
-        })
+        self.events.append(
+            {
+                "job_id": job_id,
+                "event_type": event_type,
+                "stage": stage,
+                "attempt": attempt,
+                "detail": detail,
+                "error_detail": error_detail,
+            }
+        )
 
 
 class FakeActivities:
@@ -142,9 +144,7 @@ class TestDefaultStageDefinitions:
         assert DEFAULT_STAGE_DEFINITIONS[-1].stage == CompilationStage.REGISTER
 
     def test_rollback_enabled_stages(self) -> None:
-        rollback_stages = [
-            sd.stage for sd in DEFAULT_STAGE_DEFINITIONS if sd.rollback_enabled
-        ]
+        rollback_stages = [sd.stage for sd in DEFAULT_STAGE_DEFINITIONS if sd.rollback_enabled]
         assert rollback_stages == [
             CompilationStage.GENERATE,
             CompilationStage.DEPLOY,
@@ -192,9 +192,7 @@ class TestCompilationWorkflowSuccess:
             StageDefinition(stage=CompilationStage.DETECT),
             StageDefinition(stage=CompilationStage.EXTRACT),
         )
-        wf = CompilationWorkflow(
-            store=store, activities=activities, stage_definitions=stages
-        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
         request = CompilationRequest(source_url="https://example.com")
         result = await wf.run(request)
         assert result.status == CompilationStatus.SUCCEEDED
@@ -205,13 +203,9 @@ class TestCompilationWorkflowSuccess:
     async def test_protocol_propagated(self) -> None:
         store = FakeJobStore()
         activities = FakeActivities()
-        activities.stage_results[CompilationStage.DETECT] = StageExecutionResult(
-            protocol="graphql"
-        )
+        activities.stage_results[CompilationStage.DETECT] = StageExecutionResult(protocol="graphql")
         stages = (StageDefinition(stage=CompilationStage.DETECT),)
-        wf = CompilationWorkflow(
-            store=store, activities=activities, stage_definitions=stages
-        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
         result = await wf.run(CompilationRequest(source_url="https://example.com"))
         assert result.status == CompilationStatus.SUCCEEDED
 
@@ -223,9 +217,7 @@ class TestCompilationWorkflowSuccess:
             service_name="my-service"
         )
         stages = (StageDefinition(stage=CompilationStage.DETECT),)
-        wf = CompilationWorkflow(
-            store=store, activities=activities, stage_definitions=stages
-        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
         result = await wf.run(CompilationRequest(source_url="https://example.com"))
         assert result.status == CompilationStatus.SUCCEEDED
 
@@ -234,9 +226,7 @@ class TestCompilationWorkflowSuccess:
         store = FakeJobStore()
         activities = FakeActivities()
         stages = (StageDefinition(stage=CompilationStage.DETECT),)
-        wf = CompilationWorkflow(
-            store=store, activities=activities, stage_definitions=stages
-        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
         await wf.run(CompilationRequest(source_url="https://example.com"))
         event_types = [e["event_type"] for e in store.events]
         assert CompilationEventType.JOB_CREATED in event_types
@@ -260,14 +250,11 @@ class TestCompilationWorkflowRetry:
                 retry_policy=RetryPolicy(max_attempts=2),
             ),
         )
-        wf = CompilationWorkflow(
-            store=store, activities=activities, stage_definitions=stages
-        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
         result = await wf.run(CompilationRequest(source_url="https://example.com"))
         assert result.status == CompilationStatus.SUCCEEDED
         retry_events = [
-            e for e in store.events
-            if e["event_type"] == CompilationEventType.STAGE_RETRYING
+            e for e in store.events if e["event_type"] == CompilationEventType.STAGE_RETRYING
         ]
         assert len(retry_events) == 1
 
@@ -288,9 +275,7 @@ class TestCompilationWorkflowFailure:
                 retry_policy=RetryPolicy(max_attempts=3),
             ),
         )
-        wf = CompilationWorkflow(
-            store=store, activities=activities, stage_definitions=stages
-        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
         with pytest.raises(CompilationWorkflowError) as exc_info:
             await wf.run(CompilationRequest(source_url="https://example.com"))
         assert exc_info.value.failed_stage == CompilationStage.DETECT
@@ -314,9 +299,7 @@ class TestCompilationWorkflowRollback:
                 retry_policy=RetryPolicy(max_attempts=1),
             ),
         )
-        wf = CompilationWorkflow(
-            store=store, activities=activities, stage_definitions=stages
-        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
         with pytest.raises(CompilationWorkflowError) as exc_info:
             await wf.run(CompilationRequest(source_url="https://example.com"))
         assert exc_info.value.final_status == CompilationStatus.ROLLED_BACK
@@ -337,9 +320,7 @@ class TestCompilationWorkflowRollback:
                 retry_policy=RetryPolicy(max_attempts=1),
             ),
         )
-        wf = CompilationWorkflow(
-            store=store, activities=activities, stage_definitions=stages
-        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
         with pytest.raises(CompilationWorkflowError) as exc_info:
             await wf.run(CompilationRequest(source_url="https://example.com"))
         assert exc_info.value.final_status == CompilationStatus.FAILED
@@ -355,9 +336,7 @@ class TestCompilationWorkflowRollback:
                 retry_policy=RetryPolicy(max_attempts=1),
             ),
         )
-        wf = CompilationWorkflow(
-            store=store, activities=activities, stage_definitions=stages
-        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
         with pytest.raises(CompilationWorkflowError) as exc_info:
             await wf.run(CompilationRequest(source_url="https://example.com"))
         assert exc_info.value.final_status == CompilationStatus.FAILED
@@ -385,9 +364,7 @@ class TestCompilationWorkflowObservability:
     async def test_records_extractor_metric(self) -> None:
         store = FakeJobStore()
         activities = FakeActivities()
-        activities.stage_results[CompilationStage.DETECT] = StageExecutionResult(
-            protocol="rest"
-        )
+        activities.stage_results[CompilationStage.DETECT] = StageExecutionResult(protocol="rest")
         obs = CompilationObservability()
         stages = (
             StageDefinition(stage=CompilationStage.DETECT),
@@ -400,9 +377,7 @@ class TestCompilationWorkflowObservability:
             observability=obs,
         )
         await wf.run(CompilationRequest(source_url="https://example.com"))
-        val = obs.extractor_runs_total.labels(
-            protocol="rest", outcome="success"
-        )._value.get()
+        val = obs.extractor_runs_total.labels(protocol="rest", outcome="success")._value.get()
         assert val == 1.0
 
     @pytest.mark.asyncio
@@ -427,9 +402,7 @@ class TestCompilationWorkflowObservability:
             observability=obs,
         )
         await wf.run(CompilationRequest(source_url="https://example.com"))
-        input_val = obs.llm_tokens_total.labels(
-            model="deepseek", direction="input"
-        )._value.get()
+        input_val = obs.llm_tokens_total.labels(model="deepseek", direction="input")._value.get()
         assert input_val == 100.0
 
     @pytest.mark.asyncio
@@ -437,9 +410,7 @@ class TestCompilationWorkflowObservability:
         store = FakeJobStore()
         activities = FakeActivities()
         stages = (StageDefinition(stage=CompilationStage.DETECT),)
-        wf = CompilationWorkflow(
-            store=store, activities=activities, stage_definitions=stages
-        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
         result = await wf.run(CompilationRequest(source_url="https://example.com"))
         assert result.status == CompilationStatus.SUCCEEDED
 
@@ -489,8 +460,10 @@ class TestRecordLlmTokenUsageEdgeCases:
             activities=activities,
             observability=obs,
         )
-        wf._record_llm_token_usage({
-            "model": "test",
-            "input_tokens": "bad",
-            "output_tokens": 5,
-        })
+        wf._record_llm_token_usage(
+            {
+                "model": "test",
+                "input_tokens": "bad",
+                "output_tokens": 5,
+            }
+        )

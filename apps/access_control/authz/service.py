@@ -70,9 +70,7 @@ class AuthzService:
         if resource_id is not None:
             query = query.where(Policy.resource_id == resource_id)
 
-        result = await self._session.scalars(
-            query.order_by(Policy.created_at.desc()).limit(1000)
-        )
+        result = await self._session.scalars(query.order_by(Policy.created_at.desc()).limit(1000))
         return [self._to_response(policy) for policy in result.all()]
 
     async def get_policy(self, policy_id: UUID) -> PolicyResponse | None:
@@ -117,14 +115,10 @@ class AuthzService:
 
     async def evaluate(self, payload: PolicyEvaluationRequest) -> PolicyEvaluationResponse:
         result = await self._session.scalars(
-            select(Policy)
-            .where(Policy.subject_type == payload.subject_type)
-            .order_by(Policy.id)
+            select(Policy).where(Policy.subject_type == payload.subject_type).order_by(Policy.id)
         )
         candidates = [
-            policy
-            for policy in result.all()
-            if policy.subject_id in {payload.subject_id, "*"}
+            policy for policy in result.all() if policy.subject_id in {payload.subject_id, "*"}
         ]
 
         matches = [

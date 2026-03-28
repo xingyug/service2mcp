@@ -3,26 +3,24 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 
 def test_setup_tracer_without_endpoint():
     """Test setup_tracer works without endpoint (disabled by default)."""
-    from libs.observability.tracing import setup_tracer
-    
     # Reset state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import setup_tracer
+
     tracing_module._is_configured = False
     tracing_module._tracer_provider = None
-    
+
     # Clean up env var if it exists
     old_endpoint = os.environ.pop("OTEL_EXPORTER_ENDPOINT", None)
-    
+
     try:
         setup_tracer("test-service")
-        
+
         # Should not be configured without endpoint and enable_local=False
         assert tracing_module._is_configured is False
     finally:
@@ -32,112 +30,123 @@ def test_setup_tracer_without_endpoint():
 
 def test_setup_tracer_with_endpoint():
     """Test setup_tracer works with OTLP endpoint."""
-    from libs.observability.tracing import setup_tracer
-    
     # Reset state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import setup_tracer
+
     tracing_module._is_configured = False
     tracing_module._tracer_provider = None
-    
-    with patch("opentelemetry.sdk.trace.TracerProvider") as mock_provider_class, \
-         patch("opentelemetry.sdk.resources.Resource") as mock_resource_class, \
-         patch("opentelemetry.trace") as mock_trace, \
-         patch("opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter") as mock_exporter_class, \
-         patch("opentelemetry.sdk.trace.export.BatchSpanProcessor") as mock_processor_class:
-        
+
+    with (
+        patch("opentelemetry.sdk.trace.TracerProvider") as mock_provider_class,
+        patch("opentelemetry.sdk.resources.Resource") as mock_resource_class,
+        patch("opentelemetry.trace") as mock_trace,
+        patch(
+            "opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter"
+        ) as mock_exporter_class,
+        patch("opentelemetry.sdk.trace.export.BatchSpanProcessor") as mock_processor_class,
+    ):
         mock_resource = MagicMock()
         mock_resource_class.create.return_value = mock_resource
-        
+
         mock_provider = MagicMock()
         mock_provider_class.return_value = mock_provider
-        
+
         mock_exporter = MagicMock()
         mock_exporter_class.return_value = mock_exporter
-        
+
         mock_processor = MagicMock()
         mock_processor_class.return_value = mock_processor
-        
+
         setup_tracer("test-service", endpoint="http://localhost:4317")
-        
+
         # Should create resource and provider
         assert mock_resource_class.create.called
-        assert {"service.name": "test-service"} in [call[0][0] for call in mock_resource_class.create.call_args_list]
+        assert {"service.name": "test-service"} in [
+            call[0][0] for call in mock_resource_class.create.call_args_list
+        ]
         mock_provider_class.assert_called_with(resource=mock_resource)
         mock_trace.set_tracer_provider.assert_called_with(mock_provider)
-        
+
         # Should create exporter and processor
-        mock_exporter_class.assert_called_once_with(endpoint="http://localhost:4317", insecure=False)
+        mock_exporter_class.assert_called_once_with(
+            endpoint="http://localhost:4317", insecure=False
+        )
         mock_processor_class.assert_called_once_with(mock_exporter)
         mock_provider.add_span_processor.assert_called_once_with(mock_processor)
 
 
 def test_setup_tracer_with_insecure_endpoint():
     """Test setup_tracer respects OTEL_EXPORTER_OTLP_INSECURE env var."""
-    from libs.observability.tracing import setup_tracer
-    
     # Reset state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import setup_tracer
+
     tracing_module._is_configured = False
     tracing_module._tracer_provider = None
-    
-    with patch.dict(os.environ, {"OTEL_EXPORTER_OTLP_INSECURE": "true"}), \
-         patch("opentelemetry.sdk.trace.TracerProvider") as mock_provider_class, \
-         patch("opentelemetry.sdk.resources.Resource") as mock_resource_class, \
-         patch("opentelemetry.trace") as mock_trace, \
-         patch("opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter") as mock_exporter_class, \
-         patch("opentelemetry.sdk.trace.export.BatchSpanProcessor") as mock_processor_class:
-        
+
+    with (
+        patch.dict(os.environ, {"OTEL_EXPORTER_OTLP_INSECURE": "true"}),
+        patch("opentelemetry.sdk.trace.TracerProvider") as mock_provider_class,
+        patch("opentelemetry.sdk.resources.Resource") as mock_resource_class,
+        patch("opentelemetry.trace"),
+        patch(
+            "opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter"
+        ) as mock_exporter_class,
+        patch("opentelemetry.sdk.trace.export.BatchSpanProcessor") as mock_processor_class,
+    ):
         mock_resource = MagicMock()
         mock_resource_class.create.return_value = mock_resource
-        
+
         mock_provider = MagicMock()
         mock_provider_class.return_value = mock_provider
-        
+
         mock_exporter = MagicMock()
         mock_exporter_class.return_value = mock_exporter
-        
+
         mock_processor = MagicMock()
         mock_processor_class.return_value = mock_processor
-        
+
         setup_tracer("test-service", endpoint="http://localhost:4317")
-        
+
         # Should create insecure exporter
         mock_exporter_class.assert_called_once_with(endpoint="http://localhost:4317", insecure=True)
 
 
 def test_setup_tracer_with_enable_local():
     """Test setup_tracer works with enable_local=True."""
-    from libs.observability.tracing import setup_tracer
-    
     # Reset state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import setup_tracer
+
     tracing_module._is_configured = False
     tracing_module._tracer_provider = None
-    
+
     # Clean up env var if it exists
     old_endpoint = os.environ.pop("OTEL_EXPORTER_ENDPOINT", None)
-    
+
     try:
-        with patch("opentelemetry.sdk.trace.TracerProvider") as mock_provider_class, \
-             patch("opentelemetry.sdk.resources.Resource") as mock_resource_class, \
-             patch("opentelemetry.trace") as mock_trace:
-            
+        with (
+            patch("opentelemetry.sdk.trace.TracerProvider") as mock_provider_class,
+            patch("opentelemetry.sdk.resources.Resource") as mock_resource_class,
+            patch("opentelemetry.trace") as mock_trace,
+        ):
             mock_resource = MagicMock()
             mock_resource_class.create.return_value = mock_resource
-            
+
             mock_provider = MagicMock()
             mock_provider_class.return_value = mock_provider
-            
+
             setup_tracer("test-service", enable_local=True)
-            
+
             # Should create resource and provider
             mock_resource_class.create.assert_called_once_with({"service.name": "test-service"})
             mock_provider_class.assert_called_once_with(resource=mock_resource)
             mock_trace.set_tracer_provider.assert_called_once_with(mock_provider)
-            
+
             # Should not add span processor without endpoint
             mock_provider.add_span_processor.assert_not_called()
-            
+
             assert tracing_module._is_configured is True
     finally:
         if old_endpoint:
@@ -146,62 +155,68 @@ def test_setup_tracer_with_enable_local():
 
 def test_setup_tracer_uses_env_var():
     """Test setup_tracer uses OTEL_EXPORTER_ENDPOINT env var."""
-    from libs.observability.tracing import setup_tracer
-    
     # Reset state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import setup_tracer
+
     tracing_module._is_configured = False
     tracing_module._tracer_provider = None
-    
-    with patch.dict(os.environ, {"OTEL_EXPORTER_ENDPOINT": "http://env-endpoint:4317"}), \
-         patch("opentelemetry.sdk.trace.TracerProvider") as mock_provider_class, \
-         patch("opentelemetry.sdk.resources.Resource") as mock_resource_class, \
-         patch("opentelemetry.trace") as mock_trace, \
-         patch("opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter") as mock_exporter_class, \
-         patch("opentelemetry.sdk.trace.export.BatchSpanProcessor") as mock_processor_class:
-        
+
+    with (
+        patch.dict(os.environ, {"OTEL_EXPORTER_ENDPOINT": "http://env-endpoint:4317"}),
+        patch("opentelemetry.sdk.trace.TracerProvider") as mock_provider_class,
+        patch("opentelemetry.sdk.resources.Resource") as mock_resource_class,
+        patch("opentelemetry.trace"),
+        patch(
+            "opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter"
+        ) as mock_exporter_class,
+        patch("opentelemetry.sdk.trace.export.BatchSpanProcessor") as mock_processor_class,
+    ):
         mock_resource = MagicMock()
         mock_resource_class.create.return_value = mock_resource
-        
+
         mock_provider = MagicMock()
         mock_provider_class.return_value = mock_provider
-        
+
         mock_exporter = MagicMock()
         mock_exporter_class.return_value = mock_exporter
-        
+
         mock_processor = MagicMock()
         mock_processor_class.return_value = mock_processor
-        
+
         setup_tracer("test-service")
-        
+
         # Should use env var endpoint
-        mock_exporter_class.assert_called_once_with(endpoint="http://env-endpoint:4317", insecure=False)
+        mock_exporter_class.assert_called_once_with(
+            endpoint="http://env-endpoint:4317", insecure=False
+        )
 
 
 def test_setup_tracer_handles_import_error():
     """Test setup_tracer handles ImportError gracefully."""
-    from libs.observability.tracing import setup_tracer
-    
     # Reset state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import setup_tracer
+
     original_configured = tracing_module._is_configured
     original_provider = tracing_module._tracer_provider
-    
+
     tracing_module._is_configured = False
     tracing_module._tracer_provider = None
-    
+
     try:
         # Create an import error by mocking the opentelemetry.trace import
         import sys
-        if 'opentelemetry.trace' in sys.modules:
-            del sys.modules['opentelemetry.trace']
-        if 'opentelemetry' in sys.modules:
-            del sys.modules['opentelemetry']
-            
+
+        if "opentelemetry.trace" in sys.modules:
+            del sys.modules["opentelemetry.trace"]
+        if "opentelemetry" in sys.modules:
+            del sys.modules["opentelemetry"]
+
         # Make sure imports will fail
-        with patch.dict(sys.modules, {'opentelemetry': None}):
+        with patch.dict(sys.modules, {"opentelemetry": None}):
             setup_tracer("test-service", enable_local=True)
-            
+
             # Should set _is_configured to False due to import error
             assert tracing_module._is_configured is False
     finally:
@@ -212,95 +227,99 @@ def test_setup_tracer_handles_import_error():
 
 def test_setup_tracer_handles_general_exception():
     """Test setup_tracer handles general exceptions gracefully."""
-    from libs.observability.tracing import setup_tracer
-    
     # Reset state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import setup_tracer
+
     tracing_module._is_configured = False
     tracing_module._tracer_provider = None
-    
-    with patch("opentelemetry.sdk.trace.TracerProvider", side_effect=RuntimeError("Configuration failed")):
+
+    with patch(
+        "opentelemetry.sdk.trace.TracerProvider", side_effect=RuntimeError("Configuration failed")
+    ):
         setup_tracer("test-service", enable_local=True)
-        
+
         # Should set _is_configured to False
         assert tracing_module._is_configured is False
 
 
 def test_setup_tracer_already_configured():
     """Test setup_tracer returns early when already configured."""
-    from libs.observability.tracing import setup_tracer
-    
     # Set up already configured state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import setup_tracer
+
     tracing_module._is_configured = True
     tracing_module._tracer_provider = MagicMock()
-    
+
     with patch("opentelemetry.sdk.trace.TracerProvider") as mock_provider_class:
         setup_tracer("test-service", enable_local=True)
-        
+
         # Should not create new provider
         mock_provider_class.assert_not_called()
 
 
 def test_get_tracer_when_configured():
     """Test get_tracer returns tracer when configured."""
-    from libs.observability.tracing import get_tracer
-    
     # Mock configured state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import get_tracer
+
     tracing_module._is_configured = True
-    
+
     with patch("opentelemetry.trace") as mock_trace:
         mock_tracer = MagicMock()
         mock_trace.get_tracer.return_value = mock_tracer
-        
+
         tracer = get_tracer("test-tracer")
-        
+
         mock_trace.get_tracer.assert_called_once_with("test-tracer")
         assert tracer == mock_tracer
 
 
 def test_get_tracer_when_not_configured():
     """Test get_tracer returns NoOpTracer when not configured."""
-    from libs.observability.tracing import get_tracer, _NoOpTracer
-    
     # Mock unconfigured state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import _NoOpTracer, get_tracer
+
     tracing_module._is_configured = False
-    
+
     tracer = get_tracer("test-tracer")
-    
+
     assert isinstance(tracer, _NoOpTracer)
 
 
 def test_trace_span_when_configured():
     """Test trace_span creates real span when configured."""
-    from libs.observability.tracing import trace_span
-    
     # Mock configured state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import trace_span
+
     tracing_module._is_configured = True
-    
+
     with patch("libs.observability.tracing.get_tracer") as mock_get_tracer:
         mock_tracer = MagicMock()
         mock_span = MagicMock()
         mock_tracer.start_as_current_span.return_value.__enter__.return_value = mock_span
         mock_get_tracer.return_value = mock_tracer
-        
+
         with trace_span("test-span", {"key": "value"}) as span:
             assert span == mock_span
-        
-        mock_tracer.start_as_current_span.assert_called_once_with("test-span", attributes={"key": "value"})
+
+        mock_tracer.start_as_current_span.assert_called_once_with(
+            "test-span", attributes={"key": "value"}
+        )
 
 
 def test_trace_span_when_not_configured():
     """Test trace_span returns NoOpSpan when not configured."""
-    from libs.observability.tracing import trace_span, _NoOpSpan
-    
     # Mock unconfigured state
     import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import _NoOpSpan, trace_span
+
     tracing_module._is_configured = False
-    
+
     with trace_span("test-span") as span:
         assert isinstance(span, _NoOpSpan)
 
@@ -308,9 +327,9 @@ def test_trace_span_when_not_configured():
 def test_noop_span_methods():
     """Test NoOpSpan methods don't raise errors."""
     from libs.observability.tracing import _NoOpSpan
-    
+
     span = _NoOpSpan()
-    
+
     # Should not raise exceptions
     span.set_attribute("key", "value")
     span.set_status("OK")
@@ -319,9 +338,9 @@ def test_noop_span_methods():
 
 def test_noop_tracer_context_manager():
     """Test NoOpTracer context manager returns NoOpSpan."""
-    from libs.observability.tracing import _NoOpTracer, _NoOpSpan
-    
+    from libs.observability.tracing import _NoOpSpan, _NoOpTracer
+
     tracer = _NoOpTracer()
-    
+
     with tracer.start_as_current_span("test-span") as span:
         assert isinstance(span, _NoOpSpan)

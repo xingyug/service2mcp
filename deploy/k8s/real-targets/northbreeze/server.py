@@ -9,10 +9,11 @@ A real OData V4 service modeled after SAP's Northbreeze tutorial, implementing:
 - $filter, $select, $top, $skip, $orderby, $count, $expand
 - Single entity by key: /Products(1)
 """
+
 import json
 import re
-from datetime import datetime
-from flask import Flask, Response, request, jsonify
+
+from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
@@ -20,7 +21,11 @@ app = Flask(__name__)
 
 CATEGORIES = [
     {"ID": 1, "Name": "Beverages", "Description": "Soft drinks, coffees, teas, beers, and ales"},
-    {"ID": 2, "Name": "Condiments", "Description": "Sweet and savory sauces, relishes, spreads, and seasonings"},
+    {
+        "ID": 2,
+        "Name": "Condiments",
+        "Description": "Sweet and savory sauces, relishes, spreads, and seasonings",
+    },
     {"ID": 3, "Name": "Confections", "Description": "Desserts, candies, and sweet breads"},
     {"ID": 4, "Name": "Dairy Products", "Description": "Cheeses and dairy-based items"},
     {"ID": 5, "Name": "Grains/Cereals", "Description": "Breads, crackers, pasta, and cereal"},
@@ -30,30 +35,180 @@ CATEGORIES = [
 ]
 
 SUPPLIERS = [
-    {"ID": 1, "Name": "Exotic Liquids", "City": "London", "Country": "UK", "Phone": "(171) 555-2222"},
-    {"ID": 2, "Name": "New Orleans Cajun", "City": "New Orleans", "Country": "USA", "Phone": "(100) 555-4822"},
-    {"ID": 3, "Name": "Grandma Kelly's", "City": "Ann Arbor", "Country": "USA", "Phone": "(313) 555-5735"},
-    {"ID": 4, "Name": "Tokyo Traders", "City": "Tokyo", "Country": "Japan", "Phone": "(03) 3555-5011"},
+    {
+        "ID": 1,
+        "Name": "Exotic Liquids",
+        "City": "London",
+        "Country": "UK",
+        "Phone": "(171) 555-2222",
+    },
+    {
+        "ID": 2,
+        "Name": "New Orleans Cajun",
+        "City": "New Orleans",
+        "Country": "USA",
+        "Phone": "(100) 555-4822",
+    },
+    {
+        "ID": 3,
+        "Name": "Grandma Kelly's",
+        "City": "Ann Arbor",
+        "Country": "USA",
+        "Phone": "(313) 555-5735",
+    },
+    {
+        "ID": 4,
+        "Name": "Tokyo Traders",
+        "City": "Tokyo",
+        "Country": "Japan",
+        "Phone": "(03) 3555-5011",
+    },
     {"ID": 5, "Name": "Mayumi's", "City": "Osaka", "Country": "Japan", "Phone": "(06) 431-7877"},
-    {"ID": 6, "Name": "Pavlova Ltd.", "City": "Melbourne", "Country": "Australia", "Phone": "(03) 444-2343"},
+    {
+        "ID": 6,
+        "Name": "Pavlova Ltd.",
+        "City": "Melbourne",
+        "Country": "Australia",
+        "Phone": "(03) 444-2343",
+    },
 ]
 
 PRODUCTS = [
-    {"ID": 1,  "Name": "Chai",               "Price": 18.00, "Stock": 39, "CategoryID": 1, "SupplierID": 1, "Discontinued": False},
-    {"ID": 2,  "Name": "Chang",              "Price": 19.00, "Stock": 17, "CategoryID": 1, "SupplierID": 1, "Discontinued": False},
-    {"ID": 3,  "Name": "Aniseed Syrup",      "Price":  10.00, "Stock": 13, "CategoryID": 2, "SupplierID": 1, "Discontinued": False},
-    {"ID": 4,  "Name": "Chef Anton's Cajun", "Price":  22.00, "Stock": 53, "CategoryID": 2, "SupplierID": 2, "Discontinued": False},
-    {"ID": 5,  "Name": "Grandma's Spread",   "Price":  25.00, "Stock": 120,"CategoryID": 2, "SupplierID": 3, "Discontinued": False},
-    {"ID": 6,  "Name": "Uncle Bob's Pears",  "Price":  30.00, "Stock": 15, "CategoryID": 7, "SupplierID": 3, "Discontinued": False},
-    {"ID": 7,  "Name": "Northwoods Sauce",   "Price":  40.00, "Stock": 6,  "CategoryID": 2, "SupplierID": 3, "Discontinued": False},
-    {"ID": 8,  "Name": "Mishi Kobe Niku",    "Price":  97.00, "Stock": 29, "CategoryID": 6, "SupplierID": 4, "Discontinued": True},
-    {"ID": 9,  "Name": "Ikura",              "Price":  31.00, "Stock": 31, "CategoryID": 8, "SupplierID": 4, "Discontinued": False},
-    {"ID": 10, "Name": "Queso Cabrales",     "Price":  21.00, "Stock": 22, "CategoryID": 4, "SupplierID": 5, "Discontinued": False},
-    {"ID": 11, "Name": "Queso Manchego",     "Price":  38.00, "Stock": 86, "CategoryID": 4, "SupplierID": 5, "Discontinued": False},
-    {"ID": 12, "Name": "Konbu",              "Price":   6.00, "Stock": 24, "CategoryID": 8, "SupplierID": 6, "Discontinued": False},
-    {"ID": 13, "Name": "Tofu",               "Price":  23.25, "Stock": 35, "CategoryID": 7, "SupplierID": 6, "Discontinued": False},
-    {"ID": 14, "Name": "Genen Shouyu",       "Price":  15.50, "Stock": 39, "CategoryID": 2, "SupplierID": 6, "Discontinued": False},
-    {"ID": 15, "Name": "Pavlova",            "Price":  17.45, "Stock": 29, "CategoryID": 3, "SupplierID": 6, "Discontinued": False},
+    {
+        "ID": 1,
+        "Name": "Chai",
+        "Price": 18.00,
+        "Stock": 39,
+        "CategoryID": 1,
+        "SupplierID": 1,
+        "Discontinued": False,
+    },
+    {
+        "ID": 2,
+        "Name": "Chang",
+        "Price": 19.00,
+        "Stock": 17,
+        "CategoryID": 1,
+        "SupplierID": 1,
+        "Discontinued": False,
+    },
+    {
+        "ID": 3,
+        "Name": "Aniseed Syrup",
+        "Price": 10.00,
+        "Stock": 13,
+        "CategoryID": 2,
+        "SupplierID": 1,
+        "Discontinued": False,
+    },
+    {
+        "ID": 4,
+        "Name": "Chef Anton's Cajun",
+        "Price": 22.00,
+        "Stock": 53,
+        "CategoryID": 2,
+        "SupplierID": 2,
+        "Discontinued": False,
+    },
+    {
+        "ID": 5,
+        "Name": "Grandma's Spread",
+        "Price": 25.00,
+        "Stock": 120,
+        "CategoryID": 2,
+        "SupplierID": 3,
+        "Discontinued": False,
+    },
+    {
+        "ID": 6,
+        "Name": "Uncle Bob's Pears",
+        "Price": 30.00,
+        "Stock": 15,
+        "CategoryID": 7,
+        "SupplierID": 3,
+        "Discontinued": False,
+    },
+    {
+        "ID": 7,
+        "Name": "Northwoods Sauce",
+        "Price": 40.00,
+        "Stock": 6,
+        "CategoryID": 2,
+        "SupplierID": 3,
+        "Discontinued": False,
+    },
+    {
+        "ID": 8,
+        "Name": "Mishi Kobe Niku",
+        "Price": 97.00,
+        "Stock": 29,
+        "CategoryID": 6,
+        "SupplierID": 4,
+        "Discontinued": True,
+    },
+    {
+        "ID": 9,
+        "Name": "Ikura",
+        "Price": 31.00,
+        "Stock": 31,
+        "CategoryID": 8,
+        "SupplierID": 4,
+        "Discontinued": False,
+    },
+    {
+        "ID": 10,
+        "Name": "Queso Cabrales",
+        "Price": 21.00,
+        "Stock": 22,
+        "CategoryID": 4,
+        "SupplierID": 5,
+        "Discontinued": False,
+    },
+    {
+        "ID": 11,
+        "Name": "Queso Manchego",
+        "Price": 38.00,
+        "Stock": 86,
+        "CategoryID": 4,
+        "SupplierID": 5,
+        "Discontinued": False,
+    },
+    {
+        "ID": 12,
+        "Name": "Konbu",
+        "Price": 6.00,
+        "Stock": 24,
+        "CategoryID": 8,
+        "SupplierID": 6,
+        "Discontinued": False,
+    },
+    {
+        "ID": 13,
+        "Name": "Tofu",
+        "Price": 23.25,
+        "Stock": 35,
+        "CategoryID": 7,
+        "SupplierID": 6,
+        "Discontinued": False,
+    },
+    {
+        "ID": 14,
+        "Name": "Genen Shouyu",
+        "Price": 15.50,
+        "Stock": 39,
+        "CategoryID": 2,
+        "SupplierID": 6,
+        "Discontinued": False,
+    },
+    {
+        "ID": 15,
+        "Name": "Pavlova",
+        "Price": 17.45,
+        "Stock": 29,
+        "CategoryID": 3,
+        "SupplierID": 6,
+        "Discontinued": False,
+    },
 ]
 
 NAMESPACE = "Northbreeze"
@@ -88,7 +243,11 @@ METADATA_XML = f"""<?xml version="1.0" encoding="utf-8"?>
         <Property Name="ID" Type="Edm.Int32" Nullable="false"/>
         <Property Name="Name" Type="Edm.String"/>
         <Property Name="Description" Type="Edm.String"/>
-        <NavigationProperty Name="Products" Type="Collection({NAMESPACE}.Product)" Partner="Category"/>
+        <NavigationProperty
+          Name="Products"
+          Type="Collection({NAMESPACE}.Product)"
+          Partner="Category"
+        />
       </EntityType>
 
       <EntityType Name="Supplier">
@@ -98,7 +257,11 @@ METADATA_XML = f"""<?xml version="1.0" encoding="utf-8"?>
         <Property Name="City" Type="Edm.String"/>
         <Property Name="Country" Type="Edm.String"/>
         <Property Name="Phone" Type="Edm.String"/>
-        <NavigationProperty Name="Products" Type="Collection({NAMESPACE}.Product)" Partner="Supplier"/>
+        <NavigationProperty
+          Name="Products"
+          Type="Collection({NAMESPACE}.Product)"
+          Partner="Supplier"
+        />
       </EntityType>
 
       <Function Name="GetTopProducts" IsBound="false">
@@ -119,7 +282,11 @@ METADATA_XML = f"""<?xml version="1.0" encoding="utf-8"?>
         <EntitySet Name="Suppliers" EntityType="{NAMESPACE}.Supplier">
           <NavigationPropertyBinding Path="Products" Target="Products"/>
         </EntitySet>
-        <FunctionImport Name="GetTopProducts" Function="{NAMESPACE}.GetTopProducts" EntitySet="Products"/>
+        <FunctionImport
+          Name="GetTopProducts"
+          Function="{NAMESPACE}.GetTopProducts"
+          EntitySet="Products"
+        />
         <ActionImport Name="ResetData" Action="{NAMESPACE}.ResetData"/>
       </EntityContainer>
 
@@ -130,6 +297,7 @@ METADATA_XML = f"""<?xml version="1.0" encoding="utf-8"?>
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+
 def odata_response(value, context=None, count=None):
     body = {}
     if context:
@@ -137,14 +305,18 @@ def odata_response(value, context=None, count=None):
     if count is not None:
         body["@odata.count"] = count
     body["value"] = value
-    return Response(json.dumps(body, default=str), content_type="application/json;odata.metadata=minimal")
+    return Response(
+        json.dumps(body, default=str), content_type="application/json;odata.metadata=minimal"
+    )
 
 
 def odata_entity(entity, context=None):
     body = dict(entity)
     if context:
         body["@odata.context"] = context
-    return Response(json.dumps(body, default=str), content_type="application/json;odata.metadata=minimal")
+    return Response(
+        json.dumps(body, default=str), content_type="application/json;odata.metadata=minimal"
+    )
 
 
 def apply_filter(items, filter_str):
@@ -162,7 +334,12 @@ def apply_filter(items, filter_str):
         field, val = m.group(1), float(m.group(2))
         return [i for i in items if i.get(field) == (int(val) if val == int(val) else val)]
     # gt / lt / ge / le
-    for op, fn in [("gt", lambda a,b: a>b), ("lt", lambda a,b: a<b), ("ge", lambda a,b: a>=b), ("le", lambda a,b: a<=b)]:
+    for op, fn in [
+        ("gt", lambda a, b: a > b),
+        ("lt", lambda a, b: a < b),
+        ("ge", lambda a, b: a >= b),
+        ("le", lambda a, b: a <= b),
+    ]:
         m = re.match(rf"(\w+)\s+{op}\s+(\d+(?:\.\d+)?)", filter_str)
         if m:
             field, val = m.group(1), float(m.group(2))
@@ -206,7 +383,7 @@ def apply_query_options(items):
     top = request.args.get("$top")
     items = items[skip:]
     if top:
-        items = items[:int(top)]
+        items = items[: int(top)]
     items = apply_select(items, request.args.get("$select"))
     return items, total_count
 
@@ -237,6 +414,7 @@ def expand_entity(entity, entity_set_name):
 
 # ── Routes ───────────────────────────────────────────────────────────────────
 
+
 @app.route("/healthz")
 def healthz():
     return "ok", 200
@@ -250,14 +428,16 @@ def metadata():
 @app.route(f"{SERVICE_URL}/")
 @app.route(f"{SERVICE_URL}")
 def service_document():
-    return jsonify({
-        "@odata.context": f"{SERVICE_URL}/$metadata",
-        "value": [
-            {"name": "Products", "url": "Products"},
-            {"name": "Categories", "url": "Categories"},
-            {"name": "Suppliers", "url": "Suppliers"},
-        ]
-    })
+    return jsonify(
+        {
+            "@odata.context": f"{SERVICE_URL}/$metadata",
+            "value": [
+                {"name": "Products", "url": "Products"},
+                {"name": "Categories", "url": "Categories"},
+                {"name": "Suppliers", "url": "Suppliers"},
+            ],
+        }
+    )
 
 
 # Entity sets

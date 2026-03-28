@@ -144,29 +144,29 @@ def test_extract_raises_for_malformed_xml(extractor: ODataExtractor) -> None:
 
 def test_extract_raises_for_non_edmx_root(extractor: ODataExtractor) -> None:
     """Test extraction raises ValueError when root is not edmx:Edmx."""
-    content = '''<?xml version="1.0"?>
-    <NotEdmx xmlns="http://docs.oasis-open.org/odata/ns/edmx"/>'''
-    
+    content = """<?xml version="1.0"?>
+    <NotEdmx xmlns="http://docs.oasis-open.org/odata/ns/edmx"/>"""
+
     with pytest.raises(ValueError, match="OData extractor requires an EDMX metadata document"):
         extractor.extract(SourceConfig(file_content=content))
 
 
 def test_extract_raises_for_missing_schema(extractor: ODataExtractor) -> None:
     """Test extraction raises ValueError when no Schema element found."""
-    content = '''<?xml version="1.0"?>
+    content = """<?xml version="1.0"?>
     <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx" Version="4.0">
         <edmx:DataServices>
         </edmx:DataServices>
-    </edmx:Edmx>'''
-    
+    </edmx:Edmx>"""
+
     with pytest.raises(ValueError, match="No Schema element found in EDMX document"):
         extractor.extract(SourceConfig(file_content=content))
 
 
 def test_extract_strips_metadata_suffix_from_url(extractor: ODataExtractor) -> None:
     """Test extraction strips $metadata suffix from base URL."""
-    content = '''<?xml version="1.0"?>
-    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx" 
+    content = """<?xml version="1.0"?>
+    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"
                xmlns:edm="http://docs.oasis-open.org/odata/ns/edm" Version="4.0">
         <edmx:DataServices>
             <edm:Schema Namespace="Test.Model">
@@ -174,20 +174,17 @@ def test_extract_strips_metadata_suffix_from_url(extractor: ODataExtractor) -> N
                 </edm:EntityContainer>
             </edm:Schema>
         </edmx:DataServices>
-    </edmx:Edmx>'''
-    
-    source = SourceConfig(
-        file_content=content,
-        url="https://api.example.com/odata/$metadata"
-    )
+    </edmx:Edmx>"""
+
+    source = SourceConfig(file_content=content, url="https://api.example.com/odata/$metadata")
     ir = extractor.extract(source)
     assert ir.base_url == "https://api.example.com/odata"
 
 
 def test_extract_strips_metadata_suffix_without_slash(extractor: ODataExtractor) -> None:
     """Test extraction strips $metadata suffix without leading slash."""
-    content = '''<?xml version="1.0"?>
-    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx" 
+    content = """<?xml version="1.0"?>
+    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"
                xmlns:edm="http://docs.oasis-open.org/odata/ns/edm" Version="4.0">
         <edmx:DataServices>
             <edm:Schema Namespace="Test.Model">
@@ -195,20 +192,17 @@ def test_extract_strips_metadata_suffix_without_slash(extractor: ODataExtractor)
                 </edm:EntityContainer>
             </edm:Schema>
         </edmx:DataServices>
-    </edmx:Edmx>'''
-    
-    source = SourceConfig(
-        file_content=content,
-        url="https://api.example.com/odata$metadata"
-    )
+    </edmx:Edmx>"""
+
+    source = SourceConfig(file_content=content, url="https://api.example.com/odata$metadata")
     ir = extractor.extract(source)
     assert ir.base_url == "https://api.example.com/odata"
 
 
 def test_extract_skips_unknown_entity_types(extractor: ODataExtractor) -> None:
     """Test extraction skips entity sets with unknown entity types."""
-    content = '''<?xml version="1.0"?>
-    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx" 
+    content = """<?xml version="1.0"?>
+    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"
                xmlns:edm="http://docs.oasis-open.org/odata/ns/edm" Version="4.0">
         <edmx:DataServices>
             <edm:Schema Namespace="Test.Model">
@@ -224,20 +218,22 @@ def test_extract_skips_unknown_entity_types(extractor: ODataExtractor) -> None:
                 </edm:EntityContainer>
             </edm:Schema>
         </edmx:DataServices>
-    </edmx:Edmx>'''
-    
+    </edmx:Edmx>"""
+
     ir = extractor.extract(SourceConfig(file_content=content))
-    
+
     # Should only have operations for KnownSet, not UnknownSet
     op_ids = {op.id for op in ir.operations}
     assert any(op_id.startswith("list_knownset") for op_id in op_ids)
     assert not any(op_id.startswith("list_unknownset") for op_id in op_ids)
 
 
-def test_extract_creates_function_imports_with_empty_params_for_unknown_functions(extractor: ODataExtractor) -> None:
-    """Test extraction creates function imports even for unknown functions, but with empty params."""
-    content = '''<?xml version="1.0"?>
-    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx" 
+def test_extract_creates_function_imports_with_empty_params_for_unknown_functions(
+    extractor: ODataExtractor,
+) -> None:
+    """Test that unknown function imports are preserved with empty params."""
+    content = """<?xml version="1.0"?>
+    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"
                xmlns:edm="http://docs.oasis-open.org/odata/ns/edm" Version="4.0">
         <edmx:DataServices>
             <edm:Schema Namespace="Test.Model">
@@ -247,23 +243,26 @@ def test_extract_creates_function_imports_with_empty_params_for_unknown_function
                 </edm:Function>
                 <edm:EntityContainer Name="TestContainer">
                     <edm:FunctionImport Name="KnownFunction" Function="Test.Model.KnownFunction"/>
-                    <edm:FunctionImport Name="UnknownFunction" Function="Test.Model.UnknownFunction"/>
+                    <edm:FunctionImport
+                        Name="UnknownFunction"
+                        Function="Test.Model.UnknownFunction"
+                    />
                 </edm:EntityContainer>
             </edm:Schema>
         </edmx:DataServices>
-    </edmx:Edmx>'''
-    
+    </edmx:Edmx>"""
+
     ir = extractor.extract(SourceConfig(file_content=content))
-    
+
     # Should have operations for both function imports
     op_ids = {op.id: op for op in ir.operations}
     assert "func_known_function" in op_ids
     assert "func_unknown_function" in op_ids
-    
+
     # Known function should have parameters, unknown should be empty
     known_op = op_ids["func_known_function"]
     unknown_op = op_ids["func_unknown_function"]
-    
+
     assert len(known_op.params) == 1
     assert known_op.params[0].name == "param1"
     assert len(unknown_op.params) == 0
@@ -271,104 +270,104 @@ def test_extract_creates_function_imports_with_empty_params_for_unknown_function
 
 def test_get_content_handles_url_fetch_failure(extractor: ODataExtractor) -> None:
     """Test _get_content handles URL fetch failures gracefully."""
-    import respx
     import httpx
-    
+    import respx
+
     with respx.mock:
         respx.get("https://example.com/test.xml").mock(
             side_effect=httpx.RequestError("Connection failed")
         )
-        
+
         content = extractor._get_content(SourceConfig(url="https://example.com/test.xml"))
         assert content is None
 
 
 def test_get_content_with_auth_header(extractor: ODataExtractor) -> None:
     """Test _get_content uses auth_header correctly."""
-    import respx
     import httpx
-    
-    xml_content = '''<?xml version="1.0"?>
-    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"/>'''
-    
+    import respx
+
+    xml_content = """<?xml version="1.0"?>
+    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"/>"""
+
     with respx.mock:
         respx.get("https://example.com/odata/$metadata").mock(
             return_value=httpx.Response(
-                200, 
-                text=xml_content, 
-                request=httpx.Request("GET", "https://example.com/odata/$metadata")
+                200,
+                text=xml_content,
+                request=httpx.Request("GET", "https://example.com/odata/$metadata"),
             )
         )
-        
-        content = extractor._get_content(SourceConfig(
-            url="https://example.com/odata/$metadata",
-            auth_header="Bearer token123"
-        ))
+
+        content = extractor._get_content(
+            SourceConfig(url="https://example.com/odata/$metadata", auth_header="Bearer token123")
+        )
         assert content == xml_content
 
 
 def test_get_content_with_auth_token(extractor: ODataExtractor) -> None:
     """Test _get_content uses auth_token correctly."""
-    import respx
     import httpx
-    
-    xml_content = '''<?xml version="1.0"?>
-    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"/>'''
-    
+    import respx
+
+    xml_content = """<?xml version="1.0"?>
+    <edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx"/>"""
+
     with respx.mock:
         respx.get("https://example.com/odata/$metadata").mock(
             return_value=httpx.Response(
-                200, 
-                text=xml_content, 
-                request=httpx.Request("GET", "https://example.com/odata/$metadata")
+                200,
+                text=xml_content,
+                request=httpx.Request("GET", "https://example.com/odata/$metadata"),
             )
         )
-        
-        content = extractor._get_content(SourceConfig(
-            url="https://example.com/odata/$metadata",
-            auth_token="token123"
-        ))
+
+        content = extractor._get_content(
+            SourceConfig(url="https://example.com/odata/$metadata", auth_token="token123")
+        )
         assert content == xml_content
 
 
 def test_parse_functions_skips_missing_names() -> None:
     """Test _parse_functions skips functions without names."""
-    from libs.extractors.odata import _parse_functions
     import xml.etree.ElementTree as ET
-    
-    content = '''<edm:Schema xmlns:edm="http://docs.oasis-open.org/odata/ns/edm">
+
+    from libs.extractors.odata import _parse_functions
+
+    content = """<edm:Schema xmlns:edm="http://docs.oasis-open.org/odata/ns/edm">
         <edm:Function Name="ValidFunction">
             <edm:Parameter Name="param1" Type="Edm.String"/>
         </edm:Function>
         <edm:Function>
             <edm:Parameter Name="param2" Type="Edm.String"/>
         </edm:Function>
-    </edm:Schema>'''
-    
+    </edm:Schema>"""
+
     schema = ET.fromstring(content)
     functions = _parse_functions(schema)
-    
+
     assert "ValidFunction" in functions
     assert len(functions) == 1
 
 
 def test_parse_actions_skips_missing_names() -> None:
     """Test _parse_actions skips actions without names."""
-    from libs.extractors.odata import _parse_actions
     import xml.etree.ElementTree as ET
-    
-    content = '''<edm:Schema xmlns:edm="http://docs.oasis-open.org/odata/ns/edm">
+
+    from libs.extractors.odata import _parse_actions
+
+    content = """<edm:Schema xmlns:edm="http://docs.oasis-open.org/odata/ns/edm">
         <edm:Action Name="ValidAction">
             <edm:Parameter Name="param1" Type="Edm.String"/>
         </edm:Action>
         <edm:Action>
             <edm:Parameter Name="param2" Type="Edm.String"/>
         </edm:Action>
-    </edm:Schema>'''
-    
+    </edm:Schema>"""
+
     schema = ET.fromstring(content)
     actions = _parse_actions(schema)
-    
+
     assert "ValidAction" in actions
     assert len(actions) == 1
 
@@ -376,7 +375,7 @@ def test_parse_actions_skips_missing_names() -> None:
 def test_strip_namespace_with_matching_namespace() -> None:
     """Test _strip_namespace removes matching namespace prefix."""
     from libs.extractors.odata import _strip_namespace
-    
+
     result = _strip_namespace("Example.Model.Product", "Example.Model")
     assert result == "Product"
 
@@ -384,7 +383,7 @@ def test_strip_namespace_with_matching_namespace() -> None:
 def test_strip_namespace_with_non_matching_namespace() -> None:
     """Test _strip_namespace keeps name when namespace doesn't match."""
     from libs.extractors.odata import _strip_namespace
-    
+
     result = _strip_namespace("Other.Model.Product", "Example.Model")
     assert result == "Other.Model.Product"
 
@@ -392,7 +391,7 @@ def test_strip_namespace_with_non_matching_namespace() -> None:
 def test_local_name_with_namespace_brace() -> None:
     """Test _local_name extracts local name from namespace with braces."""
     from libs.extractors.odata import _local_name
-    
+
     result = _local_name("{http://example.com/ns}LocalName")
     assert result == "LocalName"
 
@@ -400,7 +399,7 @@ def test_local_name_with_namespace_brace() -> None:
 def test_local_name_with_colon_prefix() -> None:
     """Test _local_name extracts local name from prefixed name with colon."""
     from libs.extractors.odata import _local_name
-    
+
     result = _local_name("prefix:LocalName")
     assert result == "LocalName"
 
@@ -408,6 +407,6 @@ def test_local_name_with_colon_prefix() -> None:
 def test_local_name_without_prefix() -> None:
     """Test _local_name returns name unchanged when no prefix."""
     from libs.extractors.odata import _local_name
-    
+
     result = _local_name("LocalName")
     assert result == "LocalName"

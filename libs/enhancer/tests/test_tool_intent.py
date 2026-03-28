@@ -96,9 +96,12 @@ class TestDeriveToolIntent:
 
     def test_no_method_defaults_to_action(self) -> None:
         op = Operation(
-            id="no_method", name="No Method", description="test",
+            id="no_method",
+            name="No Method",
+            description="test",
             risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
-            source=SourceType.extractor, confidence=0.9,
+            source=SourceType.extractor,
+            confidence=0.9,
         )
         assert derive_tool_intent(op) == ToolIntent.action
 
@@ -108,8 +111,10 @@ class TestDeriveToolIntents:
         ops = [
             _make_op(op_id="get_users", method="GET", risk_level=RiskLevel.safe),
             _make_op(
-                op_id="create_user", method="POST",
-                risk_level=RiskLevel.cautious, writes_state=True,
+                op_id="create_user",
+                method="POST",
+                risk_level=RiskLevel.cautious,
+                writes_state=True,
             ),
         ]
         ir = _make_ir(ops)
@@ -192,12 +197,17 @@ class TestBifurcateDescriptions:
     def test_full_pipeline_derive_then_bifurcate(self) -> None:
         ops = [
             _make_op(
-                op_id="list_items", method="GET", risk_level=RiskLevel.safe,
+                op_id="list_items",
+                method="GET",
+                risk_level=RiskLevel.safe,
                 description="List all items.",
             ),
             _make_op(
-                op_id="delete_item", method="DELETE", risk_level=RiskLevel.dangerous,
-                destructive=True, description="Delete an item.",
+                op_id="delete_item",
+                method="DELETE",
+                risk_level=RiskLevel.dangerous,
+                destructive=True,
+                description="Delete an item.",
             ),
         ]
         ir = _make_ir(ops)

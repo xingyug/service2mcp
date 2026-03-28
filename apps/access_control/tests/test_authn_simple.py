@@ -1,15 +1,16 @@
 """Simple integration tests to hit uncovered lines in authn service."""
 
 import os
-import pytest
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, UTC
 from uuid import uuid4
 
+import pytest
+
 from apps.access_control.authn.service import (
+    AuthenticationError,
     AuthnService,
     JWTSettings,
-    AuthenticationError,
     load_jwt_settings,
 )
 
@@ -18,23 +19,23 @@ class TestAuthnServiceUncoveredLines:
     async def test_validate_pat_revoked_error(self):
         """Test lines 135-137: _validate_pat raises error for revoked PAT."""
         from types import SimpleNamespace
-        
+
         session = AsyncMock()
-        
+
         # Mock revoked PAT
         mock_pat = SimpleNamespace(
             id=uuid4(),
             revoked_at=datetime.now(UTC),  # Revoked
-            name="test-pat"
+            name="test-pat",
         )
         mock_user = SimpleNamespace(username="alice")
-        
+
         mock_result = MagicMock()
         mock_result.first.return_value = (mock_pat, mock_user)
         session.execute.return_value = mock_result
-        
+
         svc = AuthnService(session, jwt_settings=JWTSettings(secret="test"))
-        
+
         with pytest.raises(AuthenticationError, match="PAT has been revoked"):
             await svc._validate_pat("pat_some_token")
 
@@ -44,33 +45,29 @@ class TestAuthnServiceUncoveredLines:
         mock_result = MagicMock()
         mock_result.first.return_value = None
         session.execute.return_value = mock_result
-        
+
         svc = AuthnService(session, jwt_settings=JWTSettings(secret="test"))
-        
+
         result = await svc.revoke_pat(uuid4())
         assert result is None
 
     async def test_get_or_create_user_updates_email(self):
         """Test lines 209-221: _get_or_create_user updates email when different."""
         from types import SimpleNamespace
-        
+
         session = AsyncMock()
-        
+
         # Mock existing user with different email
-        existing_user = SimpleNamespace(
-            id=uuid4(),
-            username="alice",
-            email="old@example.com"
-        )
-        
+        existing_user = SimpleNamespace(id=uuid4(), username="alice", email="old@example.com")
+
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = existing_user
         session.execute.return_value = mock_result
-        
+
         svc = AuthnService(session, jwt_settings=JWTSettings(secret="test"))
-        
+
         result = await svc._get_or_create_user(username="alice", email="new@example.com")
-        
+
         # Should update email and commit/refresh
         assert existing_user.email == "new@example.com"
         session.commit.assert_called_once()
@@ -80,16 +77,16 @@ class TestAuthnServiceUncoveredLines:
     async def test_get_or_create_user_creates_new_user(self):
         """Test lines 217-221: _get_or_create_user creates new user."""
         session = AsyncMock()
-        
+
         # Mock no existing user
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         session.execute.return_value = mock_result
-        
+
         svc = AuthnService(session, jwt_settings=JWTSettings(secret="test"))
-        
+
         await svc._get_or_create_user(username="bob", email="bob@example.com")
-        
+
         # Should add new user and commit/refresh
         session.add.assert_called_once()
         session.commit.assert_called_once()

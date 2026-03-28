@@ -120,9 +120,7 @@ def check_thresholds(
             )
 
     if thresholds.max_failed is not None and summary.failed > thresholds.max_failed:
-        violations.append(
-            f"Failed count {summary.failed} exceeds maximum {thresholds.max_failed}."
-        )
+        violations.append(f"Failed count {summary.failed} exceeds maximum {thresholds.max_failed}.")
 
     if thresholds.min_passed is not None and summary.passed < thresholds.min_passed:
         violations.append(

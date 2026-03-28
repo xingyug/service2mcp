@@ -48,32 +48,29 @@ from tests.fixtures.large_surface_rest_mock import (
 # Future extractor/enhancer changes must not regress below these values.
 # Updated after iterative sub-resource inference + OPTIONS-authoritative probing.
 PILOT_BASELINE_THRESHOLDS = AuditThresholds(
-    min_audited_ratio=0.40,   # At least 40% of generated tools auditable
-    max_failed=0,             # Zero audit failures after OPTIONS fix
-    min_passed=10,            # At least 10 passing tools (was 1)
+    min_audited_ratio=0.40,  # At least 40% of generated tools auditable
+    max_failed=0,  # Zero audit failures after OPTIONS fix
+    min_passed=10,  # At least 10 passing tools (was 1)
 )
 
 # Coverage baselines — minimum acceptable discovery and generation rates.
 # Updated after iterative inference raised discovery from ~25% to ~64%.
-PILOT_MIN_DISCOVERY_COVERAGE = 0.50   # 50% of ground-truth endpoints discovered
+PILOT_MIN_DISCOVERY_COVERAGE = 0.50  # 50% of ground-truth endpoints discovered
 PILOT_MIN_GENERATION_COVERAGE = 0.40  # 40% of discovered endpoints get tools
-PILOT_MIN_AUDIT_PASS_RATE = 0.90      # 90% of audited tools pass (was 50%)
+PILOT_MIN_AUDIT_PASS_RATE = 0.90  # 90% of audited tools pass (was 50%)
 
 # Spec-first pilot thresholds — stricter because spec extraction is deterministic.
 SPEC_FIRST_THRESHOLDS = AuditThresholds(
-    min_audited_ratio=0.40,   # At least 40% of generated tools auditable
-    max_failed=0,             # Zero audit failures for spec-first
-    min_passed=5,             # At least 5 passing tools
+    min_audited_ratio=0.40,  # At least 40% of generated tools auditable
+    max_failed=0,  # Zero audit failures for spec-first
+    min_passed=5,  # At least 5 passing tools
 )
-SPEC_FIRST_MIN_GENERATION_RATIO = 1.0   # Every spec op should produce a tool
-SPEC_FIRST_MIN_AUDIT_PASS_RATE = 0.90   # 90% of audited tools pass
+SPEC_FIRST_MIN_GENERATION_RATIO = 1.0  # Every spec op should produce a tool
+SPEC_FIRST_MIN_AUDIT_PASS_RATE = 0.90  # 90% of audited tools pass
 
 # Path to the large-surface OpenAPI spec fixture.
 _LARGE_SURFACE_SPEC = (
-    Path(__file__).resolve().parent.parent
-    / "fixtures"
-    / "openapi_specs"
-    / "large_surface_api.yaml"
+    Path(__file__).resolve().parent.parent / "fixtures" / "openapi_specs" / "large_surface_api.yaml"
 )
 
 
@@ -226,9 +223,7 @@ async def test_large_surface_rest_pilot_measures_three_coverage_numbers(
                     elif param.default is not None:
                         args[param.name] = param.default
                     else:
-                        args[param.name] = _param_values.get(
-                            param.name, f"test-{param.name}"
-                        )
+                        args[param.name] = _param_values.get(param.name, f"test-{param.name}")
                 sample_invocations[op.id] = args
 
             validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
@@ -245,13 +240,13 @@ async def test_large_surface_rest_pilot_measures_three_coverage_numbers(
     generated_tools = len(service_ir.operations)
     generation_coverage = generated_tools / len(discovered_paths) if discovered_paths else 0
     audit_pass_rate = (
-        audit_summary.passed / audit_summary.audited_tools
-        if audit_summary.audited_tools > 0
-        else 0
+        audit_summary.passed / audit_summary.audited_tools if audit_summary.audited_tools > 0 else 0
     )
 
     unsupported_patterns = _identify_unsupported_patterns(
-        ground_truth_count, discovered_paths, audit_summary,
+        ground_truth_count,
+        discovered_paths,
+        audit_summary,
     )
 
     pilot_report = LargeSurfacePilotReport(
@@ -270,13 +265,8 @@ async def test_large_surface_rest_pilot_measures_three_coverage_numbers(
 
     # --- Phase 5: Assertions ---
     # Standard validation should pass (health + tool listing)
-    assert report.overall_passed is True, (
-        "Standard validation failed: "
-        + "; ".join(
-            f"{r.stage}={r.passed} ({r.details})"
-            for r in report.results
-            if not r.passed
-        )
+    assert report.overall_passed is True, "Standard validation failed: " + "; ".join(
+        f"{r.stage}={r.passed} ({r.details})" for r in report.results if not r.passed
     )
 
     # We must discover a meaningful fraction of the surface
@@ -290,9 +280,7 @@ async def test_large_surface_rest_pilot_measures_three_coverage_numbers(
     )
 
     # At least some tools must pass audit
-    assert pilot_report.passed >= 1, (
-        "No tools passed audit — expected at least 1 passing tool"
-    )
+    assert pilot_report.passed >= 1, "No tools passed audit — expected at least 1 passing tool"
 
     # Audit pass rate: audited tools should mostly pass
     if pilot_report.audited_tools > 0:
@@ -316,13 +304,8 @@ async def test_large_surface_rest_pilot_measures_three_coverage_numbers(
         skipped=pilot_report.skipped,
         results=[],
     )
-    violations = check_thresholds(
-        threshold_summary, PILOT_BASELINE_THRESHOLDS
-    )
-    assert not violations, (
-        "Pilot regression thresholds violated: "
-        + "; ".join(violations)
-    )
+    violations = check_thresholds(threshold_summary, PILOT_BASELINE_THRESHOLDS)
+    assert not violations, "Pilot regression thresholds violated: " + "; ".join(violations)
 
     # Coverage regression checks
     assert pilot_report.discovery_coverage >= PILOT_MIN_DISCOVERY_COVERAGE, (
@@ -340,9 +323,9 @@ async def test_large_surface_rest_pilot_measures_three_coverage_numbers(
         )
 
     # Print the report for visibility in CI output
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("B-003 LARGE-SURFACE PILOT REPORT")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Ground truth endpoints: {pilot_report.ground_truth_endpoints}")
     print(f"Discovered endpoints:   {pilot_report.discovered_endpoints}")
     print(f"Generated tools:        {pilot_report.generated_tools}")
@@ -356,7 +339,7 @@ async def test_large_surface_rest_pilot_measures_three_coverage_numbers(
     print(f"Unsupported patterns ({len(pilot_report.unsupported_patterns)}):")
     for pattern in pilot_report.unsupported_patterns:
         print(f"  - {pattern}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 class _MockPilotLLMClient:
@@ -378,11 +361,13 @@ class _MockPilotLLMClient:
 
         class _Resp:
             content = "[]"
+
         return _Resp()
 
     def _grouping_response(self, prompt: str) -> object:
         # Parse operation IDs from the prompt to build realistic groups
         import re
+
         op_ids = re.findall(r'"operation_id":\s*"([^"]+)"', prompt)
 
         # Group by path prefix heuristic
@@ -390,8 +375,10 @@ class _MockPilotLLMClient:
         for oid in op_ids:
             # Extract resource name from operation ID pattern like "get_api_users"
             parts = (
-                oid.replace("get_", "").replace("post_", "")
-                .replace("put_", "").replace("delete_", "")
+                oid.replace("get_", "")
+                .replace("post_", "")
+                .replace("put_", "")
+                .replace("delete_", "")
             )
             resource = parts.split("_")[1] if "_" in parts else "general"
             groups.setdefault(resource, []).append(oid)
@@ -409,10 +396,12 @@ class _MockPilotLLMClient:
 
         class _Resp:
             content = json.dumps(result)
+
         return _Resp()
 
     def _judge_response(self, prompt: str) -> object:
         import re
+
         op_ids = re.findall(r'"operation_id":\s*"([^"]+)"', prompt)
         result = [
             {
@@ -427,27 +416,35 @@ class _MockPilotLLMClient:
 
         class _Resp:
             content = json.dumps(result)
+
         return _Resp()
 
     def _seed_mutation_response(self, prompt: str) -> object:
         # Suggest a few plausible additional endpoints
         result = [
             {
-                "path": "/api/users/{id}/activity", "methods": ["GET"],
-                "rationale": "User activity log", "confidence": 0.7,
+                "path": "/api/users/{id}/activity",
+                "methods": ["GET"],
+                "rationale": "User activity log",
+                "confidence": 0.7,
             },
             {
-                "path": "/api/products/{id}/pricing", "methods": ["GET"],
-                "rationale": "Product pricing", "confidence": 0.65,
+                "path": "/api/products/{id}/pricing",
+                "methods": ["GET"],
+                "rationale": "Product pricing",
+                "confidence": 0.65,
             },
             {
-                "path": "/api/orders/{id}/tracking", "methods": ["GET"],
-                "rationale": "Order tracking", "confidence": 0.7,
+                "path": "/api/orders/{id}/tracking",
+                "methods": ["GET"],
+                "rationale": "Order tracking",
+                "confidence": 0.7,
             },
         ]
 
         class _Resp:
             content = json.dumps(result)
+
         return _Resp()
 
 
@@ -519,9 +516,9 @@ async def test_large_surface_pilot_p1_features(tmp_path: Path) -> None:
     assert len(evaluation.scores) > 0, "Expected per-tool scores"
 
     # --- Phase 5: Report ---
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("B-003 P1 FEATURES PILOT REPORT")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Total operations:       {len(service_ir.operations)}")
     print(f"Discovery tools:        {len(discovery_ops)}")
     print(f"Action tools:           {len(action_ops)}")
@@ -536,7 +533,7 @@ async def test_large_surface_pilot_p1_features(tmp_path: Path) -> None:
     print(f"  Clarity:              {evaluation.average_clarity:.2f}")
     print(f"Low quality tools:      {len(evaluation.low_quality_tools)}")
     print(f"LLM calls (total):      {len(mock_llm.calls)}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 @pytest.mark.asyncio
@@ -573,9 +570,7 @@ async def test_large_surface_openapi_spec_first_pilot(tmp_path: Path) -> None:
         if gt_path in spec_path_set:
             matched_ground_truth.add(gt_path)
 
-    discovery_coverage = (
-        len(matched_ground_truth) / ground_truth_count if ground_truth_count else 0
-    )
+    discovery_coverage = len(matched_ground_truth) / ground_truth_count if ground_truth_count else 0
 
     # --- Phase 2: Runtime Boot ---
     ir_path = _write_service_ir(tmp_path, serialize_ir(service_ir))
@@ -658,13 +653,13 @@ async def test_large_surface_openapi_spec_first_pilot(tmp_path: Path) -> None:
     # --- Phase 4: Coverage Calculation ---
     generation_ratio = spec_operations / ground_truth_count if ground_truth_count else 0
     audit_pass_rate = (
-        audit_summary.passed / audit_summary.audited_tools
-        if audit_summary.audited_tools > 0
-        else 0
+        audit_summary.passed / audit_summary.audited_tools if audit_summary.audited_tools > 0 else 0
     )
 
     spec_unsupported = _identify_unsupported_patterns(
-        ground_truth_count, spec_path_set, audit_summary,
+        ground_truth_count,
+        spec_path_set,
+        audit_summary,
     )
 
     spec_report = LargeSurfacePilotReport(
@@ -683,13 +678,8 @@ async def test_large_surface_openapi_spec_first_pilot(tmp_path: Path) -> None:
 
     # --- Phase 5: Assertions ---
     # Standard validation should pass (health + tool listing).
-    assert report.overall_passed is True, (
-        "Standard validation failed: "
-        + "; ".join(
-            f"{r.stage}={r.passed} ({r.details})"
-            for r in report.results
-            if not r.passed
-        )
+    assert report.overall_passed is True, "Standard validation failed: " + "; ".join(
+        f"{r.stage}={r.passed} ({r.details})" for r in report.results if not r.passed
     )
 
     # Spec-first extraction must capture all ground-truth endpoints.
@@ -708,9 +698,7 @@ async def test_large_surface_openapi_spec_first_pilot(tmp_path: Path) -> None:
     )
 
     # Zero audit failures for spec-first input.
-    assert spec_report.failed == 0, (
-        f"Spec-first pilot had {spec_report.failed} audit failures"
-    )
+    assert spec_report.failed == 0, f"Spec-first pilot had {spec_report.failed} audit failures"
 
     # Audit pass rate: spec-first should be very high.
     if spec_report.audited_tools > 0:
@@ -730,14 +718,12 @@ async def test_large_surface_openapi_spec_first_pilot(tmp_path: Path) -> None:
         results=[],
     )
     violations = check_thresholds(threshold_summary, SPEC_FIRST_THRESHOLDS)
-    assert not violations, (
-        "Spec-first regression thresholds violated: " + "; ".join(violations)
-    )
+    assert not violations, "Spec-first regression thresholds violated: " + "; ".join(violations)
 
     # --- Phase 6: Comparison Report ---
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("B-003 SPEC-FIRST PILOT REPORT")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Ground truth endpoints:   {spec_report.ground_truth_endpoints}")
     print(f"Matched from spec:        {spec_report.discovered_endpoints}")
     print(f"Generated tools:          {spec_report.generated_tools}")
@@ -758,7 +744,7 @@ async def test_large_surface_openapi_spec_first_pilot(tmp_path: Path) -> None:
     print(f"  Black-box baseline:     {PILOT_MIN_GENERATION_COVERAGE:.1%} (minimum)")
     print(f"  Spec-first audit pass:  {spec_report.audit_pass_rate:.1%}")
     print(f"  Black-box baseline:     {PILOT_MIN_AUDIT_PASS_RATE:.1%} (minimum)")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 @pytest.mark.asyncio
@@ -812,9 +798,7 @@ async def test_large_surface_pilot_p1_proof_runner_integration(
         "Expected at least one operation counted"
     )
     # After derive_tool_intents, no enabled ops should be unset.
-    assert counts.unset == 0, (
-        f"Expected zero unset intents after derivation, got {counts.unset}"
-    )
+    assert counts.unset == 0, f"Expected zero unset intents after derivation, got {counts.unset}"
     assert counts.discovery > 0, "Expected at least one discovery tool"
     assert counts.action > 0, "Expected at least one action tool"
 
@@ -840,9 +824,9 @@ async def test_large_surface_pilot_p1_proof_runner_integration(
     assert "scores" in eval_dict
 
     # --- Phase 5: Report ---
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("B-004 PROOF RUNNER INTEGRATION REPORT")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print("Tool intent counts:")
     print(f"  Discovery:          {counts.discovery}")
     print(f"  Action:             {counts.action}")
@@ -854,4 +838,4 @@ async def test_large_surface_pilot_p1_proof_runner_integration(
     print(f"  Low quality tools:  {len(evaluation.low_quality_tools)}")
     print(f"Tool groups:          {len(service_ir.tool_grouping)}")
     print(f"LLM calls (total):    {len(mock_llm.calls)}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")

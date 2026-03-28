@@ -51,8 +51,11 @@ def _make_service_ir(num_ops: int = 3) -> ServiceIR:
                 path=f"/endpoint_{i}",
                 params=[
                     Param(
-                        name="id", type="integer", required=True,
-                        description="Resource ID", confidence=0.9,
+                        name="id",
+                        type="integer",
+                        required=True,
+                        description="Resource ID",
+                        confidence=0.9,
                     ),
                 ],
                 risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
@@ -87,22 +90,24 @@ class TestClamp:
 class TestLLMJudge:
     def test_evaluate_returns_scores(self) -> None:
         ir = _make_service_ir(2)
-        mock_response = json.dumps([
-            {
-                "operation_id": "op_0",
-                "accuracy": 0.9,
-                "completeness": 0.8,
-                "clarity": 0.85,
-                "feedback": "Good description.",
-            },
-            {
-                "operation_id": "op_1",
-                "accuracy": 0.7,
-                "completeness": 0.6,
-                "clarity": 0.75,
-                "feedback": "Could explain parameters better.",
-            },
-        ])
+        mock_response = json.dumps(
+            [
+                {
+                    "operation_id": "op_0",
+                    "accuracy": 0.9,
+                    "completeness": 0.8,
+                    "clarity": 0.85,
+                    "feedback": "Good description.",
+                },
+                {
+                    "operation_id": "op_1",
+                    "accuracy": 0.7,
+                    "completeness": 0.6,
+                    "clarity": 0.75,
+                    "feedback": "Could explain parameters better.",
+                },
+            ]
+        )
         client = MockJudgeLLMClient(response=mock_response)
         judge = LLMJudge(client)
 
@@ -140,22 +145,24 @@ class TestLLMJudge:
 
     def test_evaluate_identifies_low_quality_tools(self) -> None:
         ir = _make_service_ir(2)
-        mock_response = json.dumps([
-            {
-                "operation_id": "op_0",
-                "accuracy": 0.3,
-                "completeness": 0.2,
-                "clarity": 0.3,
-                "feedback": "Very poor description.",
-            },
-            {
-                "operation_id": "op_1",
-                "accuracy": 0.9,
-                "completeness": 0.8,
-                "clarity": 0.85,
-                "feedback": "Good.",
-            },
-        ])
+        mock_response = json.dumps(
+            [
+                {
+                    "operation_id": "op_0",
+                    "accuracy": 0.3,
+                    "completeness": 0.2,
+                    "clarity": 0.3,
+                    "feedback": "Very poor description.",
+                },
+                {
+                    "operation_id": "op_1",
+                    "accuracy": 0.9,
+                    "completeness": 0.8,
+                    "clarity": 0.85,
+                    "feedback": "Good.",
+                },
+            ]
+        )
         client = MockJudgeLLMClient(response=mock_response)
         judge = LLMJudge(client, low_quality_threshold=0.5)
 
@@ -169,8 +176,11 @@ class TestLLMJudge:
         # Return scores for all ops
         all_scores = [
             {
-                "operation_id": f"op_{i}", "accuracy": 0.8,
-                "completeness": 0.7, "clarity": 0.9, "feedback": "ok",
+                "operation_id": f"op_{i}",
+                "accuracy": 0.8,
+                "completeness": 0.7,
+                "clarity": 0.9,
+                "feedback": "ok",
             }
             for i in range(15)
         ]
@@ -218,10 +228,21 @@ class TestLLMJudge:
 
     def test_parse_markdown_fenced_response(self) -> None:
         ir = _make_service_ir(1)
-        fenced_response = "```json\n" + json.dumps([{
-            "operation_id": "op_0", "accuracy": 0.8,
-            "completeness": 0.7, "clarity": 0.9, "feedback": "good",
-        }]) + "\n```"
+        fenced_response = (
+            "```json\n"
+            + json.dumps(
+                [
+                    {
+                        "operation_id": "op_0",
+                        "accuracy": 0.8,
+                        "completeness": 0.7,
+                        "clarity": 0.9,
+                        "feedback": "good",
+                    }
+                ]
+            )
+            + "\n```"
+        )
         client = MockJudgeLLMClient(response=fenced_response)
         judge = LLMJudge(client)
 
@@ -230,10 +251,17 @@ class TestLLMJudge:
 
     def test_clamps_out_of_range_scores(self) -> None:
         ir = _make_service_ir(1)
-        mock_response = json.dumps([{
-            "operation_id": "op_0", "accuracy": 1.5,
-            "completeness": -0.3, "clarity": 0.8, "feedback": "clamped",
-        }])
+        mock_response = json.dumps(
+            [
+                {
+                    "operation_id": "op_0",
+                    "accuracy": 1.5,
+                    "completeness": -0.3,
+                    "clarity": 0.8,
+                    "feedback": "clamped",
+                }
+            ]
+        )
         client = MockJudgeLLMClient(response=mock_response)
         judge = LLMJudge(client)
 

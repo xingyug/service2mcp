@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -321,7 +320,9 @@ class TestDeriveServiceName:
 
     def test_from_database_path(self) -> None:
         source = SourceConfig(url="postgresql://localhost/orders_db")
-        assert "orders" in self.extractor._derive_service_name(source, "postgresql://localhost/orders_db")
+        assert "orders" in self.extractor._derive_service_name(
+            source, "postgresql://localhost/orders_db"
+        )
 
 
 # ── _to_async_url conversions ─────────────────────────────────────────────
@@ -415,6 +416,7 @@ async def test_reflect_database_sqlalchemy_error() -> None:
 @pytest.mark.asyncio
 async def test_run_coroutine_within_running_loop() -> None:
     """Lines 471-485: _run_coroutine delegates to a thread when a loop is running."""
+
     async def sample_coro() -> str:
         return "hello from thread"
 
@@ -425,6 +427,7 @@ async def test_run_coroutine_within_running_loop() -> None:
 @pytest.mark.asyncio
 async def test_run_coroutine_within_running_loop_error() -> None:
     """Lines 483-484: error in threaded coroutine is re-raised."""
+
     async def failing_coro() -> str:
         raise RuntimeError("boom")
 

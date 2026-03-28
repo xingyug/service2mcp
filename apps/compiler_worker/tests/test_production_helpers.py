@@ -148,13 +148,15 @@ class TestSampleValue:
 
 class TestBuildSampleInvocations:
     def test_basic(self) -> None:
-        ir = _ir(operations=[
-            _op(
-                "get_items",
-                params=[Param(name="limit", type="integer", required=False, default=10)],
-            ),
-            _op("disabled_op", enabled=False),
-        ])
+        ir = _ir(
+            operations=[
+                _op(
+                    "get_items",
+                    params=[Param(name="limit", type="integer", required=False, default=10)],
+                ),
+                _op("disabled_op", enabled=False),
+            ]
+        )
         result = build_sample_invocations(ir)
         assert "get_items" in result
         assert "disabled_op" not in result
@@ -170,27 +172,33 @@ class TestBuildSampleInvocations:
 
 class TestSampleGrpcArguments:
     def test_required_only(self) -> None:
-        op = _op(params=[
-            Param(name="id", type="string", required=True),
-            Param(name="data", type="object", required=False),
-        ])
+        op = _op(
+            params=[
+                Param(name="id", type="string", required=True),
+                Param(name="data", type="object", required=False),
+            ]
+        )
         result = _sample_grpc_arguments(op)
         assert "id" in result
         assert "data" not in result  # optional object skipped
 
     def test_safe_optional_included(self) -> None:
-        op = _op(params=[
-            Param(name="limit", type="integer", required=False),
-            Param(name="page_token", type="string", required=False),
-        ])
+        op = _op(
+            params=[
+                Param(name="limit", type="integer", required=False),
+                Param(name="page_token", type="string", required=False),
+            ]
+        )
         result = _sample_grpc_arguments(op)
         assert "limit" in result
         assert "page_token" in result
 
     def test_id_suffix_param_included(self) -> None:
-        op = _op(params=[
-            Param(name="user_id", type="string", required=False),
-        ])
+        op = _op(
+            params=[
+                Param(name="user_id", type="string", required=False),
+            ]
+        )
         result = _sample_grpc_arguments(op)
         assert "user_id" in result
 
@@ -533,18 +541,22 @@ class TestStageResult:
 
 class TestValidationFailureMessage:
     def test_no_failures(self) -> None:
-        report = SimpleNamespace(results=[
-            SimpleNamespace(passed=True, stage="s1", details="ok"),
-        ])
+        report = SimpleNamespace(
+            results=[
+                SimpleNamespace(passed=True, stage="s1", details="ok"),
+            ]
+        )
         msg = _validation_failure_message("Pre-deploy failed", report)
         assert msg == "Pre-deploy failed"
 
     def test_with_failures(self) -> None:
-        report = SimpleNamespace(results=[
-            SimpleNamespace(passed=False, stage="schema", details="missing field"),
-            SimpleNamespace(passed=True, stage="lint", details="ok"),
-            SimpleNamespace(passed=False, stage="auth", details="no key"),
-        ])
+        report = SimpleNamespace(
+            results=[
+                SimpleNamespace(passed=False, stage="schema", details="missing field"),
+                SimpleNamespace(passed=True, stage="lint", details="ok"),
+                SimpleNamespace(passed=False, stage="auth", details="no key"),
+            ]
+        )
         msg = _validation_failure_message("Pre-deploy failed", report)
         assert "schema: missing field" in msg
         assert "auth: no key" in msg
@@ -600,25 +612,29 @@ class TestHasSupportedNativeGrpcStream:
 
 class TestHasNativeGrpcUnary:
     def test_with_grpc_unary(self) -> None:
-        ir = _ir(operations=[
-            _op(
-                "grpc_op",
-                method="POST",
-                grpc_unary=GrpcUnaryRuntimeConfig(rpc_path="/grpc_op"),
-            ),
-        ])
+        ir = _ir(
+            operations=[
+                _op(
+                    "grpc_op",
+                    method="POST",
+                    grpc_unary=GrpcUnaryRuntimeConfig(rpc_path="/grpc_op"),
+                ),
+            ]
+        )
         assert _has_native_grpc_unary(ir) is True
 
     def test_disabled_op_not_counted(self) -> None:
-        ir = _ir(operations=[
-            _op(
-                "grpc_op",
-                method="POST",
-                enabled=False,
-                risk_level=RiskLevel.unknown,
-                grpc_unary=GrpcUnaryRuntimeConfig(rpc_path="/grpc_op"),
-            ),
-        ])
+        ir = _ir(
+            operations=[
+                _op(
+                    "grpc_op",
+                    method="POST",
+                    enabled=False,
+                    risk_level=RiskLevel.unknown,
+                    grpc_unary=GrpcUnaryRuntimeConfig(rpc_path="/grpc_op"),
+                ),
+            ]
+        )
         assert _has_native_grpc_unary(ir) is False
 
     def test_no_grpc_unary(self) -> None:
@@ -631,18 +647,22 @@ class TestHasNativeGrpcUnary:
 
 class TestApplyPostEnhancement:
     def test_basic_no_grouping(self) -> None:
-        ir = _ir(operations=[
-            _op("get_items", params=[Param(name="q", type="string", required=False)]),
-        ])
+        ir = _ir(
+            operations=[
+                _op("get_items", params=[Param(name="q", type="string", required=False)]),
+            ]
+        )
         with patch.dict(os.environ, {"WORKER_ENABLE_TOOL_GROUPING": ""}):
             result = _apply_post_enhancement(ir)
         # Should still have operations with tool_intent set
         assert len(result.operations) == 1
 
     def test_grouping_failure_continues(self) -> None:
-        ir = _ir(operations=[
-            _op("get_items"),
-        ])
+        ir = _ir(
+            operations=[
+                _op("get_items"),
+            ]
+        )
 
         def bad_factory() -> Any:
             raise RuntimeError("LLM unavailable")

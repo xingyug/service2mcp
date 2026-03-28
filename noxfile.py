@@ -18,6 +18,7 @@ PYTHON = "3.11"
 # Lint: ruff check + ruff format --check
 # ---------------------------------------------------------------------------
 
+
 @nox.session(python=PYTHON)
 def lint(session: nox.Session) -> None:
     """Run ruff linter."""
@@ -28,6 +29,7 @@ def lint(session: nox.Session) -> None:
 # ---------------------------------------------------------------------------
 # Type-check: mypy (basedpyright added separately in B-007-T3)
 # ---------------------------------------------------------------------------
+
 
 @nox.session(python=PYTHON)
 def typecheck(session: nox.Session) -> None:
@@ -49,6 +51,7 @@ def typecheck(session: nox.Session) -> None:
 # Tests: pytest
 # ---------------------------------------------------------------------------
 
+
 @nox.session(python=PYTHON)
 def tests(session: nox.Session) -> None:
     """Run the full test suite."""
@@ -59,6 +62,7 @@ def tests(session: nox.Session) -> None:
 # ---------------------------------------------------------------------------
 # Security: pip-audit + semgrep
 # ---------------------------------------------------------------------------
+
 
 @nox.session(python=PYTHON)
 def security(session: nox.Session) -> None:
@@ -72,6 +76,7 @@ def security(session: nox.Session) -> None:
 # Deps: deptry — detect unused, missing, or transitive-only imports
 # ---------------------------------------------------------------------------
 
+
 @nox.session(python=PYTHON)
 def deps(session: nox.Session) -> None:
     """Check dependency hygiene with deptry."""
@@ -83,6 +88,7 @@ def deps(session: nox.Session) -> None:
 # ---------------------------------------------------------------------------
 # Arch: import-linter — enforce layered architecture constraints
 # ---------------------------------------------------------------------------
+
 
 @nox.session(python=PYTHON)
 def arch(session: nox.Session) -> None:

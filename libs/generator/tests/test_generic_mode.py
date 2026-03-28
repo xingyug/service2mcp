@@ -146,8 +146,7 @@ def test_generate_generic_manifests_from_fixture() -> None:
 
     assert deployment["metadata"]["name"] == "billing-runtime"
     assert (
-        deployment["spec"]["selector"]["matchLabels"]["app.kubernetes.io/name"]
-        == "billing-runtime"
+        deployment["spec"]["selector"]["matchLabels"]["app.kubernetes.io/name"] == "billing-runtime"
     )
     assert container["image"] == "ghcr.io/example/generic-runtime:1.2.3"
     assert container["ports"][0]["containerPort"] == 8003

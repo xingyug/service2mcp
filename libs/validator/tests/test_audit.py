@@ -68,9 +68,7 @@ class TestAuditPolicySkipReason:
         assert "destructive" in reason.lower()
 
     def test_default_policy_skips_external_side_effect(self) -> None:
-        operation = _make_operation(
-            external_side_effect=True, method="POST"
-        )
+        operation = _make_operation(external_side_effect=True, method="POST")
         policy = AuditPolicy()
         reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
         assert reason is not None
@@ -96,9 +94,7 @@ class TestAuditPolicySkipReason:
         assert policy.skip_reason(operation, {"get_item": {"id": "1"}}) is None
 
     def test_allow_idempotent_writes_still_skips_non_idempotent(self) -> None:
-        operation = _make_operation(
-            writes_state=True, idempotent=False, method="POST"
-        )
+        operation = _make_operation(writes_state=True, idempotent=False, method="POST")
         policy = AuditPolicy(allow_idempotent_writes=True)
         reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
         assert reason is not None
@@ -117,9 +113,7 @@ class TestAuditPolicySkipReason:
         assert "destructive" in reason.lower()
 
     def test_permissive_policy_audits_everything(self) -> None:
-        operation = _make_operation(
-            writes_state=True, destructive=True, external_side_effect=True
-        )
+        operation = _make_operation(writes_state=True, destructive=True, external_side_effect=True)
         policy = AuditPolicy(
             skip_destructive=False,
             skip_external_side_effect=False,
@@ -132,36 +126,26 @@ class TestAuditPolicySkipReason:
     def test_audit_safe_methods_overrides_destructive_skip(self) -> None:
         operation = _make_operation(method="GET", destructive=True)
         policy = AuditPolicy()
-        assert policy.skip_reason(
-            operation, {"get_item": {"id": "1"}}
-        ) is None
+        assert policy.skip_reason(operation, {"get_item": {"id": "1"}}) is None
 
     def test_audit_safe_methods_disabled_still_skips_risky_get(
         self,
     ) -> None:
         operation = _make_operation(method="GET", destructive=True)
         policy = AuditPolicy(audit_safe_methods=False)
-        reason = policy.skip_reason(
-            operation, {"get_item": {"id": "1"}}
-        )
+        reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
         assert reason is not None
         assert "destructive" in reason.lower()
 
     def test_audit_safe_methods_head_method(self) -> None:
-        operation = _make_operation(
-            method="HEAD", destructive=True
-        )
+        operation = _make_operation(method="HEAD", destructive=True)
         policy = AuditPolicy()
-        assert policy.skip_reason(
-            operation, {"get_item": {"id": "1"}}
-        ) is None
+        assert policy.skip_reason(operation, {"get_item": {"id": "1"}}) is None
 
     def test_audit_safe_methods_post_no_override(self) -> None:
         operation = _make_operation(method="POST", destructive=True)
         policy = AuditPolicy()
-        reason = policy.skip_reason(
-            operation, {"get_item": {"id": "1"}}
-        )
+        reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
         assert reason is not None
         assert "destructive" in reason.lower()
 
@@ -176,9 +160,7 @@ class TestAuditPolicySkipReason:
             method=None,
         )
         policy = AuditPolicy()
-        assert policy.skip_reason(
-            operation, {"get_item": {"id": "1"}}
-        ) is None
+        assert policy.skip_reason(operation, {"get_item": {"id": "1"}}) is None
 
     def test_audit_discovery_intent_disabled_still_skips(self) -> None:
         operation = _make_operation(
@@ -187,9 +169,7 @@ class TestAuditPolicySkipReason:
             method=None,
         )
         policy = AuditPolicy(audit_discovery_intent=False)
-        reason = policy.skip_reason(
-            operation, {"get_item": {"id": "1"}}
-        )
+        reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
         assert reason is not None
         assert "state-mutating" in reason.lower()
 
@@ -200,9 +180,7 @@ class TestAuditPolicySkipReason:
             method=None,
         )
         policy = AuditPolicy()
-        reason = policy.skip_reason(
-            operation, {"get_item": {"id": "1"}}
-        )
+        reason = policy.skip_reason(operation, {"get_item": {"id": "1"}})
         assert reason is not None
         assert "state-mutating" in reason.lower()
 
@@ -274,9 +252,7 @@ class TestCheckThresholds:
 
     def test_multiple_violations_all_reported(self) -> None:
         summary = _make_summary(generated=10, audited=2, passed=1, failed=1)
-        thresholds = AuditThresholds(
-            min_audited_ratio=0.5, max_failed=0, min_passed=5
-        )
+        thresholds = AuditThresholds(min_audited_ratio=0.5, max_failed=0, min_passed=5)
         violations = check_thresholds(summary, thresholds)
         assert len(violations) == 3
 

@@ -151,33 +151,25 @@ class TestSpecificity:
 
     def test_all_exact(self) -> None:
         svc = self._svc()
-        policy = _mock_policy(
-            subject_id="alice", resource_id="svc-1", action_pattern="read"
-        )
+        policy = _mock_policy(subject_id="alice", resource_id="svc-1", action_pattern="read")
         req = _eval_request(subject_id="alice", resource_id="svc-1", action="read")
         assert svc._specificity(policy, req) == 7  # 4 + 2 + 1
 
     def test_wildcard_subject(self) -> None:
         svc = self._svc()
-        policy = _mock_policy(
-            subject_id="*", resource_id="svc-1", action_pattern="read"
-        )
+        policy = _mock_policy(subject_id="*", resource_id="svc-1", action_pattern="read")
         req = _eval_request(subject_id="alice", resource_id="svc-1", action="read")
         assert svc._specificity(policy, req) == 3  # 0 + 2 + 1
 
     def test_wildcard_resource(self) -> None:
         svc = self._svc()
-        policy = _mock_policy(
-            subject_id="alice", resource_id="*", action_pattern="read"
-        )
+        policy = _mock_policy(subject_id="alice", resource_id="*", action_pattern="read")
         req = _eval_request(subject_id="alice", resource_id="svc-1", action="read")
         assert svc._specificity(policy, req) == 5  # 4 + 0 + 1
 
     def test_wildcard_action(self) -> None:
         svc = self._svc()
-        policy = _mock_policy(
-            subject_id="alice", resource_id="svc-1", action_pattern="*"
-        )
+        policy = _mock_policy(subject_id="alice", resource_id="svc-1", action_pattern="*")
         req = _eval_request(subject_id="alice", resource_id="svc-1", action="read")
         assert svc._specificity(policy, req) == 6  # 4 + 2 + 0
 
@@ -207,6 +199,7 @@ class TestToResponse:
 
 # Additional tests to cover uncovered lines in authz/service.py
 
+
 class TestCreatePolicy:
     pass
 
@@ -221,10 +214,10 @@ class TestGetPolicy:
         mock_session = AsyncMock()
         mock_session.get.return_value = None
         service = AuthzService(mock_session)
-        
+
         policy_id = uuid4()
         result = await service.get_policy(policy_id)
-        
+
         assert result is None
         mock_session.get.assert_called_once_with(Policy, policy_id)
 
@@ -235,13 +228,14 @@ class TestUpdatePolicy:
         mock_session = AsyncMock()
         mock_session.get.return_value = None
         service = AuthzService(mock_session)
-        
+
         from apps.access_control.authz.models import PolicyUpdateRequest
+
         payload = PolicyUpdateRequest(resource_id="svc-2")
         policy_id = uuid4()
-        
+
         result = await service.update_policy(policy_id, payload)
-        
+
         assert result is None
 
     async def test_updates_all_fields(self) -> None:
@@ -250,8 +244,9 @@ class TestUpdatePolicy:
         mock_policy = _mock_policy()
         mock_session.get.return_value = mock_policy
         service = AuthzService(mock_session)
-        
+
         from apps.access_control.authz.models import PolicyUpdateRequest
+
         payload = PolicyUpdateRequest(
             resource_id="new-svc",
             action_pattern="write_*",
@@ -260,16 +255,16 @@ class TestUpdatePolicy:
             created_by="new-admin",
         )
         policy_id = uuid4()
-        
+
         await service.update_policy(policy_id, payload)
-        
+
         # Verify all fields were updated
         assert mock_policy.resource_id == "new-svc"
         assert mock_policy.action_pattern == "write_*"
         assert mock_policy.risk_threshold == "dangerous"
         assert mock_policy.decision == "deny"
         assert mock_policy.created_by == "new-admin"
-        
+
         mock_session.commit.assert_called_once()
         mock_session.refresh.assert_called_once()
 
@@ -280,10 +275,10 @@ class TestDeletePolicy:
         mock_session = AsyncMock()
         mock_session.get.return_value = None
         service = AuthzService(mock_session)
-        
+
         policy_id = uuid4()
         result = await service.delete_policy(policy_id)
-        
+
         assert result is None
 
     async def test_deletes_and_commits(self) -> None:
@@ -292,23 +287,22 @@ class TestDeletePolicy:
         mock_policy = _mock_policy()
         mock_session.get.return_value = mock_policy
         service = AuthzService(mock_session)
-        
+
         policy_id = uuid4()
         result = await service.delete_policy(policy_id)
-        
+
         assert result == mock_policy
         mock_session.delete.assert_called_once_with(mock_policy)
         mock_session.commit.assert_called_once()
 
 
 class TestEvaluate:
-
     async def test_invalid_risk_threshold(self) -> None:
         """Test lines 169-171: _matches handles invalid risk threshold."""
         service = AuthzService(AsyncMock())
         policy = _mock_policy(risk_threshold="invalid_risk")
         req = _eval_request()
-        
+
         result = service._matches(policy, req)
-        
+
         assert result is False

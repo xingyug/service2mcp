@@ -31,14 +31,16 @@ class MockSeedLLMClient:
 
 class TestSeedCandidateParsing:
     def test_parse_valid_json(self) -> None:
-        content = json.dumps([
-            {
-                "path": "/api/users/{id}/profile",
-                "methods": ["GET"],
-                "rationale": "Common user sub-resource",
-                "confidence": 0.8,
-            }
-        ])
+        content = json.dumps(
+            [
+                {
+                    "path": "/api/users/{id}/profile",
+                    "methods": ["GET"],
+                    "rationale": "Common user sub-resource",
+                    "confidence": 0.8,
+                }
+            ]
+        )
         candidates = _parse_seed_response(content)
         assert len(candidates) == 1
         assert candidates[0].path == "/api/users/{id}/profile"
@@ -46,9 +48,13 @@ class TestSeedCandidateParsing:
         assert candidates[0].confidence == 0.8
 
     def test_parse_markdown_fenced_json(self) -> None:
-        content = "```json\n" + json.dumps([
-            {"path": "/api/test", "methods": ["GET"], "rationale": "test", "confidence": 0.7}
-        ]) + "\n```"
+        content = (
+            "```json\n"
+            + json.dumps(
+                [{"path": "/api/test", "methods": ["GET"], "rationale": "test", "confidence": 0.7}]
+            )
+            + "\n```"
+        )
         candidates = _parse_seed_response(content)
         assert len(candidates) == 1
 
@@ -75,16 +81,22 @@ class TestSeedCandidateParsing:
 
 class TestGenerateSeedCandidates:
     def test_generates_candidates(self) -> None:
-        mock_response = json.dumps([
-            {
-                "path": "/api/users/{id}/profile", "methods": ["GET"],
-                "rationale": "profile", "confidence": 0.8,
-            },
-            {
-                "path": "/api/users/{id}/avatar", "methods": ["GET", "PUT"],
-                "rationale": "avatar", "confidence": 0.7,
-            },
-        ])
+        mock_response = json.dumps(
+            [
+                {
+                    "path": "/api/users/{id}/profile",
+                    "methods": ["GET"],
+                    "rationale": "profile",
+                    "confidence": 0.8,
+                },
+                {
+                    "path": "/api/users/{id}/avatar",
+                    "methods": ["GET", "PUT"],
+                    "rationale": "avatar",
+                    "confidence": 0.7,
+                },
+            ]
+        )
         client = MockSeedLLMClient(response=mock_response)
         discovered = [{"path": "/api/users", "methods": ["GET", "POST"]}]
 
@@ -99,10 +111,17 @@ class TestGenerateSeedCandidates:
         assert len(client.calls) == 1
 
     def test_filters_already_discovered(self) -> None:
-        mock_response = json.dumps([
-            {"path": "/api/users", "methods": ["GET"], "rationale": "exists", "confidence": 0.9},
-            {"path": "/api/new", "methods": ["GET"], "rationale": "new", "confidence": 0.8},
-        ])
+        mock_response = json.dumps(
+            [
+                {
+                    "path": "/api/users",
+                    "methods": ["GET"],
+                    "rationale": "exists",
+                    "confidence": 0.9,
+                },
+                {"path": "/api/new", "methods": ["GET"], "rationale": "new", "confidence": 0.8},
+            ]
+        )
         client = MockSeedLLMClient(response=mock_response)
         discovered = [{"path": "/api/users", "methods": ["GET"]}]
 
@@ -137,8 +156,10 @@ class TestGenerateSeedCandidates:
     def test_respects_max_candidates(self) -> None:
         many_candidates = [
             {
-                "path": f"/api/endpoint_{i}", "methods": ["GET"],
-                "rationale": f"test {i}", "confidence": 0.5,
+                "path": f"/api/endpoint_{i}",
+                "methods": ["GET"],
+                "rationale": f"test {i}",
+                "confidence": 0.5,
             }
             for i in range(50)
         ]

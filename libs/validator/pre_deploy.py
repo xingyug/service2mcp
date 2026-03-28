@@ -140,11 +140,7 @@ class PreDeployValidator:
         auth = service_ir.auth
         details: list[str] = []
 
-        if (
-            auth.type is AuthType.none
-            and auth.mtls is None
-            and auth.request_signing is None
-        ):
+        if auth.type is AuthType.none and auth.mtls is None and auth.request_signing is None:
             return ValidationResult(
                 stage="auth_smoke",
                 passed=True,
@@ -202,8 +198,7 @@ class PreDeployValidator:
                 stage="auth_smoke",
                 passed=False,
                 details=(
-                    "OAuth2 auth requires oauth2 client credentials config "
-                    "or oauth2_token_url."
+                    "OAuth2 auth requires oauth2 client credentials config or oauth2_token_url."
                 ),
                 duration_ms=self._duration_ms(started_at),
             )
@@ -270,20 +265,14 @@ class PreDeployValidator:
                     if not self._allow_native_grpc_stream:
                         invalid_descriptors.append(f"{descriptor.id}=grpc_stream_disabled")
                         continue
-                    supported_ids.append(
-                        f"{descriptor.id}({descriptor.transport.value})"
-                    )
+                    supported_ids.append(f"{descriptor.id}({descriptor.transport.value})")
                     continue
-                invalid_descriptors.append(
-                    f"{descriptor.id}={descriptor.transport.value}"
-                )
+                invalid_descriptors.append(f"{descriptor.id}={descriptor.transport.value}")
                 continue
             if descriptor.operation_id is None:
                 invalid_descriptors.append(f"{descriptor.id}=missing_operation_id")
                 continue
-            supported_ids.append(
-                f"{descriptor.id}({descriptor.transport.value})"
-            )
+            supported_ids.append(f"{descriptor.id}({descriptor.transport.value})")
 
         for operation in service_ir.operations:
             if operation.grpc_unary is None:
@@ -310,8 +299,7 @@ class PreDeployValidator:
         details_parts: list[str] = []
         if supported_ids:
             details_parts.append(
-                "Approved streaming transports configured: "
-                f"{', '.join(supported_ids)}"
+                f"Approved streaming transports configured: {', '.join(supported_ids)}"
             )
         if supported_native_operations:
             details_parts.append(
@@ -320,8 +308,7 @@ class PreDeployValidator:
             )
         if unsupported_ids:
             details_parts.append(
-                "Explicit unsupported descriptors recorded: "
-                f"{', '.join(unsupported_ids)}"
+                f"Explicit unsupported descriptors recorded: {', '.join(unsupported_ids)}"
             )
         if not details_parts:
             details_parts.append(

@@ -94,9 +94,7 @@ def setup_logging(
 
     root.addHandler(handler)
     resolved_level = (
-        level
-        if isinstance(level, int)
-        else getattr(logging, level.upper(), logging.INFO)
+        level if isinstance(level, int) else getattr(logging, level.upper(), logging.INFO)
     )
     root.setLevel(resolved_level)
 

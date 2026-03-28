@@ -127,8 +127,15 @@ _register("GET", "/api/admin/health")
 # ---------------------------------------------------------------------------
 
 _RESOURCE_GROUPS = [
-    "users", "products", "orders", "categories",
-    "inventory", "notifications", "reports", "webhooks", "admin",
+    "users",
+    "products",
+    "orders",
+    "categories",
+    "inventory",
+    "notifications",
+    "reports",
+    "webhooks",
+    "admin",
 ]
 
 _PATH_PARAM_RE = re.compile(r"\{([^{}]+)\}")
@@ -142,16 +149,9 @@ def _html_index() -> str:
         if group != "admin"
     )
     admin_links = (
-        '<a href="/api/admin/config">Admin Config</a>\n'
-        '<a href="/api/admin/health">Admin Health</a>'
+        '<a href="/api/admin/config">Admin Config</a>\n<a href="/api/admin/health">Admin Health</a>'
     )
-    return (
-        "<html><body>\n"
-        "<h1>REST API</h1>\n"
-        f"{links}\n"
-        f"{admin_links}\n"
-        "</body></html>"
-    )
+    return f"<html><body>\n<h1>REST API</h1>\n{links}\n{admin_links}\n</body></html>"
 
 
 def _json_index() -> dict[str, Any]:
@@ -159,11 +159,7 @@ def _json_index() -> dict[str, Any]:
     return {
         "service": "large-surface-rest-api",
         "version": "1.0.0",
-        "links": {
-            group: f"/api/{group}"
-            for group in _RESOURCE_GROUPS
-            if group != "admin"
-        },
+        "links": {group: f"/api/{group}" for group in _RESOURCE_GROUPS if group != "admin"},
         "admin": {
             "config": "/api/admin/config",
             "flags": "/api/admin/flags",
@@ -180,58 +176,74 @@ def _resource_list_response(group: str) -> dict[str, Any]:
     if group == "users":
         for uid in ["usr-1", "usr-2", "usr-3"]:
             items.append({"id": uid, "name": f"User {uid}"})
-            nested_links.extend([
-                f"/api/users/{uid}",
-                f"/api/users/{uid}/posts",
-                f"/api/users/{uid}/settings",
-            ])
+            nested_links.extend(
+                [
+                    f"/api/users/{uid}",
+                    f"/api/users/{uid}/posts",
+                    f"/api/users/{uid}/settings",
+                ]
+            )
     elif group == "products":
         for pid in ["prod-1", "prod-2"]:
             items.append({"id": pid, "name": f"Product {pid}"})
-            nested_links.extend([
-                f"/api/products/{pid}",
-                f"/api/products/{pid}/reviews",
-                f"/api/products/{pid}/images",
-            ])
+            nested_links.extend(
+                [
+                    f"/api/products/{pid}",
+                    f"/api/products/{pid}/reviews",
+                    f"/api/products/{pid}/images",
+                ]
+            )
         nested_links.append("/api/products/search?q=widget&limit=10")
     elif group == "orders":
         for oid in ["ord-1", "ord-2"]:
             items.append({"id": oid, "total": 1250})
-            nested_links.extend([
-                f"/api/orders/{oid}",
-                f"/api/orders/{oid}/items",
-                f"/api/orders/{oid}/payments",
-            ])
+            nested_links.extend(
+                [
+                    f"/api/orders/{oid}",
+                    f"/api/orders/{oid}/items",
+                    f"/api/orders/{oid}/payments",
+                ]
+            )
     elif group == "categories":
         items.append({"id": "cat-1", "name": "Electronics"})
-        nested_links.extend([
-            "/api/categories/cat-1",
-            "/api/categories/cat-1/products",
-            "/api/categories/tree",
-        ])
+        nested_links.extend(
+            [
+                "/api/categories/cat-1",
+                "/api/categories/cat-1/products",
+                "/api/categories/tree",
+            ]
+        )
     elif group == "inventory":
         items.append({"sku": "sku-1", "count": 42})
-        nested_links.extend([
-            "/api/inventory/sku-1",
-        ])
+        nested_links.extend(
+            [
+                "/api/inventory/sku-1",
+            ]
+        )
     elif group == "notifications":
         items.append({"id": "notif-1", "message": "Hello"})
-        nested_links.extend([
-            "/api/notifications/notif-1",
-            "/api/notifications/notif-1/acknowledge",
-        ])
+        nested_links.extend(
+            [
+                "/api/notifications/notif-1",
+                "/api/notifications/notif-1/acknowledge",
+            ]
+        )
     elif group == "reports":
         items.append({"id": "rpt-1", "name": "Q1 Sales"})
-        nested_links.extend([
-            "/api/reports/rpt-1/status",
-            "/api/reports/rpt-1/download",
-        ])
+        nested_links.extend(
+            [
+                "/api/reports/rpt-1/status",
+                "/api/reports/rpt-1/download",
+            ]
+        )
     elif group == "webhooks":
         items.append({"id": "wh-1", "url": "https://hook.example.com/cb"})
-        nested_links.extend([
-            "/api/webhooks/wh-1",
-            "/api/webhooks/wh-1/test",
-        ])
+        nested_links.extend(
+            [
+                "/api/webhooks/wh-1",
+                "/api/webhooks/wh-1/test",
+            ]
+        )
 
     return {
         "items": items,
@@ -352,11 +364,15 @@ def build_large_surface_transport() -> httpx.MockTransport:
             accept = request.headers.get("accept", "")
             if "json" in accept:
                 return httpx.Response(
-                    200, json=_json_index(), request=request,
+                    200,
+                    json=_json_index(),
+                    request=request,
                     headers={"content-type": "application/json"},
                 )
             return httpx.Response(
-                200, text=_html_index(), request=request,
+                200,
+                text=_html_index(),
+                request=request,
                 headers={"content-type": "text/html"},
             )
 
@@ -411,11 +427,7 @@ def build_large_surface_transport() -> httpx.MockTransport:
             # Collection endpoints (no path params) return list responses
             # with HATEOAS links; detail endpoints return detail responses.
             group = _extract_group(template)
-            is_collection = (
-                group
-                and group in _RESOURCE_GROUPS
-                and template == f"/api/{group}"
-            )
+            is_collection = group and group in _RESOURCE_GROUPS and template == f"/api/{group}"
             if is_collection:
                 return httpx.Response(
                     200,

@@ -21,14 +21,10 @@ def test_grafana_dashboards_reference_expected_metrics() -> None:
     )
 
     compilation_queries = {
-        target["expr"]
-        for panel in compilation_dashboard["panels"]
-        for target in panel["targets"]
+        target["expr"] for panel in compilation_dashboard["panels"] for target in panel["targets"]
     }
     runtime_queries = {
-        target["expr"]
-        for panel in runtime_dashboard["panels"]
-        for target in panel["targets"]
+        target["expr"] for panel in runtime_dashboard["panels"] for target in panel["targets"]
     }
 
     assert any("compiler_workflow_jobs_total" in expr for expr in compilation_queries)
@@ -44,9 +40,7 @@ def test_grafana_dashboards_reference_expected_metrics() -> None:
 def test_helm_chart_contains_core_metadata_and_hooked_migration_job() -> None:
     chart = yaml.safe_load((HELM_DIR / "Chart.yaml").read_text(encoding="utf-8"))
     values = yaml.safe_load((HELM_DIR / "values.yaml").read_text(encoding="utf-8"))
-    migration_template = (HELM_DIR / "templates" / "migration-job.yaml").read_text(
-        encoding="utf-8"
-    )
+    migration_template = (HELM_DIR / "templates" / "migration-job.yaml").read_text(encoding="utf-8")
     apps_template = (HELM_DIR / "templates" / "apps.yaml").read_text(encoding="utf-8")
     infra_template = (HELM_DIR / "templates" / "infra.yaml").read_text(encoding="utf-8")
     rbac_template = (HELM_DIR / "templates" / "rbac.yaml").read_text(encoding="utf-8")
@@ -80,16 +74,16 @@ def test_helm_chart_contains_core_metadata_and_hooked_migration_job() -> None:
     assert infra_template.count("startupProbe:") >= 3
     assert "name: PGDATA" in infra_template
     assert "/var/lib/postgresql/data/pgdata" in infra_template
-    assert 'name: WORKFLOW_ENGINE' in apps_template
-    assert 'name: MCP_RUNTIME_IMAGE' in apps_template
-    assert 'name: COMPILER_TARGET_NAMESPACE' in apps_template
-    assert 'name: CELERY_WORKER_CONCURRENCY' in apps_template
-    assert 'name: CELERY_WORKER_POOL' in apps_template
-    assert 'name: ROUTE_PUBLISH_MODE' in apps_template
-    assert 'name: ACCESS_CONTROL_URL' in apps_template
+    assert "name: WORKFLOW_ENGINE" in apps_template
+    assert "name: MCP_RUNTIME_IMAGE" in apps_template
+    assert "name: COMPILER_TARGET_NAMESPACE" in apps_template
+    assert "name: CELERY_WORKER_CONCURRENCY" in apps_template
+    assert "name: CELERY_WORKER_POOL" in apps_template
+    assert "name: ROUTE_PUBLISH_MODE" in apps_template
+    assert "name: ACCESS_CONTROL_URL" in apps_template
     assert ".Values.compilerWorker.extraEnv" in apps_template
     assert ".Values.compilerWorker.secretEnv" in apps_template
-    assert 'name: GATEWAY_ADMIN_URL' in apps_template
+    assert "name: GATEWAY_ADMIN_URL" in apps_template
     assert 'value: "1"' in apps_template
     assert "value: solo" in apps_template
     assert "value: access-control" in apps_template

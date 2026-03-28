@@ -76,9 +76,7 @@ def _wait_for_broker_socket(
         return
 
     host, port = endpoint
-    connect_timeout_seconds = float(
-        os.getenv("WORKER_BROKER_CONNECT_TIMEOUT_SECONDS", "2")
-    )
+    connect_timeout_seconds = float(os.getenv("WORKER_BROKER_CONNECT_TIMEOUT_SECONDS", "2"))
     deadline = time.monotonic() + timeout_seconds
     while True:
         try:
@@ -87,8 +85,7 @@ def _wait_for_broker_socket(
         except OSError as exc:
             if time.monotonic() >= deadline:
                 raise RuntimeError(
-                    f"Broker {host}:{port} did not become reachable within "
-                    f"{timeout_seconds:.0f}s."
+                    f"Broker {host}:{port} did not become reachable within {timeout_seconds:.0f}s."
                 ) from exc
             time.sleep(poll_interval_seconds)
 
@@ -116,13 +113,10 @@ def _wait_for_celery_ready(
         return_code = process.poll()
         if return_code is not None:
             raise RuntimeError(
-                "Celery worker exited before becoming ready "
-                f"(exit code {return_code})."
+                f"Celery worker exited before becoming ready (exit code {return_code})."
             )
         if time.monotonic() >= deadline:
-            raise RuntimeError(
-                f"Celery worker did not report ready within {timeout_seconds:.0f}s."
-            )
+            raise RuntimeError(f"Celery worker did not report ready within {timeout_seconds:.0f}s.")
         time.sleep(poll_interval_seconds)
 
 
@@ -158,9 +152,7 @@ def main() -> int:
         _wait_for_celery_ready(
             celery_process,
             celery_ready,
-            timeout_seconds=float(
-                os.getenv("WORKER_CELERY_READY_TIMEOUT_SECONDS", "60")
-            ),
+            timeout_seconds=float(os.getenv("WORKER_CELERY_READY_TIMEOUT_SECONDS", "60")),
         )
     except Exception:
         _terminate_processes([celery_process])

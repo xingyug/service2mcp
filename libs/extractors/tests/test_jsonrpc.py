@@ -148,18 +148,20 @@ def test_detect_returns_zero_for_invalid_json() -> None:
 def test_detect_returns_zero_for_non_dict_json() -> None:
     """Line 123: valid JSON but not a dict → 0.0."""
     extractor = JsonRpcExtractor()
-    source = SourceConfig(file_content='[1, 2, 3]')
+    source = SourceConfig(file_content="[1, 2, 3]")
     assert extractor.detect(source) == 0.0
 
 
 def test_detect_methods_with_params_returns_07() -> None:
     """Line 132: methods list with params but no openrpc/jsonrpc_service keys."""
     extractor = JsonRpcExtractor()
-    content = json.dumps({
-        "methods": [
-            {"name": "doSomething", "params": [{"name": "x"}]},
-        ]
-    })
+    content = json.dumps(
+        {
+            "methods": [
+                {"name": "doSomething", "params": [{"name": "x"}]},
+            ]
+        }
+    )
     source = SourceConfig(file_content=content)
     assert extractor.detect(source) == 0.7
 
@@ -167,11 +169,13 @@ def test_detect_methods_with_params_returns_07() -> None:
 def test_detect_methods_without_params_returns_zero() -> None:
     """Line 132 else branch: methods list but no entry has params."""
     extractor = JsonRpcExtractor()
-    content = json.dumps({
-        "methods": [
-            {"name": "noParams"},
-        ]
-    })
+    content = json.dumps(
+        {
+            "methods": [
+                {"name": "noParams"},
+            ]
+        }
+    )
     source = SourceConfig(file_content=content)
     assert extractor.detect(source) == 0.0
 

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 
 # ── Enums ──────────────────────────────────────────────────────────────────
 
+
 class RiskLevel(StrEnum):
     safe = "safe"
     cautious = "cautious"
@@ -84,11 +85,13 @@ class GrpcStreamMode(StrEnum):
 
 class ToolIntent(StrEnum):
     """Whether a tool is for read-only discovery or state-mutating action."""
+
     discovery = "discovery"
     action = "action"
 
 
 # ── Component Models ───────────────────────────────────────────────────────
+
 
 class Param(BaseModel):
     """A single parameter for an operation."""
@@ -153,9 +156,7 @@ class OAuth2ClientCredentialsConfig(BaseModel):
     client_secret_ref: str
     scopes: list[str] = Field(default_factory=list)
     audience: str | None = None
-    client_auth_method: Literal["client_secret_basic", "client_secret_post"] = (
-        "client_secret_basic"
-    )
+    client_auth_method: Literal["client_secret_basic", "client_secret_post"] = "client_secret_basic"
 
 
 class MTLSConfig(BaseModel):
@@ -320,9 +321,7 @@ class EventDescriptor(BaseModel):
             if self.grpc_stream is None:
                 raise ValueError("grpc_stream descriptors require grpc_stream runtime config.")
             if self.channel is not None and self.channel != self.grpc_stream.rpc_path:
-                raise ValueError(
-                    "grpc_stream descriptor channel must match grpc_stream.rpc_path."
-                )
+                raise ValueError("grpc_stream descriptor channel must match grpc_stream.rpc_path.")
             return self
 
         if self.grpc_stream is not None:
@@ -443,8 +442,7 @@ class Operation(BaseModel):
         expected_method = "GET" if self.sql.action is SqlOperationType.query else "POST"
         if self.method is not None and self.method.upper() != expected_method:
             raise ValueError(
-                f"sql {self.sql.action.value} operations must use "
-                f"method='{expected_method}'."
+                f"sql {self.sql.action.value} operations must use method='{expected_method}'."
             )
         return self
 
@@ -460,9 +458,7 @@ class Operation(BaseModel):
             (self.soap, "soap"),
         ):
             if other is not None:
-                raise ValueError(
-                    f"jsonrpc execution contract cannot be combined with {label}."
-                )
+                raise ValueError(f"jsonrpc execution contract cannot be combined with {label}.")
         if self.method is not None and self.method.upper() != "POST":
             raise ValueError("jsonrpc operations must use method='POST'.")
         return self
@@ -621,8 +617,7 @@ class ServiceIR(BaseModel):
         }
         if invalid_refs:
             raise ValueError(
-                "Event descriptors reference unknown operations: "
-                f"{sorted(invalid_refs)}"
+                f"Event descriptors reference unknown operations: {sorted(invalid_refs)}"
             )
         return self
 
@@ -632,9 +627,7 @@ class ServiceIR(BaseModel):
         for group in self.tool_grouping:
             invalid = set(group.operation_ids) - op_ids
             if invalid:
-                raise ValueError(
-                    f"ToolGroup '{group.id}' references unknown operations: {invalid}"
-                )
+                raise ValueError(f"ToolGroup '{group.id}' references unknown operations: {invalid}")
         return self
 
     @model_validator(mode="after")
@@ -674,7 +667,6 @@ class ServiceIR(BaseModel):
         }
         if invalid_refs:
             raise ValueError(
-                "Resource definitions reference unknown operations: "
-                f"{sorted(invalid_refs)}"
+                f"Resource definitions reference unknown operations: {sorted(invalid_refs)}"
             )
         return self

@@ -925,41 +925,45 @@ class TestExternalRef:
 
     def test_external_ref_skipped(self, extractor):
         """Lines 196-197: external $ref like 'other.yaml#/...' → empty dict."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "RefTest", "version": "1.0"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "parameters": [{"$ref": "external.yaml#/components/parameters/Limit"}],
-                        "responses": {"200": {"description": "OK"}},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "RefTest", "version": "1.0"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [{"$ref": "external.yaml#/components/parameters/Limit"}],
+                            "responses": {"200": {"description": "OK"}},
+                        }
                     }
-                }
-            },
-        })
+                },
+            }
+        )
         source = SourceConfig(file_content=spec)
         ir = extractor.extract(source)
         assert len(ir.operations) == 1
 
     def test_ref_path_hits_non_dict(self, extractor):
         """Line 204: $ref path resolves through a non-dict → returns {}."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "RefTest", "version": "1.0"},
-            "components": {"schemas": "not-a-dict"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "parameters": [
-                            {"$ref": "#/components/schemas/Missing"},
-                        ],
-                        "responses": {"200": {"description": "OK"}},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "RefTest", "version": "1.0"},
+                "components": {"schemas": "not-a-dict"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [
+                                {"$ref": "#/components/schemas/Missing"},
+                            ],
+                            "responses": {"200": {"description": "OK"}},
+                        }
                     }
-                }
-            },
-        })
+                },
+            }
+        )
         source = SourceConfig(file_content=spec)
         ir = extractor.extract(source)
         assert len(ir.operations) == 1
@@ -973,16 +977,18 @@ class TestAuthSchemeParsing:
 
     def test_swagger_apikey_in_query(self, extractor):
         """Lines 246-251: Swagger apiKey in query."""
-        spec = json.dumps({
-            "swagger": "2.0",
-            "info": {"title": "T", "version": "1"},
-            "host": "api.example.com",
-            "basePath": "/v1",
-            "securityDefinitions": {
-                "QueryKey": {"type": "apiKey", "in": "query", "name": "api_key"},
-            },
-            "paths": {},
-        })
+        spec = json.dumps(
+            {
+                "swagger": "2.0",
+                "info": {"title": "T", "version": "1"},
+                "host": "api.example.com",
+                "basePath": "/v1",
+                "securityDefinitions": {
+                    "QueryKey": {"type": "apiKey", "in": "query", "name": "api_key"},
+                },
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.auth.type == AuthType.api_key
         assert ir.auth.api_key_location == "query"
@@ -990,74 +996,87 @@ class TestAuthSchemeParsing:
 
     def test_swagger_oauth2(self, extractor):
         """Line 252-253: Swagger oauth2."""
-        spec = json.dumps({
-            "swagger": "2.0",
-            "info": {"title": "T", "version": "1"},
-            "host": "api.example.com",
-            "securityDefinitions": {
-                "OAuth": {"type": "oauth2", "flow": "implicit",
-                          "authorizationUrl": "https://example.com/auth"},
-            },
-            "paths": {},
-        })
+        spec = json.dumps(
+            {
+                "swagger": "2.0",
+                "info": {"title": "T", "version": "1"},
+                "host": "api.example.com",
+                "securityDefinitions": {
+                    "OAuth": {
+                        "type": "oauth2",
+                        "flow": "implicit",
+                        "authorizationUrl": "https://example.com/auth",
+                    },
+                },
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.auth.type == AuthType.oauth2
 
     def test_swagger_basic(self, extractor):
         """Lines 254-255: Swagger basic auth."""
-        spec = json.dumps({
-            "swagger": "2.0",
-            "info": {"title": "T", "version": "1"},
-            "host": "api.example.com",
-            "securityDefinitions": {
-                "BasicAuth": {"type": "basic"},
-            },
-            "paths": {},
-        })
+        spec = json.dumps(
+            {
+                "swagger": "2.0",
+                "info": {"title": "T", "version": "1"},
+                "host": "api.example.com",
+                "securityDefinitions": {
+                    "BasicAuth": {"type": "basic"},
+                },
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.auth.type == AuthType.basic
 
     def test_swagger_unknown_auth(self, extractor):
         """Line 256: Swagger unknown auth type → none."""
-        spec = json.dumps({
-            "swagger": "2.0",
-            "info": {"title": "T", "version": "1"},
-            "host": "api.example.com",
-            "securityDefinitions": {
-                "Custom": {"type": "custom"},
-            },
-            "paths": {},
-        })
+        spec = json.dumps(
+            {
+                "swagger": "2.0",
+                "info": {"title": "T", "version": "1"},
+                "host": "api.example.com",
+                "securityDefinitions": {
+                    "Custom": {"type": "custom"},
+                },
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.auth.type == AuthType.none
 
     def test_openapi_basic_http(self, extractor):
         """Lines 268-269: OpenAPI http/basic."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "components": {
-                "securitySchemes": {
-                    "BasicAuth": {"type": "http", "scheme": "basic"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "components": {
+                    "securitySchemes": {
+                        "BasicAuth": {"type": "http", "scheme": "basic"},
+                    },
                 },
-            },
-            "paths": {},
-        })
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.auth.type == AuthType.basic
 
     def test_openapi_apikey_in_query(self, extractor):
         """Lines 270-276: OpenAPI apiKey in query."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "components": {
-                "securitySchemes": {
-                    "QueryKey": {"type": "apiKey", "in": "query", "name": "token"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "components": {
+                    "securitySchemes": {
+                        "QueryKey": {"type": "apiKey", "in": "query", "name": "token"},
+                    },
                 },
-            },
-            "paths": {},
-        })
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.auth.type == AuthType.api_key
         assert ir.auth.api_key_location == "query"
@@ -1065,61 +1084,74 @@ class TestAuthSchemeParsing:
 
     def test_openapi_oauth2(self, extractor):
         """Lines 277-278: OpenAPI oauth2."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "components": {
-                "securitySchemes": {
-                    "OAuth": {"type": "oauth2", "flows": {"implicit": {
-                        "authorizationUrl": "https://example.com/auth",
-                    }}},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "components": {
+                    "securitySchemes": {
+                        "OAuth": {
+                            "type": "oauth2",
+                            "flows": {
+                                "implicit": {
+                                    "authorizationUrl": "https://example.com/auth",
+                                }
+                            },
+                        },
+                    },
                 },
-            },
-            "paths": {},
-        })
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.auth.type == AuthType.oauth2
 
     def test_openapi_unknown_auth(self, extractor):
         """Line 279: OpenAPI unknown type → none."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "components": {
-                "securitySchemes": {
-                    "Custom": {"type": "mutualTLS"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "components": {
+                    "securitySchemes": {
+                        "Custom": {"type": "mutualTLS"},
+                    },
                 },
-            },
-            "paths": {},
-        })
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.auth.type == AuthType.none
 
     def test_non_dict_scheme_returns_none(self, extractor):
         """Line 237: securitySchemes first value is not a dict → none."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "components": {
-                "securitySchemes": {"BadScheme": "not-a-dict"},
-            },
-            "paths": {},
-        })
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "components": {
+                    "securitySchemes": {"BadScheme": "not-a-dict"},
+                },
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.auth.type == AuthType.none
 
     def test_openapi_apikey_invalid_location(self, extractor):
         """Lines 271-275: OpenAPI apiKey with invalid location → defaults to header."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "components": {
-                "securitySchemes": {
-                    "CookieKey": {"type": "apiKey", "in": "cookie", "name": "sess"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "components": {
+                    "securitySchemes": {
+                        "CookieKey": {"type": "apiKey", "in": "cookie", "name": "sess"},
+                    },
                 },
-            },
-            "paths": {},
-        })
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.auth.type == AuthType.api_key
         assert ir.auth.api_key_location == "header"
@@ -1133,66 +1165,81 @@ class TestOperationsEdgeCases:
 
     def test_paths_not_dict(self, extractor):
         """Line 291: paths is not a dict → empty ops."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": "not-a-dict",
-        })
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": "not-a-dict",
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations) == 0
 
     def test_path_item_not_dict(self, extractor):
         """Line 295: path_item is not a dict → skip."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {"/bad": "not-a-dict", "/good": {
-                "get": {"operationId": "ok", "responses": {"200": {"description": "OK"}}},
-            }},
-        })
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/bad": "not-a-dict",
+                    "/good": {
+                        "get": {"operationId": "ok", "responses": {"200": {"description": "OK"}}},
+                    },
+                },
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations) == 1
 
     def test_op_spec_not_dict(self, extractor):
         """Line 301: operation value is not a dict → skip."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {"/items": {"get": "not-a-dict"}},
-        })
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {"/items": {"get": "not-a-dict"}},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations) == 0
 
     def test_non_string_path_key(self, extractor):
         """Line 295: non-string path key (edge case) → skip."""
         # JSON keys are always strings, but test dict behavior
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {},
-        })
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {},
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations) == 0
 
     def test_callbacks_generate_event_descriptors(self, extractor):
         """Lines 315, 387, 390: callbacks produce event descriptors."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/hooks": {
-                    "post": {
-                        "operationId": "createHook",
-                        "callbacks": {
-                            "onEvent": {"{$request.body#/url}": {
-                                "post": {"responses": {"200": {"description": "OK"}}},
-                            }},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/hooks": {
+                        "post": {
+                            "operationId": "createHook",
+                            "callbacks": {
+                                "onEvent": {
+                                    "{$request.body#/url}": {
+                                        "post": {"responses": {"200": {"description": "OK"}}},
+                                    }
+                                },
+                            },
+                            "responses": {"200": {"description": "OK"}},
                         },
-                        "responses": {"200": {"description": "OK"}},
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert "createHook:onEvent" in ir.metadata["ignored_callbacks"]
         cb_desc = next(d for d in ir.event_descriptors if d.id == "createHook:onEvent")
@@ -1201,80 +1248,94 @@ class TestOperationsEdgeCases:
 
     def test_param_not_dict_skipped(self, extractor):
         """Line 387: non-dict parameter → skipped."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "parameters": ["not-a-dict", {"name": "limit", "in": "query",
-                                                       "schema": {"type": "integer"}}],
-                        "responses": {"200": {"description": "OK"}},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [
+                                "not-a-dict",
+                                {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+                            ],
+                            "responses": {"200": {"description": "OK"}},
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations[0].params) == 1
 
     def test_resolve_param_type_non_dict_schema(self, extractor):
         """Line 430: schema is not a dict → 'string'."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "parameters": [
-                            {"name": "bad", "in": "query", "schema": "not-a-dict"},
-                        ],
-                        "responses": {"200": {"description": "OK"}},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [
+                                {"name": "bad", "in": "query", "schema": "not-a-dict"},
+                            ],
+                            "responses": {"200": {"description": "OK"}},
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert ir.operations[0].params[0].type == "string"
 
     def test_request_body_content_not_dict(self, extractor):
         """Line 439: requestBody.content is not a dict → empty params."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "post": {
-                        "operationId": "createItem",
-                        "requestBody": {"content": "not-a-dict"},
-                        "responses": {"200": {"description": "OK"}},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "post": {
+                            "operationId": "createItem",
+                            "requestBody": {"content": "not-a-dict"},
+                            "responses": {"200": {"description": "OK"}},
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         # Should still have an operation, just no body params
         assert len(ir.operations) == 1
 
     def test_request_body_octet_stream(self, extractor):
         """Line 460: application/octet-stream → raw mode."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/upload": {
-                    "post": {
-                        "operationId": "uploadFile",
-                        "requestBody": {
-                            "required": True,
-                            "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/upload": {
+                        "post": {
+                            "operationId": "uploadFile",
+                            "requestBody": {
+                                "required": True,
+                                "content": {
+                                    "application/octet-stream": {
+                                        "schema": {"type": "string", "format": "binary"}
+                                    }
+                                },
+                            },
+                            "responses": {"200": {"description": "OK"}},
                         },
-                        "responses": {"200": {"description": "OK"}},
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         op = ir.operations[0]
         assert op.request_body_mode == RequestBodyMode.raw
@@ -1282,54 +1343,62 @@ class TestOperationsEdgeCases:
 
     def test_request_body_json_content_not_dict(self, extractor):
         """Line 477: application/json value is not a dict → empty."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "post": {
-                        "operationId": "createItem",
-                        "requestBody": {
-                            "content": {"application/json": "not-a-dict"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "post": {
+                            "operationId": "createItem",
+                            "requestBody": {
+                                "content": {"application/json": "not-a-dict"},
+                            },
+                            "responses": {"200": {"description": "OK"}},
                         },
-                        "responses": {"200": {"description": "OK"}},
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations) == 1
 
     def test_request_body_schema_not_dict(self, extractor):
         """Line 480: schema inside application/json is not a dict → empty."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "post": {
-                        "operationId": "createItem",
-                        "requestBody": {
-                            "content": {"application/json": {"schema": "not-a-dict"}},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "post": {
+                            "operationId": "createItem",
+                            "requestBody": {
+                                "content": {"application/json": {"schema": "not-a-dict"}},
+                            },
+                            "responses": {"200": {"description": "OK"}},
                         },
-                        "responses": {"200": {"description": "OK"}},
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations) == 1
 
     def test_webhooks_not_dict(self, extractor):
         """Lines 486, 496: webhooks is not a dict → ignored."""
-        spec = json.dumps({
-            "openapi": "3.1.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {},
-            "webhooks": "not-a-dict",
-        })
+        spec = json.dumps(
+            {
+                "openapi": "3.1.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {},
+                "webhooks": "not-a-dict",
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
-        assert ir.metadata.get("ignored_webhooks") is None or ir.metadata.get("ignored_webhooks") == []
+        assert (
+            ir.metadata.get("ignored_webhooks") is None or ir.metadata.get("ignored_webhooks") == []
+        )
         assert len(ir.event_descriptors) == 0
 
 
@@ -1342,51 +1411,55 @@ class TestResponseSchemaEdgeCases:
 
     def test_responses_not_dict_returns_none(self, extractor):
         """Line 603: responses is not a dict → None for success schema."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": "not-a-dict",
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": "not-a-dict",
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         op = ir.operations[0]
         assert op.response_strategy.pagination is None
 
     def test_swagger_response_schema_returned(self, extractor):
         """Line 611: Swagger 2.0 200 response with schema."""
-        spec = json.dumps({
-            "swagger": "2.0",
-            "info": {"title": "T", "version": "1"},
-            "host": "api.example.com",
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "parameters": [
-                            {"name": "cursor", "in": "query", "type": "string"},
-                        ],
-                        "responses": {
-                            "200": {
-                                "description": "OK",
-                                "schema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "next_cursor": {"type": "string"},
-                                        "items": {"type": "array"},
+        spec = json.dumps(
+            {
+                "swagger": "2.0",
+                "info": {"title": "T", "version": "1"},
+                "host": "api.example.com",
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [
+                                {"name": "cursor", "in": "query", "type": "string"},
+                            ],
+                            "responses": {
+                                "200": {
+                                    "description": "OK",
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "next_cursor": {"type": "string"},
+                                            "items": {"type": "array"},
+                                        },
                                     },
                                 },
                             },
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         op = ir.operations[0]
         assert op.response_strategy.pagination is not None
@@ -1394,143 +1467,157 @@ class TestResponseSchemaEdgeCases:
 
     def test_openapi_response_content_not_dict(self, extractor):
         """Line 615: 200 response content is not a dict → skip."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "parameters": [
-                            {"name": "cursor", "in": "query", "schema": {"type": "string"}},
-                        ],
-                        "responses": {
-                            "200": {"description": "OK", "content": "not-a-dict"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "parameters": [
+                                {"name": "cursor", "in": "query", "schema": {"type": "string"}},
+                            ],
+                            "responses": {
+                                "200": {"description": "OK", "content": "not-a-dict"},
+                            },
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         # Should still detect cursor pagination from params
         assert ir.operations[0].response_strategy.pagination is not None
 
     def test_error_schema_responses_not_dict(self, extractor):
         """Line 629: error_schema when responses is not a dict → empty."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": "not-a-dict",
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": "not-a-dict",
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations[0].error_schema.responses) == 0
 
     def test_error_resp_obj_not_dict_skipped(self, extractor):
         """Line 636: response value is not a dict → skip."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": {
-                            "200": {"description": "OK"},
-                            "400": "not-a-dict",
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": {
+                                "200": {"description": "OK"},
+                                "400": "not-a-dict",
+                            },
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations[0].error_schema.responses) == 0
 
     def test_invalid_status_code_skipped(self, extractor):
         """Lines 646-647: non-integer status code → skipped."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": {
-                            "200": {"description": "OK"},
-                            "2XX": {"description": "Wildcard"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": {
+                                "200": {"description": "OK"},
+                                "2XX": {"description": "Wildcard"},
+                            },
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations[0].error_schema.responses) == 0
 
     def test_response_examples_not_dict_responses(self, extractor):
         """Line 677: response_examples when responses is not a dict → empty."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": "not-a-dict",
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": "not-a-dict",
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations[0].response_examples) == 0
 
     def test_response_examples_resp_obj_not_dict(self, extractor):
         """Line 683: response value not a dict → skip."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": {
-                            "200": "not-a-dict",
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": {
+                                "200": "not-a-dict",
+                            },
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations[0].response_examples) == 0
 
     def test_swagger_schema_example(self, extractor):
         """Line 711: Swagger 2.x schema-level example."""
-        spec = json.dumps({
-            "swagger": "2.0",
-            "info": {"title": "T", "version": "1"},
-            "host": "api.example.com",
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": {
-                            "200": {
-                                "description": "OK",
-                                "schema": {
-                                    "type": "object",
-                                    "example": {"id": 1, "name": "Item"},
+        spec = json.dumps(
+            {
+                "swagger": "2.0",
+                "info": {"title": "T", "version": "1"},
+                "host": "api.example.com",
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": {
+                                "200": {
+                                    "description": "OK",
+                                    "schema": {
+                                        "type": "object",
+                                        "example": {"id": 1, "name": "Item"},
+                                    },
                                 },
                             },
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         op = ir.operations[0]
         schema_examples = [ex for ex in op.response_examples if "schema" in ex.name]
@@ -1539,62 +1626,71 @@ class TestResponseSchemaEdgeCases:
 
     def test_openapi3_response_content_not_dict(self, extractor):
         """Line 724: OpenAPI 3.x response content not a dict → skip."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": {
-                            "200": {"description": "OK", "content": "not-a-dict"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": {
+                                "200": {"description": "OK", "content": "not-a-dict"},
+                            },
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations[0].response_examples) == 0
 
     def test_openapi3_json_content_not_dict(self, extractor):
         """Line 727: application/json value is not a dict → skip."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": {
-                            "200": {
-                                "description": "OK",
-                                "content": {"application/json": "not-a-dict"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": {
+                                "200": {
+                                    "description": "OK",
+                                    "content": {"application/json": "not-a-dict"},
+                                },
                             },
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations[0].response_examples) == 0
 
     def test_openapi3_example_in_map_not_dict(self, extractor):
         """Line 746: examples map entry is not a dict → skip."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": {
-                            "200": {
-                                "description": "OK",
-                                "content": {
-                                    "application/json": {
-                                        "examples": {
-                                            "bad": "not-a-dict",
-                                            "good": {"summary": "A good example", "value": {"id": 1}},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": {
+                                "200": {
+                                    "description": "OK",
+                                    "content": {
+                                        "application/json": {
+                                            "examples": {
+                                                "bad": "not-a-dict",
+                                                "good": {
+                                                    "summary": "A good example",
+                                                    "value": {"id": 1},
+                                                },
+                                            },
                                         },
                                     },
                                 },
@@ -1602,53 +1698,57 @@ class TestResponseSchemaEdgeCases:
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         assert len(ir.operations[0].response_examples) == 1
         assert ir.operations[0].response_examples[0].name == "good"
 
     def test_response_body_schema_openapi_content_not_dict(self, extractor):
         """Line 787: _response_body_schema with content not a dict → None."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": {
-                            "200": {"description": "OK"},
-                            "400": {"description": "Bad", "content": "not-a-dict"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": {
+                                "200": {"description": "OK"},
+                                "400": {"description": "Bad", "content": "not-a-dict"},
+                            },
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         err = ir.operations[0].error_schema.responses[0]
         assert err.error_body_schema is None
 
     def test_response_body_schema_json_content_not_dict(self, extractor):
         """Line 790: application/json not a dict in error response → None."""
-        spec = json.dumps({
-            "openapi": "3.0.0",
-            "info": {"title": "T", "version": "1"},
-            "paths": {
-                "/items": {
-                    "get": {
-                        "operationId": "listItems",
-                        "responses": {
-                            "200": {"description": "OK"},
-                            "500": {
-                                "description": "Err",
-                                "content": {"application/json": "not-a-dict"},
+        spec = json.dumps(
+            {
+                "openapi": "3.0.0",
+                "info": {"title": "T", "version": "1"},
+                "paths": {
+                    "/items": {
+                        "get": {
+                            "operationId": "listItems",
+                            "responses": {
+                                "200": {"description": "OK"},
+                                "500": {
+                                    "description": "Err",
+                                    "content": {"application/json": "not-a-dict"},
+                                },
                             },
                         },
                     },
                 },
-            },
-        })
+            }
+        )
         ir = extractor.extract(SourceConfig(file_content=spec))
         err = ir.operations[0].error_schema.responses[0]
         assert err.error_body_schema is None
@@ -1667,19 +1767,19 @@ class TestFlattenSchemaEdgeCases:
 
     def test_flatten_properties_not_dict(self, extractor):
         """Line 803: properties is not a dict → empty."""
-        result = extractor._flatten_schema_to_params(
-            {"type": "object", "properties": "not-a-dict"}
-        )
+        result = extractor._flatten_schema_to_params({"type": "object", "properties": "not-a-dict"})
         assert result == []
 
     def test_flatten_non_string_name_or_non_dict_prop(self, extractor):
         """Line 807: non-dict property value → skip."""
-        result = extractor._flatten_schema_to_params({
-            "type": "object",
-            "properties": {
-                "good": {"type": "string"},
-                "bad": "not-a-dict",
-            },
-        })
+        result = extractor._flatten_schema_to_params(
+            {
+                "type": "object",
+                "properties": {
+                    "good": {"type": "string"},
+                    "bad": "not-a-dict",
+                },
+            }
+        )
         assert len(result) == 1
         assert result[0].name == "good"

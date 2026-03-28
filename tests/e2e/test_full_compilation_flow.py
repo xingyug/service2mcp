@@ -242,10 +242,7 @@ def _build_sample_invocations(service_ir: ServiceIR) -> dict[str, dict[str, Any]
     for operation in service_ir.operations:
         if not operation.enabled:
             continue
-        samples[operation.id] = {
-            param.name: _sample_value(param)
-            for param in operation.params
-        }
+        samples[operation.id] = {param.name: _sample_value(param) for param in operation.params}
     return samples
 
 
@@ -259,9 +256,7 @@ def _optional_real_deepseek_config() -> EnhancerConfig | None:
 
     api_key = (os.getenv("DEEPSEEK_API_KEY") or os.getenv("LLM_API_KEY") or "").strip()
     if not api_key:
-        raise RuntimeError(
-            "ENABLE_REAL_DEEPSEEK_E2E requires DEEPSEEK_API_KEY or LLM_API_KEY."
-        )
+        raise RuntimeError("ENABLE_REAL_DEEPSEEK_E2E requires DEEPSEEK_API_KEY or LLM_API_KEY.")
 
     model = (os.getenv("DEEPSEEK_MODEL") or os.getenv("LLM_MODEL") or "deepseek-chat").strip()
     api_base_url = (
@@ -414,6 +409,7 @@ async def test_openapi_spec_compiles_to_running_runtime_and_tool_invocation(
         upstream_handler=upstream_handler,
     )
     detector = TypeDetector([OpenAPIExtractor()])
+
     async def detect_stage(context: CompilationContext) -> StageExecutionResult:
         detection = detector.detect(
             SourceConfig(
@@ -601,9 +597,7 @@ async def test_openapi_spec_compiles_to_running_runtime_and_tool_invocation(
         finally:
             await worker_engine.dispose()
 
-    configure_compilation_executor(
-        CallbackCompilationExecutor(callback=execute_workflow_for_task)
-    )
+    configure_compilation_executor(CallbackCompilationExecutor(callback=execute_workflow_for_task))
 
     compiler_api_app = create_compiler_api_app(
         session_factory=session_factory,
@@ -669,14 +663,10 @@ async def test_openapi_spec_compiles_to_running_runtime_and_tool_invocation(
                 assert service_ir is not None
                 # Verify tool_intent is populated after enhancement.
                 for op in service_ir.operations:
-                    assert op.tool_intent is not None, (
-                        f"tool_intent not set on {op.id}"
-                    )
-                    assert op.description.startswith(
-                        "[DISCOVERY] "
-                    ) or op.description.startswith("[ACTION] "), (
-                        f"description not bifurcated on {op.id}"
-                    )
+                    assert op.tool_intent is not None, f"tool_intent not set on {op.id}"
+                    assert op.description.startswith("[DISCOVERY] ") or op.description.startswith(
+                        "[ACTION] "
+                    ), f"description not bifurcated on {op.id}"
                 # GET operations should be discovery, POST should be action.
                 get_ops = [op for op in service_ir.operations if op.method == "GET"]
                 post_ops = [op for op in service_ir.operations if op.method == "POST"]
@@ -716,7 +706,7 @@ async def test_rest_discovery_compiles_to_running_runtime_and_tool_invocation(
             ): httpx.Response(
                 200,
                 text=(
-                    '<html><body>'
+                    "<html><body>"
                     '<a href="/rest/catalog/items/{item_id}?view=detail">Item Detail</a>'
                     "</body></html>"
                 ),
@@ -950,9 +940,7 @@ async def test_rest_discovery_compiles_to_running_runtime_and_tool_invocation(
         finally:
             await worker_engine.dispose()
 
-    configure_compilation_executor(
-        CallbackCompilationExecutor(callback=execute_workflow_for_task)
-    )
+    configure_compilation_executor(CallbackCompilationExecutor(callback=execute_workflow_for_task))
 
     compiler_api_app = create_compiler_api_app(
         session_factory=session_factory,
@@ -1028,9 +1016,7 @@ async def test_rest_discovery_compiles_to_running_runtime_and_tool_invocation(
                 # Verify tool_intent populated by pipeline.
                 assert item_op.tool_intent is not None
                 for op in service_ir.operations:
-                    assert op.tool_intent is not None, (
-                        f"tool_intent not set on {op.id}"
-                    )
+                    assert op.tool_intent is not None, f"tool_intent not set on {op.id}"
 
                 tool_result = await deployment_harness.call_tool(
                     "get_items_item_id",
@@ -1351,9 +1337,7 @@ async def test_grpc_proto_compiles_to_running_runtime_and_tool_invocation(
         finally:
             await worker_engine.dispose()
 
-    configure_compilation_executor(
-        CallbackCompilationExecutor(callback=execute_workflow_for_task)
-    )
+    configure_compilation_executor(CallbackCompilationExecutor(callback=execute_workflow_for_task))
 
     compiler_api_app = create_compiler_api_app(
         session_factory=session_factory,
@@ -1746,9 +1730,7 @@ async def test_soap_wsdl_compiles_to_running_runtime_and_tool_invocation(
         finally:
             await worker_engine.dispose()
 
-    configure_compilation_executor(
-        CallbackCompilationExecutor(callback=execute_workflow_for_task)
-    )
+    configure_compilation_executor(CallbackCompilationExecutor(callback=execute_workflow_for_task))
 
     compiler_api_app = create_compiler_api_app(
         session_factory=session_factory,
@@ -1865,9 +1847,7 @@ async def test_graphql_introspection_compiles_to_running_runtime_and_tool_invoca
                     200,
                     json={
                         "data": {
-                            "searchProducts": [
-                                {"id": f"sku-{term}", "name": f"{term.title()} Kit"}
-                            ]
+                            "searchProducts": [{"id": f"sku-{term}", "name": f"{term.title()} Kit"}]
                         }
                     },
                     request=request,
@@ -2083,9 +2063,7 @@ async def test_graphql_introspection_compiles_to_running_runtime_and_tool_invoca
         finally:
             await worker_engine.dispose()
 
-    configure_compilation_executor(
-        CallbackCompilationExecutor(callback=execute_workflow_for_task)
-    )
+    configure_compilation_executor(CallbackCompilationExecutor(callback=execute_workflow_for_task))
 
     compiler_api_app = create_compiler_api_app(
         session_factory=session_factory,
@@ -2165,9 +2143,7 @@ async def test_graphql_introspection_compiles_to_running_runtime_and_tool_invoca
                 assert search_op.graphql.operation_name == "searchProducts"
                 # Verify tool_intent populated by pipeline.
                 for op in service_ir.operations:
-                    assert op.tool_intent is not None, (
-                        f"tool_intent not set on {op.id}"
-                    )
+                    assert op.tool_intent is not None, f"tool_intent not set on {op.id}"
 
                 tool_result = await deployment_harness.call_tool(
                     "searchProducts",
@@ -2394,9 +2370,7 @@ async def test_sql_schema_compiles_to_running_runtime_and_tool_invocation(
         finally:
             await worker_engine.dispose()
 
-    configure_compilation_executor(
-        CallbackCompilationExecutor(callback=execute_workflow_for_task)
-    )
+    configure_compilation_executor(CallbackCompilationExecutor(callback=execute_workflow_for_task))
 
     compiler_api_app = create_compiler_api_app(
         session_factory=session_factory,

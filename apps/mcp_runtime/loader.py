@@ -217,6 +217,7 @@ def register_ir_resources(
         def _make_fn(content: str) -> Any:
             async def read_resource() -> str:
                 return content
+
             return read_resource
 
         fn_resource = FunctionResource(
@@ -257,7 +258,8 @@ def register_ir_prompts(
                 for name in arg_names:
                     if name in kwargs:
                         result = result.replace(
-                            "{" + name + "}", kwargs[name],
+                            "{" + name + "}",
+                            kwargs[name],
                         )
                 return result
 
@@ -267,10 +269,7 @@ def register_ir_prompts(
                     a.name,
                     inspect.Parameter.KEYWORD_ONLY,
                     annotation=str,
-                    default=(
-                        inspect.Parameter.empty if a.required
-                        else (a.default or "")
-                    ),
+                    default=(inspect.Parameter.empty if a.required else (a.default or "")),
                 )
                 for a in args
             ]

@@ -220,9 +220,7 @@ class CompilationWorkflow:
                         ),
                         stage=stage,
                         detail=(
-                            {"rollback_failures": rollback_failures}
-                            if rollback_failures
-                            else None
+                            {"rollback_failures": rollback_failures} if rollback_failures else None
                         ),
                         error_detail=error_detail,
                     )

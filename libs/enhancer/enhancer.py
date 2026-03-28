@@ -409,9 +409,7 @@ class IREnhancer:
         batch_size = max(self.config.batch_size, 1)
         return [operations[i : i + batch_size] for i in range(0, len(operations), batch_size)]
 
-    def _enhance_batch(
-        self, ir: ServiceIR, batch: list[Operation]
-    ) -> dict[str, dict[str, Any]]:
+    def _enhance_batch(self, ir: ServiceIR, batch: list[Operation]) -> dict[str, dict[str, Any]]:
         """Call LLM to enhance a batch of operations."""
         # Build ops summary for the prompt
         ops_json = json.dumps(

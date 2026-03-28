@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
-from dataclasses import asdict
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +13,6 @@ import pytest
 from apps.proof_runner.live_llm_e2e import (
     ProofCase,
     ProofResult,
-    ToolIntentCounts,
     ToolInvocationResult,
     ToolInvocationSpec,
     _active_version_for_service,
@@ -24,7 +21,6 @@ from apps.proof_runner.live_llm_e2e import (
     _build_llm_judge_from_env,
     _build_proof_cases,
     _compute_tool_intent_counts,
-    _count_llm_fields,
     _fetch_compilation_events,
     _fetch_runtime_tool_names,
     _generated_tool_audit_failure_reason,
@@ -48,7 +44,12 @@ from libs.ir.models import (
     ServiceIR,
     ToolIntent,
 )
-from libs.validator.audit import AuditPolicy, ToolAuditResult, ToolAuditSummary
+from libs.validator.audit import AuditPolicy, ToolAuditSummary
+
+_ENHANCE_STAGE_SUCCEEDED_EVENT = (
+    'event: msg\ndata: {"stage":"enhance","event_type":"stage.succeeded",'
+    '"detail":{"operations_enhanced":3}}\n\n'
+)
 
 
 def _risk(level: RiskLevel = RiskLevel.safe) -> RiskMetadata:
@@ -100,7 +101,9 @@ class TestSubmitCompilation:
 
         result = await _submit_compilation(mock_client, {"service_name": "test"})
         assert result["id"] == "job-1"
-        mock_client.post.assert_called_once_with("/api/v1/compilations", json={"service_name": "test"})
+        mock_client.post.assert_called_once_with(
+            "/api/v1/compilations", json={"service_name": "test"}
+        )
 
     async def test_submit_compilation_raises_on_error(self) -> None:
         mock_response = httpx.Response(
@@ -179,7 +182,7 @@ class TestWaitForTerminalJob:
 
 class TestFetchCompilationEvents:
     async def test_fetches_and_parses_sse(self) -> None:
-        sse_text = "event: message\ndata: {\"stage\": \"extract\"}\n\n"
+        sse_text = 'event: message\ndata: {"stage": "extract"}\n\n'
         mock_response = httpx.Response(
             200,
             text=sse_text,
@@ -298,12 +301,12 @@ class TestFetchRuntimeToolNames:
             request=httpx.Request("GET", "http://runtime:8003/tools"),
         )
 
-        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as MockClient:
+        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as mock_client_class:
             mock_client = AsyncMock()
             mock_client.get = AsyncMock(return_value=mock_response)
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_client
+            mock_client_class.return_value = mock_client
 
             names = await _fetch_runtime_tool_names("http://runtime:8003")
             assert names == {"tool_a", "tool_b"}
@@ -492,10 +495,12 @@ class TestBuildProofCases:
 
 class TestInvokeRuntimeTools:
     async def test_invokes_and_collects_results(self) -> None:
-        mock_invoker = AsyncMock(side_effect=[
-            {"status": "ok", "data": "result1"},
-            {"status": "ok", "data": "result2"},
-        ])
+        mock_invoker = AsyncMock(
+            side_effect=[
+                {"status": "ok", "data": "result1"},
+                {"status": "ok", "data": "result2"},
+            ]
+        )
 
         specs = (
             ToolInvocationSpec(tool_name="tool_a", arguments={"x": 1}),
@@ -575,9 +580,7 @@ class TestAuditGeneratedTools:
         summary = await _audit_generated_tools(
             "http://runtime:8003",
             ir,
-            representative_invocations=(
-                ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),
-            ),
+            representative_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
             representative_results=[],
             tool_invoker=failing_invoker,
             available_tool_names={"op1"},
@@ -600,9 +603,7 @@ class TestAuditGeneratedTools:
         summary = await _audit_generated_tools(
             "http://runtime:8003",
             ir,
-            representative_invocations=(
-                ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),
-            ),
+            representative_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
             representative_results=[],
             tool_invoker=failing_invoker,
             available_tool_names={"op1"},
@@ -625,9 +626,7 @@ class TestAuditGeneratedTools:
         summary = await _audit_generated_tools(
             "http://runtime:8003",
             ir,
-            representative_invocations=(
-                ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),
-            ),
+            representative_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
             representative_results=[],
             tool_invoker=ok_invoker,
             available_tool_names={"op1"},
@@ -652,9 +651,7 @@ class TestAuditGeneratedTools:
         summary = await _audit_generated_tools(
             "http://runtime:8003",
             ir,
-            representative_invocations=(
-                ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),
-            ),
+            representative_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
             representative_results=cached_results,
             available_tool_names={"op1"},
             audit_policy=policy,
@@ -689,7 +686,11 @@ class TestRunProofs:
             llm_field_count=3,
             invocation_results=[],
         )
-        with patch("apps.proof_runner.live_llm_e2e._run_case", new_callable=AsyncMock, return_value=mock_result):
+        with patch(
+            "apps.proof_runner.live_llm_e2e._run_case",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
             results = await run_proofs(
                 namespace="test-ns",
                 api_base_url="http://test:8000",
@@ -710,7 +711,11 @@ class TestRunProofs:
             llm_field_count=1,
             invocation_results=[],
         )
-        with patch("apps.proof_runner.live_llm_e2e._run_case", new_callable=AsyncMock, return_value=mock_result):
+        with patch(
+            "apps.proof_runner.live_llm_e2e._run_case",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
             results = await run_proofs(
                 namespace="test-ns",
                 api_base_url="http://test:8000",
@@ -730,13 +735,17 @@ class TestRunCase:
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
 
-        compile_resp = httpx.Response(200, json={"id": "j1"}, request=httpx.Request("POST", "http://t"))
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
         mock_client.post = AsyncMock(return_value=compile_resp)
 
-        job_resp = httpx.Response(200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t"))
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
         events_resp = httpx.Response(
             200,
-            text="event: msg\ndata: {\"stage\":\"enhance\",\"event_type\":\"stage.succeeded\",\"detail\":{\"operations_enhanced\":3}}\n\n",
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
             request=httpx.Request("GET", "http://t"),
         )
         services_resp = httpx.Response(
@@ -772,7 +781,9 @@ class TestRunCase:
             },
             request=httpx.Request("GET", "http://t"),
         )
-        mock_client.get = AsyncMock(side_effect=[job_resp, events_resp, services_resp, artifact_resp])
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
 
         mock_invoker = AsyncMock(return_value={"status": "ok"})
         case = ProofCase(
@@ -802,7 +813,9 @@ class TestRunCase:
         from apps.proof_runner.live_llm_e2e import _run_case
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
-        compile_resp = httpx.Response(200, json={"id": "j1"}, request=httpx.Request("POST", "http://t"))
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
         mock_client.post = AsyncMock(return_value=compile_resp)
 
         job_resp = httpx.Response(
@@ -821,16 +834,26 @@ class TestRunCase:
         )
 
         with pytest.raises(RuntimeError, match="compile error"):
-            await _run_case(mock_client, case, namespace="ns", timeout_seconds=30.0, audit_all_generated_tools=False)
+            await _run_case(
+                mock_client,
+                case,
+                namespace="ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+            )
 
     async def test_run_case_no_enhancements_raises(self) -> None:
         from apps.proof_runner.live_llm_e2e import _run_case
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
-        compile_resp = httpx.Response(200, json={"id": "j1"}, request=httpx.Request("POST", "http://t"))
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
         mock_client.post = AsyncMock(return_value=compile_resp)
 
-        job_resp = httpx.Response(200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t"))
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
         events_resp = httpx.Response(200, text="", request=httpx.Request("GET", "http://t"))
         mock_client.get = AsyncMock(side_effect=[job_resp, events_resp])
 
@@ -842,19 +865,29 @@ class TestRunCase:
         )
 
         with pytest.raises(RuntimeError, match="did not record any LLM enhancements"):
-            await _run_case(mock_client, case, namespace="ns", timeout_seconds=30.0, audit_all_generated_tools=False)
+            await _run_case(
+                mock_client,
+                case,
+                namespace="ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+            )
 
     async def test_run_case_no_llm_fields_raises(self) -> None:
         from apps.proof_runner.live_llm_e2e import _run_case
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
-        compile_resp = httpx.Response(200, json={"id": "j1"}, request=httpx.Request("POST", "http://t"))
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
         mock_client.post = AsyncMock(return_value=compile_resp)
 
-        job_resp = httpx.Response(200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t"))
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
         events_resp = httpx.Response(
             200,
-            text="event: msg\ndata: {\"stage\":\"enhance\",\"event_type\":\"stage.succeeded\",\"detail\":{\"operations_enhanced\":3}}\n\n",
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
             request=httpx.Request("GET", "http://t"),
         )
         services_resp = httpx.Response(
@@ -890,7 +923,9 @@ class TestRunCase:
             },
             request=httpx.Request("GET", "http://t"),
         )
-        mock_client.get = AsyncMock(side_effect=[job_resp, events_resp, services_resp, artifact_resp])
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
 
         case = ProofCase(
             protocol="rest",
@@ -900,19 +935,29 @@ class TestRunCase:
         )
 
         with pytest.raises(RuntimeError, match="no llm-sourced fields"):
-            await _run_case(mock_client, case, namespace="ns", timeout_seconds=30.0, audit_all_generated_tools=False)
+            await _run_case(
+                mock_client,
+                case,
+                namespace="ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+            )
 
     async def test_run_case_with_audit(self) -> None:
         from apps.proof_runner.live_llm_e2e import _run_case
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
-        compile_resp = httpx.Response(200, json={"id": "j1"}, request=httpx.Request("POST", "http://t"))
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
         mock_client.post = AsyncMock(return_value=compile_resp)
 
-        job_resp = httpx.Response(200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t"))
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
         events_resp = httpx.Response(
             200,
-            text="event: msg\ndata: {\"stage\":\"enhance\",\"event_type\":\"stage.succeeded\",\"detail\":{\"operations_enhanced\":3}}\n\n",
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
             request=httpx.Request("GET", "http://t"),
         )
         services_resp = httpx.Response(
@@ -948,7 +993,9 @@ class TestRunCase:
             },
             request=httpx.Request("GET", "http://t"),
         )
-        mock_client.get = AsyncMock(side_effect=[job_resp, events_resp, services_resp, artifact_resp])
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
 
         mock_invoker = AsyncMock(return_value={"status": "ok"})
         mock_audit_summary = ToolAuditSummary(
@@ -995,13 +1042,17 @@ class TestRunCase:
         from libs.validator.llm_judge import JudgeEvaluation
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
-        compile_resp = httpx.Response(200, json={"id": "j1"}, request=httpx.Request("POST", "http://t"))
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
         mock_client.post = AsyncMock(return_value=compile_resp)
 
-        job_resp = httpx.Response(200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t"))
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
         events_resp = httpx.Response(
             200,
-            text="event: msg\ndata: {\"stage\":\"enhance\",\"event_type\":\"stage.succeeded\",\"detail\":{\"operations_enhanced\":3}}\n\n",
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
             request=httpx.Request("GET", "http://t"),
         )
         services_resp = httpx.Response(
@@ -1037,7 +1088,9 @@ class TestRunCase:
             },
             request=httpx.Request("GET", "http://t"),
         )
-        mock_client.get = AsyncMock(side_effect=[job_resp, events_resp, services_resp, artifact_resp])
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
 
         mock_invoker = AsyncMock(return_value={"status": "ok"})
         mock_judge = MagicMock()
@@ -1079,13 +1132,17 @@ class TestRunCase:
         from apps.proof_runner.live_llm_e2e import _run_case
 
         mock_client = AsyncMock(spec=httpx.AsyncClient)
-        compile_resp = httpx.Response(200, json={"id": "j1"}, request=httpx.Request("POST", "http://t"))
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
         mock_client.post = AsyncMock(return_value=compile_resp)
 
-        job_resp = httpx.Response(200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t"))
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
         events_resp = httpx.Response(
             200,
-            text="event: msg\ndata: {\"stage\":\"enhance\",\"event_type\":\"stage.succeeded\",\"detail\":{\"operations_enhanced\":3}}\n\n",
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
             request=httpx.Request("GET", "http://t"),
         )
         services_resp = httpx.Response(
@@ -1121,7 +1178,9 @@ class TestRunCase:
             },
             request=httpx.Request("GET", "http://t"),
         )
-        mock_client.get = AsyncMock(side_effect=[job_resp, events_resp, services_resp, artifact_resp])
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
 
         mock_invoker = AsyncMock(return_value={"status": "ok"})
         mock_judge = MagicMock()
@@ -1166,16 +1225,24 @@ class TestParseArgs:
             assert args.enable_llm_judge is False
 
     def test_all_arguments(self) -> None:
-        with patch("sys.argv", [
-            "prog",
-            "--namespace", "prod-ns",
-            "--api-base-url", "http://api:9000",
-            "--protocol", "graphql",
-            "--timeout-seconds", "120",
-            "--run-id", "test-run",
-            "--audit-all-generated-tools",
-            "--enable-llm-judge",
-        ]):
+        with patch(
+            "sys.argv",
+            [
+                "prog",
+                "--namespace",
+                "prod-ns",
+                "--api-base-url",
+                "http://api:9000",
+                "--protocol",
+                "graphql",
+                "--timeout-seconds",
+                "120",
+                "--run-id",
+                "test-run",
+                "--audit-all-generated-tools",
+                "--enable-llm-judge",
+            ],
+        ):
             args = _parse_args()
             assert args.namespace == "prod-ns"
             assert args.api_base_url == "http://api:9000"
@@ -1191,8 +1258,8 @@ class TestParseArgs:
 
 class TestBuildLlmJudgeFromEnv:
     def test_success(self) -> None:
-        mock_client = MagicMock()
-        mock_config = MagicMock()
+        MagicMock()
+        MagicMock()
         with patch("apps.proof_runner.live_llm_e2e._build_llm_judge_from_env") as mock_fn:
             mock_fn.return_value = MagicMock()
             result = mock_fn()

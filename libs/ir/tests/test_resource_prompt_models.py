@@ -94,10 +94,7 @@ def make_prompt(**overrides: Any) -> PromptDefinition:
         "id": "explore_petstore",
         "name": "Explore Petstore",
         "description": "Explore available operations",
-        "template": (
-            "List available operations for {service_name} "
-            "and their risk levels"
-        ),
+        "template": ("List available operations for {service_name} and their risk levels"),
         "arguments": [
             PromptArgument(
                 name="service_name",
@@ -401,8 +398,15 @@ class TestSchemaResourcePrompt:
         rd_schema = schema["$defs"]["ResourceDefinition"]
         rd_props = rd_schema["properties"]
         expected_fields = {
-            "id", "name", "description", "uri", "mime_type",
-            "content_type", "content", "operation_id", "tags",
+            "id",
+            "name",
+            "description",
+            "uri",
+            "mime_type",
+            "content_type",
+            "content",
+            "operation_id",
+            "tags",
         }
         assert expected_fields <= set(rd_props.keys())
 
@@ -433,10 +437,7 @@ class TestSerializationResourcePrompt:
 
         assert len(restored.prompt_definitions) == 1
         assert restored.prompt_definitions[0].id == "explore_petstore"
-        expected_template = (
-            "List available operations for {service_name} "
-            "and their risk levels"
-        )
+        expected_template = "List available operations for {service_name} and their risk levels"
         assert restored.prompt_definitions[0].template == expected_template
         assert len(restored.prompt_definitions[0].arguments) == 1
 

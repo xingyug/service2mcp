@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from unittest.mock import MagicMock, patch
 
-from google.protobuf.descriptor_pool import DescriptorPool
+from google.protobuf import descriptor_pb2
 from google.protobuf.message_factory import GetMessageClass
 
 from apps.proof_runner.grpc_mock import (
@@ -17,7 +17,6 @@ from apps.proof_runner.grpc_mock import (
     main,
     serve,
 )
-from google.protobuf import descriptor_pb2
 
 
 class TestBuildInventoryDescriptorPool:
@@ -154,7 +153,9 @@ class TestServe:
     def test_serve_builds_and_starts_server(self) -> None:
         mock_server = MagicMock()
         with (
-            patch("apps.proof_runner.grpc_mock.grpc.server", return_value=mock_server) as mock_grpc_server,
+            patch(
+                "apps.proof_runner.grpc_mock.grpc.server", return_value=mock_server
+            ) as mock_grpc_server,
             patch("apps.proof_runner.grpc_mock.reflection.enable_server_reflection"),
         ):
             mock_server.add_insecure_port = MagicMock()
@@ -174,7 +175,9 @@ class TestServe:
         mock_server = MagicMock()
         with (
             patch("apps.proof_runner.grpc_mock.grpc.server", return_value=mock_server),
-            patch("apps.proof_runner.grpc_mock.reflection.enable_server_reflection") as mock_reflection,
+            patch(
+                "apps.proof_runner.grpc_mock.reflection.enable_server_reflection"
+            ) as mock_reflection,
         ):
             serve(port=50099)
             mock_reflection.assert_called_once()
@@ -215,7 +218,7 @@ class TestServeHandlers:
         list_items_handler = handlers["ListItems"]
 
         request_cls = GetMessageClass(pool.FindMessageTypeByName("catalog.v1.ListItemsRequest"))
-        response_cls = GetMessageClass(pool.FindMessageTypeByName("catalog.v1.ListItemsResponse"))
+        GetMessageClass(pool.FindMessageTypeByName("catalog.v1.ListItemsResponse"))
 
         request = request_cls()
         request.location_id = "warehouse-1"
@@ -246,7 +249,9 @@ class TestServeHandlers:
         pool, handlers = self._extract_handlers()
         adjust_handler = handlers["AdjustInventory"]
 
-        request_cls = GetMessageClass(pool.FindMessageTypeByName("catalog.v1.AdjustInventoryRequest"))
+        request_cls = GetMessageClass(
+            pool.FindMessageTypeByName("catalog.v1.AdjustInventoryRequest")
+        )
         request = request_cls()
         request.sku = "sku-42"
         request.delta = 10
@@ -258,7 +263,9 @@ class TestServeHandlers:
         pool, handlers = self._extract_handlers()
         watch_handler = handlers["WatchInventory"]
 
-        request_cls = GetMessageClass(pool.FindMessageTypeByName("catalog.v1.WatchInventoryRequest"))
+        request_cls = GetMessageClass(
+            pool.FindMessageTypeByName("catalog.v1.WatchInventoryRequest")
+        )
         request = request_cls()
         request.sku = "sku-test"
 
@@ -270,7 +277,9 @@ class TestServeHandlers:
         pool, handlers = self._extract_handlers()
         watch_handler = handlers["WatchInventory"]
 
-        request_cls = GetMessageClass(pool.FindMessageTypeByName("catalog.v1.WatchInventoryRequest"))
+        request_cls = GetMessageClass(
+            pool.FindMessageTypeByName("catalog.v1.WatchInventoryRequest")
+        )
         request = request_cls()  # no sku set
 
         events = list(watch_handler.unary_stream(request, MagicMock()))

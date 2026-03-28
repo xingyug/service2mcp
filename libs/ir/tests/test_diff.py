@@ -25,7 +25,8 @@ def _op(id: str, name: str = "", method: str = "GET", **kw: Any) -> Operation:
         "path": f"/{id}",
         "risk": RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
     }
-    return Operation(**(defaults | kw),
+    return Operation(
+        **(defaults | kw),
     )
 
 
@@ -48,8 +49,16 @@ class TestDiffIdentical:
 class TestDiffAddedRemoved:
     def test_added_operation(self):
         a = _base_ir(operations=[_op("get_pet")])
-        b = _base_ir(operations=[_op("get_pet"), _op("create_pet", method="POST",
-                      risk=RiskMetadata(risk_level=RiskLevel.cautious, confidence=0.9))])
+        b = _base_ir(
+            operations=[
+                _op("get_pet"),
+                _op(
+                    "create_pet",
+                    method="POST",
+                    risk=RiskMetadata(risk_level=RiskLevel.cautious, confidence=0.9),
+                ),
+            ]
+        )
         diff = compute_diff(a, b)
         assert diff.added_operations == ["create_pet"]
         assert diff.removed_operations == []
@@ -79,30 +88,50 @@ class TestDiffChanged:
         assert diff.changed_operations[0].operation_id == "get_pet"
 
     def test_changed_method(self):
-        a = _base_ir(operations=[_op("update_pet", method="PUT",
-                      risk=RiskMetadata(risk_level=RiskLevel.cautious, confidence=0.9))])
-        b = _base_ir(operations=[_op("update_pet", method="PATCH",
-                      risk=RiskMetadata(risk_level=RiskLevel.cautious, confidence=0.9))])
+        a = _base_ir(
+            operations=[
+                _op(
+                    "update_pet",
+                    method="PUT",
+                    risk=RiskMetadata(risk_level=RiskLevel.cautious, confidence=0.9),
+                )
+            ]
+        )
+        b = _base_ir(
+            operations=[
+                _op(
+                    "update_pet",
+                    method="PATCH",
+                    risk=RiskMetadata(risk_level=RiskLevel.cautious, confidence=0.9),
+                )
+            ]
+        )
         diff = compute_diff(a, b)
         assert len(diff.changed_operations) == 1
 
     def test_changed_risk_level(self):
-        a = _base_ir(operations=[_op("do_thing",
-                      risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9))])
-        b = _base_ir(operations=[_op("do_thing",
-                      risk=RiskMetadata(risk_level=RiskLevel.cautious, confidence=0.9))])
+        a = _base_ir(
+            operations=[
+                _op("do_thing", risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9))
+            ]
+        )
+        b = _base_ir(
+            operations=[
+                _op("do_thing", risk=RiskMetadata(risk_level=RiskLevel.cautious, confidence=0.9))
+            ]
+        )
         diff = compute_diff(a, b)
         assert len(diff.changed_operations) == 1
-        change_fields = [c[0] if isinstance(c, tuple) else c.field_name
-                        for c in diff.changed_operations[0].changes]
+        change_fields = [
+            c[0] if isinstance(c, tuple) else c.field_name
+            for c in diff.changed_operations[0].changes
+        ]
         assert "risk.risk_level" in change_fields
 
     def test_added_param(self):
         a = _base_ir(operations=[_op("get_pet", params=[])])
         b = _base_ir(
-            operations=[
-                _op("get_pet", params=[Param(name="id", type="string", required=True)])
-            ]
+            operations=[_op("get_pet", params=[Param(name="id", type="string", required=True)])]
         )
         diff = compute_diff(a, b)
         assert len(diff.changed_operations) == 1
@@ -110,9 +139,7 @@ class TestDiffChanged:
 
     def test_removed_param(self):
         a = _base_ir(
-            operations=[
-                _op("get_pet", params=[Param(name="id", type="string", required=True)])
-            ]
+            operations=[_op("get_pet", params=[Param(name="id", type="string", required=True)])]
         )
         b = _base_ir(operations=[_op("get_pet", params=[])])
         diff = compute_diff(a, b)
@@ -124,27 +151,24 @@ class TestDiffChanged:
         diff = compute_diff(a, b)
         assert len(diff.changed_operations) == 1
         param_changes = [
-            c for c in diff.changed_operations[0].changes
-            if isinstance(c, ParamChange)
+            c for c in diff.changed_operations[0].changes if isinstance(c, ParamChange)
         ]
         assert len(param_changes) == 1
         assert param_changes[0].param_name == "id"
         assert param_changes[0].old_value == "string"
         assert param_changes[0].new_value == "integer"
 
-
     def test_changed_param_required(self) -> None:
-        a = _base_ir(operations=[
-            _op("get_pet", params=[Param(name="id", type="string", required=False)])
-        ])
-        b = _base_ir(operations=[
-            _op("get_pet", params=[Param(name="id", type="string", required=True)])
-        ])
+        a = _base_ir(
+            operations=[_op("get_pet", params=[Param(name="id", type="string", required=False)])]
+        )
+        b = _base_ir(
+            operations=[_op("get_pet", params=[Param(name="id", type="string", required=True)])]
+        )
         diff = compute_diff(a, b)
         assert len(diff.changed_operations) == 1
         param_changes = [
-            c for c in diff.changed_operations[0].changes
-            if isinstance(c, ParamChange)
+            c for c in diff.changed_operations[0].changes if isinstance(c, ParamChange)
         ]
         assert len(param_changes) == 1
         assert param_changes[0].field_name == "required"
@@ -152,17 +176,16 @@ class TestDiffChanged:
         assert param_changes[0].new_value is True
 
     def test_changed_param_default(self) -> None:
-        a = _base_ir(operations=[
-            _op("list", params=[Param(name="limit", type="integer", default=10)])
-        ])
-        b = _base_ir(operations=[
-            _op("list", params=[Param(name="limit", type="integer", default=50)])
-        ])
+        a = _base_ir(
+            operations=[_op("list", params=[Param(name="limit", type="integer", default=10)])]
+        )
+        b = _base_ir(
+            operations=[_op("list", params=[Param(name="limit", type="integer", default=50)])]
+        )
         diff = compute_diff(a, b)
         assert len(diff.changed_operations) == 1
         param_changes = [
-            c for c in diff.changed_operations[0].changes
-            if isinstance(c, ParamChange)
+            c for c in diff.changed_operations[0].changes if isinstance(c, ParamChange)
         ]
         assert len(param_changes) == 1
         assert param_changes[0].field_name == "default"
@@ -175,27 +198,38 @@ class TestDiffChanged:
         diff = compute_diff(a, b)
         assert len(diff.changed_operations) == 1
         field_changes = [
-            c for c in diff.changed_operations[0].changes
+            c
+            for c in diff.changed_operations[0].changes
             if isinstance(c, tuple) and c[0] == "enabled"
         ]
         assert len(field_changes) == 1
         assert field_changes[0] == ("enabled", True, False)
 
     def test_changed_risk_writes_state(self) -> None:
-        a = _base_ir(operations=[_op(
-            "do_thing",
-            risk=RiskMetadata(
-                risk_level=RiskLevel.safe, confidence=0.9,
-                writes_state=False,
-            ),
-        )])
-        b = _base_ir(operations=[_op(
-            "do_thing",
-            risk=RiskMetadata(
-                risk_level=RiskLevel.safe, confidence=0.9,
-                writes_state=True,
-            ),
-        )])
+        a = _base_ir(
+            operations=[
+                _op(
+                    "do_thing",
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.safe,
+                        confidence=0.9,
+                        writes_state=False,
+                    ),
+                )
+            ]
+        )
+        b = _base_ir(
+            operations=[
+                _op(
+                    "do_thing",
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.safe,
+                        confidence=0.9,
+                        writes_state=True,
+                    ),
+                )
+            ]
+        )
         diff = compute_diff(a, b)
         assert len(diff.changed_operations) == 1
         fields = [
@@ -205,16 +239,30 @@ class TestDiffChanged:
         assert "risk.writes_state" in fields
 
     def test_changed_risk_destructive(self) -> None:
-        a = _base_ir(operations=[_op(
-            "x", risk=RiskMetadata(
-                risk_level=RiskLevel.safe, confidence=0.9, destructive=False,
-            ),
-        )])
-        b = _base_ir(operations=[_op(
-            "x", risk=RiskMetadata(
-                risk_level=RiskLevel.dangerous, confidence=0.9, destructive=True,
-            ),
-        )])
+        a = _base_ir(
+            operations=[
+                _op(
+                    "x",
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.safe,
+                        confidence=0.9,
+                        destructive=False,
+                    ),
+                )
+            ]
+        )
+        b = _base_ir(
+            operations=[
+                _op(
+                    "x",
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.dangerous,
+                        confidence=0.9,
+                        destructive=True,
+                    ),
+                )
+            ]
+        )
         diff = compute_diff(a, b)
         fields = [
             c[0] if isinstance(c, tuple) else c.field_name
@@ -224,16 +272,30 @@ class TestDiffChanged:
         assert "risk.risk_level" in fields
 
     def test_changed_risk_idempotent(self) -> None:
-        a = _base_ir(operations=[_op(
-            "x", risk=RiskMetadata(
-                risk_level=RiskLevel.safe, confidence=0.9, idempotent=True,
-            ),
-        )])
-        b = _base_ir(operations=[_op(
-            "x", risk=RiskMetadata(
-                risk_level=RiskLevel.safe, confidence=0.9, idempotent=False,
-            ),
-        )])
+        a = _base_ir(
+            operations=[
+                _op(
+                    "x",
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.safe,
+                        confidence=0.9,
+                        idempotent=True,
+                    ),
+                )
+            ]
+        )
+        b = _base_ir(
+            operations=[
+                _op(
+                    "x",
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.safe,
+                        confidence=0.9,
+                        idempotent=False,
+                    ),
+                )
+            ]
+        )
         diff = compute_diff(a, b)
         fields = [
             c[0] if isinstance(c, tuple) else c.field_name
@@ -242,18 +304,30 @@ class TestDiffChanged:
         assert "risk.idempotent" in fields
 
     def test_changed_risk_external_side_effect(self) -> None:
-        a = _base_ir(operations=[_op(
-            "x", risk=RiskMetadata(
-                risk_level=RiskLevel.safe, confidence=0.9,
-                external_side_effect=False,
-            ),
-        )])
-        b = _base_ir(operations=[_op(
-            "x", risk=RiskMetadata(
-                risk_level=RiskLevel.cautious, confidence=0.9,
-                external_side_effect=True,
-            ),
-        )])
+        a = _base_ir(
+            operations=[
+                _op(
+                    "x",
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.safe,
+                        confidence=0.9,
+                        external_side_effect=False,
+                    ),
+                )
+            ]
+        )
+        b = _base_ir(
+            operations=[
+                _op(
+                    "x",
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.cautious,
+                        confidence=0.9,
+                        external_side_effect=True,
+                    ),
+                )
+            ]
+        )
         diff = compute_diff(a, b)
         fields = [
             c[0] if isinstance(c, tuple) else c.field_name
@@ -265,9 +339,12 @@ class TestDiffChanged:
 class TestDiffSummary:
     def test_complex_summary(self) -> None:
         a = _base_ir(operations=[_op("get_pet"), _op("old_op")])
-        b = _base_ir(operations=[
-            _op("get_pet", description="changed"), _op("new_op"),
-        ])
+        b = _base_ir(
+            operations=[
+                _op("get_pet", description="changed"),
+                _op("new_op"),
+            ]
+        )
         diff = compute_diff(a, b)
         summary = diff.summary
         assert "+1 operations" in summary

@@ -4,16 +4,25 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from apps.mcp_runtime.sql import (
+    SQLRuntimeExecutor,
     _json_safe_row,
     _json_safe_value,
     _resolve_limit,
     _to_async_database_url,
+)
+from libs.ir.models import (
+    Operation,
+    ServiceIR,
+    SqlOperationConfig,
+    SqlOperationType,
+    SqlRelationKind,
 )
 
 
@@ -146,12 +155,6 @@ class TestJsonSafeRow:
         assert _json_safe_row({}) == {}
 
 
-# Test coverage for SQLRuntimeExecutor - focus on specific uncovered lines
-from unittest.mock import AsyncMock, MagicMock, patch
-from apps.mcp_runtime.sql import SQLRuntimeExecutor
-from libs.ir.models import ServiceIR, Operation, SqlOperationConfig, SqlOperationType, SqlRelationKind
-
-
 class TestSQLRuntimeExecutorCoverage:
     """Tests to cover specific uncovered lines in SQLRuntimeExecutor."""
 
@@ -168,7 +171,7 @@ class TestSQLRuntimeExecutorCoverage:
         # Create without providing engine - should own it
         executor = SQLRuntimeExecutor(ir)
         executor._engine = AsyncMock()
-        
+
         await executor.aclose()
         executor._engine.dispose.assert_called_once()
 
@@ -184,7 +187,7 @@ class TestSQLRuntimeExecutorCoverage:
         )
         mock_engine = AsyncMock()
         executor = SQLRuntimeExecutor(ir, engine=mock_engine)
-        
+
         await executor.aclose()
         mock_engine.dispose.assert_not_called()
 
@@ -200,7 +203,7 @@ class TestSQLRuntimeExecutorCoverage:
         )
         executor = SQLRuntimeExecutor(ir)
         executor._get_table = AsyncMock(return_value=MagicMock())
-        
+
         op = Operation(
             id="op1",
             name="test",
@@ -209,12 +212,12 @@ class TestSQLRuntimeExecutorCoverage:
             description="test",
             enabled=True,
         )
-        
+
         # Mock config with unsupported action
         config = MagicMock()
         config.action = MagicMock()
         config.action.value = "unsupported"
-        
+
         with pytest.raises(ToolError, match="Unsupported SQL runtime action"):
             await executor.invoke(operation=op, arguments={}, config=config)
 
@@ -229,7 +232,7 @@ class TestSQLRuntimeExecutorCoverage:
             operations=[],
         )
         executor = SQLRuntimeExecutor(ir)
-        
+
         op = Operation(
             id="op1",
             name="test",
@@ -238,7 +241,7 @@ class TestSQLRuntimeExecutorCoverage:
             description="test",
             enabled=True,
         )
-        
+
         config = SqlOperationConfig(
             action=SqlOperationType.insert,
             relation_name="users",
@@ -249,9 +252,9 @@ class TestSQLRuntimeExecutorCoverage:
             default_limit=10,
             max_limit=100,
         )
-        
+
         executor._get_table = AsyncMock(return_value=MagicMock())
-        
+
         # Pass arguments that don't match insertable columns or are None
         with pytest.raises(ToolError, match="requires at least one insertable value"):
             await executor.invoke(
@@ -271,7 +274,7 @@ class TestSQLRuntimeExecutorCoverage:
             operations=[],
         )
         executor = SQLRuntimeExecutor(ir)
-        
+
         config = SqlOperationConfig(
             action=SqlOperationType.query,
             relation_name="users",
@@ -282,12 +285,12 @@ class TestSQLRuntimeExecutorCoverage:
             default_limit=10,
             max_limit=100,
         )
-        
+
         # Add a table to cache
         mock_table = MagicMock()
         cache_key = ("main", "users")
         executor._table_cache[cache_key] = mock_table
-        
+
         result = await executor._get_table(config)
         assert result is mock_table
 
@@ -296,7 +299,7 @@ class TestSQLRuntimeExecutorCoverage:
         # Test negative limit
         with pytest.raises(ToolError, match="requires limit > 0"):
             _resolve_limit(-1, default_limit=50, max_limit=100, operation_id="test")
-        
-        # Test zero limit  
+
+        # Test zero limit
         with pytest.raises(ToolError, match="requires limit > 0"):
             _resolve_limit(0, default_limit=50, max_limit=100, operation_id="test")

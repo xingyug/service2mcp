@@ -24,7 +24,18 @@ Metric = Counter | Histogram | Gauge
 
 # Default histogram buckets (seconds) — covers 5ms to 30s
 DEFAULT_BUCKETS: tuple[float, ...] = (
-    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    30.0,
 )
 
 # Track registered metric names to avoid duplicate registration

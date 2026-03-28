@@ -4,8 +4,18 @@ app = Flask(__name__)
 
 HISTORY = [
     {"method": "add", "params": {"a": 1, "b": 2}, "result": 3, "timestamp": "2024-01-15T10:30:00Z"},
-    {"method": "subtract", "params": {"a": 10, "b": 3}, "result": 7, "timestamp": "2024-01-15T10:31:00Z"},
-    {"method": "add", "params": {"a": 5, "b": 5}, "result": 10, "timestamp": "2024-01-15T10:32:00Z"},
+    {
+        "method": "subtract",
+        "params": {"a": 10, "b": 3},
+        "result": 7,
+        "timestamp": "2024-01-15T10:31:00Z",
+    },
+    {
+        "method": "add",
+        "params": {"a": 5, "b": 5},
+        "result": 10,
+        "timestamp": "2024-01-15T10:32:00Z",
+    },
 ]
 
 OPENRPC_SPEC = {
@@ -48,17 +58,17 @@ def _error(req_id, code, message):
     return jsonify({"jsonrpc": "2.0", "error": {"code": code, "message": message}, "id": req_id})
 
 
-@app.route('/healthz')
+@app.route("/healthz")
 def healthz():
-    return 'ok', 200
+    return "ok", 200
 
 
-@app.route('/openrpc.json')
+@app.route("/openrpc.json")
 def openrpc():
     return jsonify(OPENRPC_SPEC)
 
 
-@app.route('/rpc', methods=['POST'])
+@app.route("/rpc", methods=["POST"])
 def rpc():
     body = request.get_json(force=True)
     req_id = body.get("id")
@@ -94,6 +104,6 @@ def rpc():
     return _error(req_id, -32601, f"Method not found: {method}"), 400
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("JSON-RPC 2.0 + OpenRPC mock server listening on :8000")
-    app.run(host='0.0.0.0', port=8000)
+    app.run(host="0.0.0.0", port=8000)

@@ -58,7 +58,9 @@ class CompilationJob(Base):
     source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     protocol: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="pending",
+        String(32),
+        nullable=False,
+        default="pending",
     )
     current_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)

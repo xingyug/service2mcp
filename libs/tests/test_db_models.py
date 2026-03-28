@@ -176,6 +176,7 @@ class TestMigrationScript:
 
     def test_migration_importable(self):
         import importlib
+
         m = importlib.import_module("migrations.versions.001_initial")
         assert hasattr(m, "upgrade")
         assert hasattr(m, "downgrade")

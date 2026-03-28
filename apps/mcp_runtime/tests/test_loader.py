@@ -69,10 +69,12 @@ def _ir(operations: list[Operation] | None = None) -> ServiceIR:
 class TestBuildToolFunction:
     @pytest.mark.asyncio
     async def test_generated_function_has_correct_signature(self) -> None:
-        op = _op(params=[
-            Param(name="item_id", type="string", required=True),
-            Param(name="limit", type="integer", required=False, default=10),
-        ])
+        op = _op(
+            params=[
+                Param(name="item_id", type="string", required=True),
+                Param(name="limit", type="integer", required=False, default=10),
+            ]
+        )
         fn, name_map = build_tool_function(op)
         sig = inspect.signature(fn)
         assert "item_id" in sig.parameters
@@ -105,9 +107,7 @@ class TestBuildToolFunction:
     async def test_custom_async_handler(self) -> None:
         op = _op(params=[Param(name="q", type="string", required=True)])
 
-        async def handler(
-            operation: Operation, args: dict[str, Any]
-        ) -> dict[str, Any]:
+        async def handler(operation: Operation, args: dict[str, Any]) -> dict[str, Any]:
             return {"async": True, "query": args["q"]}
 
         fn, _ = build_tool_function(op, tool_handler=handler)
@@ -116,9 +116,11 @@ class TestBuildToolFunction:
 
     @pytest.mark.asyncio
     async def test_param_name_remapping(self) -> None:
-        op = _op(params=[
-            Param(name="item-id", type="string", required=True),
-        ])
+        op = _op(
+            params=[
+                Param(name="item-id", type="string", required=True),
+            ]
+        )
         fn, name_map = build_tool_function(op)
         # "item-id" is not a valid Python identifier, should be remapped
         assert "item_id" in name_map
@@ -147,25 +149,23 @@ class TestPythonParameterName:
         assert result == "param"
 
     def test_dedup_on_collision(self) -> None:
-        result = _python_parameter_name(
-            "id", existing_names={"id"}
-        )
+        result = _python_parameter_name("id", existing_names={"id"})
         assert result == "id_2"
 
     def test_dedup_chain(self) -> None:
-        result = _python_parameter_name(
-            "id", existing_names={"id", "id_2"}
-        )
+        result = _python_parameter_name("id", existing_names={"id", "id_2"})
         assert result == "id_3"
 
 
 class TestRegisterIrTools:
     def test_disabled_operations_skipped(self) -> None:
         server = create_runtime_server("test")
-        ir = _ir(operations=[
-            _op("enabled_op", enabled=True),
-            _op("disabled_op", enabled=False),
-        ])
+        ir = _ir(
+            operations=[
+                _op("enabled_op", enabled=True),
+                _op("disabled_op", enabled=False),
+            ]
+        )
         registered = register_ir_tools(server, ir)
         assert "enabled_op" in registered
         assert "disabled_op" not in registered

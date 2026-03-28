@@ -201,8 +201,13 @@ class TestStructuredLogging:
     def test_formatter_includes_trace_id(self):
         formatter = StructuredFormatter(component="runtime")
         record = logging.LogRecord(
-            name="test", level=logging.INFO, pathname="", lineno=0,
-            msg="traced", args=(), exc_info=None,
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="traced",
+            args=(),
+            exc_info=None,
         )
         record.trace_id = "abc123"
         output = formatter.format(record)
@@ -215,9 +220,15 @@ class TestStructuredLogging:
             raise ValueError("test error")
         except ValueError:
             import sys
+
             record = logging.LogRecord(
-                name="test", level=logging.ERROR, pathname="", lineno=0,
-                msg="failed", args=(), exc_info=sys.exc_info(),
+                name="test",
+                level=logging.ERROR,
+                pathname="",
+                lineno=0,
+                msg="failed",
+                args=(),
+                exc_info=sys.exc_info(),
             )
         output = formatter.format(record)
         parsed = json.loads(output)
@@ -238,8 +249,13 @@ class TestStructuredLogging:
     def test_formatter_without_trace_id(self):
         formatter = StructuredFormatter(component="api")
         record = logging.LogRecord(
-            name="test", level=logging.DEBUG, pathname="", lineno=0,
-            msg="no trace", args=(), exc_info=None,
+            name="test",
+            level=logging.DEBUG,
+            pathname="",
+            lineno=0,
+            msg="no trace",
+            args=(),
+            exc_info=None,
         )
         output = formatter.format(record)
         parsed = json.loads(output)

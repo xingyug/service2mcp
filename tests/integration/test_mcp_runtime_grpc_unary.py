@@ -104,9 +104,7 @@ def _build_test_descriptor_database() -> tuple[DescriptorDatabase, Any, Any]:
     descriptor_db = DescriptorDatabase()
     descriptor_db.Add(file_proto)
     pool = descriptor_pool.DescriptorPool(descriptor_db)
-    request_class = GetMessageClass(
-        pool.FindMessageTypeByName("catalog.v1.LookupInventoryRequest")
-    )
+    request_class = GetMessageClass(pool.FindMessageTypeByName("catalog.v1.LookupInventoryRequest"))
     response_class = GetMessageClass(
         pool.FindMessageTypeByName("catalog.v1.LookupInventoryResponse")
     )

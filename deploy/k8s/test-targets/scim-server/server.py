@@ -1,5 +1,6 @@
 import copy
 import uuid
+
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
@@ -31,26 +32,115 @@ USER_SCHEMA = {
     "name": "User",
     "description": "User Account",
     "attributes": [
-        {"name": "userName", "type": "string", "multiValued": False, "required": True, "mutability": "readWrite", "returned": "default", "uniqueness": "server"},
-        {"name": "name", "type": "complex", "multiValued": False, "required": False, "mutability": "readWrite", "returned": "default",
-         "subAttributes": [
-             {"name": "familyName", "type": "string", "multiValued": False, "required": False, "mutability": "readWrite", "returned": "default"},
-             {"name": "givenName", "type": "string", "multiValued": False, "required": False, "mutability": "readWrite", "returned": "default"},
-         ]},
-        {"name": "emails", "type": "complex", "multiValued": True, "required": False, "mutability": "readWrite", "returned": "default",
-         "subAttributes": [
-             {"name": "value", "type": "string", "multiValued": False, "required": False, "mutability": "readWrite", "returned": "default"},
-             {"name": "primary", "type": "boolean", "multiValued": False, "required": False, "mutability": "readWrite", "returned": "default"},
-         ]},
-        {"name": "active", "type": "boolean", "multiValued": False, "required": False, "mutability": "readWrite", "returned": "default"},
-        {"name": "id", "type": "string", "multiValued": False, "required": False, "mutability": "readOnly", "returned": "always", "uniqueness": "server"},
-        {"name": "meta", "type": "complex", "multiValued": False, "required": False, "mutability": "readOnly", "returned": "default",
-         "subAttributes": [
-             {"name": "resourceType", "type": "string", "multiValued": False, "required": False, "mutability": "readOnly", "returned": "default"},
-             {"name": "location", "type": "string", "multiValued": False, "required": False, "mutability": "readOnly", "returned": "default"},
-         ]},
+        {
+            "name": "userName",
+            "type": "string",
+            "multiValued": False,
+            "required": True,
+            "mutability": "readWrite",
+            "returned": "default",
+            "uniqueness": "server",
+        },
+        {
+            "name": "name",
+            "type": "complex",
+            "multiValued": False,
+            "required": False,
+            "mutability": "readWrite",
+            "returned": "default",
+            "subAttributes": [
+                {
+                    "name": "familyName",
+                    "type": "string",
+                    "multiValued": False,
+                    "required": False,
+                    "mutability": "readWrite",
+                    "returned": "default",
+                },
+                {
+                    "name": "givenName",
+                    "type": "string",
+                    "multiValued": False,
+                    "required": False,
+                    "mutability": "readWrite",
+                    "returned": "default",
+                },
+            ],
+        },
+        {
+            "name": "emails",
+            "type": "complex",
+            "multiValued": True,
+            "required": False,
+            "mutability": "readWrite",
+            "returned": "default",
+            "subAttributes": [
+                {
+                    "name": "value",
+                    "type": "string",
+                    "multiValued": False,
+                    "required": False,
+                    "mutability": "readWrite",
+                    "returned": "default",
+                },
+                {
+                    "name": "primary",
+                    "type": "boolean",
+                    "multiValued": False,
+                    "required": False,
+                    "mutability": "readWrite",
+                    "returned": "default",
+                },
+            ],
+        },
+        {
+            "name": "active",
+            "type": "boolean",
+            "multiValued": False,
+            "required": False,
+            "mutability": "readWrite",
+            "returned": "default",
+        },
+        {
+            "name": "id",
+            "type": "string",
+            "multiValued": False,
+            "required": False,
+            "mutability": "readOnly",
+            "returned": "always",
+            "uniqueness": "server",
+        },
+        {
+            "name": "meta",
+            "type": "complex",
+            "multiValued": False,
+            "required": False,
+            "mutability": "readOnly",
+            "returned": "default",
+            "subAttributes": [
+                {
+                    "name": "resourceType",
+                    "type": "string",
+                    "multiValued": False,
+                    "required": False,
+                    "mutability": "readOnly",
+                    "returned": "default",
+                },
+                {
+                    "name": "location",
+                    "type": "string",
+                    "multiValued": False,
+                    "required": False,
+                    "mutability": "readOnly",
+                    "returned": "default",
+                },
+            ],
+        },
     ],
-    "meta": {"resourceType": "Schema", "location": "/scim/v2/Schemas/urn:ietf:params:scim:schemas:core:2.0:User"},
+    "meta": {
+        "resourceType": "Schema",
+        "location": "/scim/v2/Schemas/urn:ietf:params:scim:schemas:core:2.0:User",
+    },
 }
 
 GROUP_SCHEMA = {
@@ -58,20 +148,80 @@ GROUP_SCHEMA = {
     "name": "Group",
     "description": "Group",
     "attributes": [
-        {"name": "displayName", "type": "string", "multiValued": False, "required": True, "mutability": "readWrite", "returned": "default"},
-        {"name": "members", "type": "complex", "multiValued": True, "required": False, "mutability": "readWrite", "returned": "default",
-         "subAttributes": [
-             {"name": "value", "type": "string", "multiValued": False, "required": False, "mutability": "readWrite", "returned": "default"},
-             {"name": "display", "type": "string", "multiValued": False, "required": False, "mutability": "readOnly", "returned": "default"},
-         ]},
-        {"name": "id", "type": "string", "multiValued": False, "required": False, "mutability": "readOnly", "returned": "always", "uniqueness": "server"},
-        {"name": "meta", "type": "complex", "multiValued": False, "required": False, "mutability": "readOnly", "returned": "default",
-         "subAttributes": [
-             {"name": "resourceType", "type": "string", "multiValued": False, "required": False, "mutability": "readOnly", "returned": "default"},
-             {"name": "location", "type": "string", "multiValued": False, "required": False, "mutability": "readOnly", "returned": "default"},
-         ]},
+        {
+            "name": "displayName",
+            "type": "string",
+            "multiValued": False,
+            "required": True,
+            "mutability": "readWrite",
+            "returned": "default",
+        },
+        {
+            "name": "members",
+            "type": "complex",
+            "multiValued": True,
+            "required": False,
+            "mutability": "readWrite",
+            "returned": "default",
+            "subAttributes": [
+                {
+                    "name": "value",
+                    "type": "string",
+                    "multiValued": False,
+                    "required": False,
+                    "mutability": "readWrite",
+                    "returned": "default",
+                },
+                {
+                    "name": "display",
+                    "type": "string",
+                    "multiValued": False,
+                    "required": False,
+                    "mutability": "readOnly",
+                    "returned": "default",
+                },
+            ],
+        },
+        {
+            "name": "id",
+            "type": "string",
+            "multiValued": False,
+            "required": False,
+            "mutability": "readOnly",
+            "returned": "always",
+            "uniqueness": "server",
+        },
+        {
+            "name": "meta",
+            "type": "complex",
+            "multiValued": False,
+            "required": False,
+            "mutability": "readOnly",
+            "returned": "default",
+            "subAttributes": [
+                {
+                    "name": "resourceType",
+                    "type": "string",
+                    "multiValued": False,
+                    "required": False,
+                    "mutability": "readOnly",
+                    "returned": "default",
+                },
+                {
+                    "name": "location",
+                    "type": "string",
+                    "multiValued": False,
+                    "required": False,
+                    "mutability": "readOnly",
+                    "returned": "default",
+                },
+            ],
+        },
     ],
-    "meta": {"resourceType": "Schema", "location": "/scim/v2/Schemas/urn:ietf:params:scim:schemas:core:2.0:Group"},
+    "meta": {
+        "resourceType": "Schema",
+        "location": "/scim/v2/Schemas/urn:ietf:params:scim:schemas:core:2.0:Group",
+    },
 }
 
 
@@ -89,73 +239,92 @@ def _group_resource(g):
     return r
 
 
-@app.route('/healthz')
+@app.route("/healthz")
 def healthz():
-    return 'ok', 200
+    return "ok", 200
 
 
-@app.route('/scim/v2/Schemas')
+@app.route("/scim/v2/Schemas")
 def schemas():
-    return jsonify({
-        "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-        "totalResults": 2,
-        "Resources": [USER_SCHEMA, GROUP_SCHEMA],
-    })
+    return jsonify(
+        {
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
+            "totalResults": 2,
+            "Resources": [USER_SCHEMA, GROUP_SCHEMA],
+        }
+    )
 
 
-@app.route('/scim/v2/ServiceProviderConfig')
+@app.route("/scim/v2/ServiceProviderConfig")
 def service_provider_config():
-    return jsonify({
-        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],
-        "patch": {"supported": True},
-        "bulk": {"supported": True, "maxOperations": 100, "maxPayloadSize": 1048576},
-        "filter": {"supported": True, "maxResults": 200},
-        "changePassword": {"supported": False},
-        "sort": {"supported": False},
-        "etag": {"supported": False},
-        "authenticationSchemes": [
-            {"type": "httpbasic", "name": "HTTP Basic", "description": "Authentication via HTTP Basic"}
-        ],
-    })
+    return jsonify(
+        {
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],
+            "patch": {"supported": True},
+            "bulk": {"supported": True, "maxOperations": 100, "maxPayloadSize": 1048576},
+            "filter": {"supported": True, "maxResults": 200},
+            "changePassword": {"supported": False},
+            "sort": {"supported": False},
+            "etag": {"supported": False},
+            "authenticationSchemes": [
+                {
+                    "type": "httpbasic",
+                    "name": "HTTP Basic",
+                    "description": "Authentication via HTTP Basic",
+                }
+            ],
+        }
+    )
 
 
-@app.route('/scim/v2/ResourceTypes')
+@app.route("/scim/v2/ResourceTypes")
 def resource_types():
-    return jsonify({
-        "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-        "totalResults": 2,
-        "Resources": [
-            {
-                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
-                "id": "User",
-                "name": "User",
-                "endpoint": "/scim/v2/Users",
-                "schema": "urn:ietf:params:scim:schemas:core:2.0:User",
-                "meta": {"resourceType": "ResourceType", "location": "/scim/v2/ResourceTypes/User"},
-            },
-            {
-                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
-                "id": "Group",
-                "name": "Group",
-                "endpoint": "/scim/v2/Groups",
-                "schema": "urn:ietf:params:scim:schemas:core:2.0:Group",
-                "meta": {"resourceType": "ResourceType", "location": "/scim/v2/ResourceTypes/Group"},
-            },
-        ],
-    })
+    return jsonify(
+        {
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
+            "totalResults": 2,
+            "Resources": [
+                {
+                    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
+                    "id": "User",
+                    "name": "User",
+                    "endpoint": "/scim/v2/Users",
+                    "schema": "urn:ietf:params:scim:schemas:core:2.0:User",
+                    "meta": {
+                        "resourceType": "ResourceType",
+                        "location": "/scim/v2/ResourceTypes/User",
+                    },
+                },
+                {
+                    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
+                    "id": "Group",
+                    "name": "Group",
+                    "endpoint": "/scim/v2/Groups",
+                    "schema": "urn:ietf:params:scim:schemas:core:2.0:Group",
+                    "meta": {
+                        "resourceType": "ResourceType",
+                        "location": "/scim/v2/ResourceTypes/Group",
+                    },
+                },
+            ],
+        }
+    )
 
 
 # --- Users ---
 
-@app.route('/scim/v2/Users', methods=['GET', 'POST'])
+
+@app.route("/scim/v2/Users", methods=["GET", "POST"])
 def users_collection():
-    if request.method == 'GET':
+    if request.method == "GET":
         resources = [_user_resource(u) for u in USERS]
-        return jsonify({
-            "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-            "totalResults": len(resources),
-            "Resources": resources,
-        })
+        return jsonify(
+            {
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
+                "totalResults": len(resources),
+                "Resources": resources,
+            }
+        )
     body = request.get_json(force=True)
     new_user = {
         "id": str(uuid.uuid4()),
@@ -168,25 +337,27 @@ def users_collection():
     return jsonify(_user_resource(new_user)), 201
 
 
-@app.route('/scim/v2/Users/<user_id>', methods=['GET', 'PUT', 'PATCH', 'DELETE'])
+@app.route("/scim/v2/Users/<user_id>", methods=["GET", "PUT", "PATCH", "DELETE"])
 def user_item(user_id):
     user = next((u for u in USERS if u["id"] == user_id), None)
     if user is None:
-        return jsonify({
-            "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
-            "detail": "User not found",
-            "status": 404,
-        }), 404
+        return jsonify(
+            {
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
+                "detail": "User not found",
+                "status": 404,
+            }
+        ), 404
 
-    if request.method == 'GET':
+    if request.method == "GET":
         return jsonify(_user_resource(user))
 
-    if request.method == 'PUT':
+    if request.method == "PUT":
         body = request.get_json(force=True)
         user.update({k: body[k] for k in ("userName", "name", "emails", "active") if k in body})
         return jsonify(_user_resource(user))
 
-    if request.method == 'PATCH':
+    if request.method == "PATCH":
         body = request.get_json(force=True)
         for op in body.get("Operations", []):
             if op.get("op") == "replace":
@@ -195,20 +366,23 @@ def user_item(user_id):
 
     # DELETE
     USERS[:] = [u for u in USERS if u["id"] != user_id]
-    return '', 204
+    return "", 204
 
 
 # --- Groups ---
 
-@app.route('/scim/v2/Groups', methods=['GET', 'POST'])
+
+@app.route("/scim/v2/Groups", methods=["GET", "POST"])
 def groups_collection():
-    if request.method == 'GET':
+    if request.method == "GET":
         resources = [_group_resource(g) for g in GROUPS]
-        return jsonify({
-            "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-            "totalResults": len(resources),
-            "Resources": resources,
-        })
+        return jsonify(
+            {
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
+                "totalResults": len(resources),
+                "Resources": resources,
+            }
+        )
     body = request.get_json(force=True)
     new_group = {
         "id": str(uuid.uuid4()),
@@ -219,25 +393,27 @@ def groups_collection():
     return jsonify(_group_resource(new_group)), 201
 
 
-@app.route('/scim/v2/Groups/<group_id>', methods=['GET', 'PUT', 'PATCH', 'DELETE'])
+@app.route("/scim/v2/Groups/<group_id>", methods=["GET", "PUT", "PATCH", "DELETE"])
 def group_item(group_id):
     group = next((g for g in GROUPS if g["id"] == group_id), None)
     if group is None:
-        return jsonify({
-            "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
-            "detail": "Group not found",
-            "status": 404,
-        }), 404
+        return jsonify(
+            {
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
+                "detail": "Group not found",
+                "status": 404,
+            }
+        ), 404
 
-    if request.method == 'GET':
+    if request.method == "GET":
         return jsonify(_group_resource(group))
 
-    if request.method == 'PUT':
+    if request.method == "PUT":
         body = request.get_json(force=True)
         group.update({k: body[k] for k in ("displayName", "members") if k in body})
         return jsonify(_group_resource(group))
 
-    if request.method == 'PATCH':
+    if request.method == "PATCH":
         body = request.get_json(force=True)
         for op in body.get("Operations", []):
             if op.get("op") == "replace":
@@ -246,9 +422,9 @@ def group_item(group_id):
 
     # DELETE
     GROUPS[:] = [g for g in GROUPS if g["id"] != group_id]
-    return '', 204
+    return "", 204
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("SCIM 2.0 mock server listening on :8000")
-    app.run(host='0.0.0.0', port=8000)
+    app.run(host="0.0.0.0", port=8000)

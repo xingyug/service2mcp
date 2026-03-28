@@ -74,11 +74,13 @@ class TypeDetector:
                 confidence = ext.detect(source)
                 confidence = max(0.0, min(1.0, confidence))  # clamp
                 if confidence > 0:
-                    results.append(DetectionResult(
-                        extractor=ext,
-                        confidence=confidence,
-                        protocol_name=ext.protocol_name,
-                    ))
+                    results.append(
+                        DetectionResult(
+                            extractor=ext,
+                            confidence=confidence,
+                            protocol_name=ext.protocol_name,
+                        )
+                    )
             except Exception:
                 logger.warning("Extractor %s.detect() failed", ext.protocol_name, exc_info=True)
 
@@ -92,7 +94,9 @@ class TypeDetector:
         best = results[0]
         logger.info(
             "Type detection: selected %s (confidence=%.2f) from %d candidates",
-            best.protocol_name, best.confidence, len(results),
+            best.protocol_name,
+            best.confidence,
+            len(results),
         )
         return best
 
@@ -103,11 +107,13 @@ class TypeDetector:
             try:
                 confidence = ext.detect(source)
                 if confidence > 0:
-                    results.append(DetectionResult(
-                        extractor=ext,
-                        confidence=max(0.0, min(1.0, confidence)),
-                        protocol_name=ext.protocol_name,
-                    ))
+                    results.append(
+                        DetectionResult(
+                            extractor=ext,
+                            confidence=max(0.0, min(1.0, confidence)),
+                            protocol_name=ext.protocol_name,
+                        )
+                    )
             except Exception:
                 logger.warning("Extractor %s.detect() failed", ext.protocol_name, exc_info=True)
         results.sort(key=lambda r: r.confidence, reverse=True)

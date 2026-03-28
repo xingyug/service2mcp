@@ -58,6 +58,7 @@ from libs.ir.schema import (
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
+
 def make_param(**overrides: Any) -> Param:
     defaults: dict[str, Any] = {"name": "pet_id", "type": "integer", "required": True}
     return Param(**(defaults | overrides))
@@ -103,6 +104,7 @@ def make_service_ir(**overrides: Any) -> ServiceIR:
 
 # ── Param Tests ────────────────────────────────────────────────────────────
 
+
 class TestParam:
     def test_valid_param(self):
         p = make_param()
@@ -135,6 +137,7 @@ class TestParam:
 
 # ── RiskMetadata Tests ─────────────────────────────────────────────────────
 
+
 class TestRiskMetadata:
     def test_defaults(self):
         r = RiskMetadata()
@@ -156,6 +159,7 @@ class TestRiskMetadata:
 
 
 # ── Operation Tests ────────────────────────────────────────────────────────
+
 
 class TestOperation:
     def test_valid_operation(self):
@@ -275,7 +279,9 @@ class TestOperation:
         with pytest.raises(ValueError, match="method='POST'"):
             make_operation(
                 method="GET",
-                grpc_unary=GrpcUnaryRuntimeConfig(rpc_path="/catalog.v1.InventoryService/ListItems"),
+                grpc_unary=GrpcUnaryRuntimeConfig(
+                    rpc_path="/catalog.v1.InventoryService/ListItems"
+                ),
             )
 
     def test_soap_contract_rejects_non_post_methods(self):
@@ -320,7 +326,9 @@ class TestOperation:
             make_operation(
                 method="POST",
                 path="/wrong/path",
-                grpc_unary=GrpcUnaryRuntimeConfig(rpc_path="/catalog.v1.InventoryService/ListItems"),
+                grpc_unary=GrpcUnaryRuntimeConfig(
+                    rpc_path="/catalog.v1.InventoryService/ListItems"
+                ),
             )
 
     def test_async_job_response_body_source_requires_status_url_field(self):
@@ -329,6 +337,7 @@ class TestOperation:
 
 
 # ── ServiceIR Tests ────────────────────────────────────────────────────────
+
 
 class TestServiceIR:
     def test_valid_service_ir(self):
@@ -339,16 +348,20 @@ class TestServiceIR:
 
     def test_duplicate_operation_ids_rejected(self):
         with pytest.raises(ValueError, match="Duplicate operation IDs"):
-            make_service_ir(operations=[
-                make_operation(id="op1"),
-                make_operation(id="op1"),
-            ])
+            make_service_ir(
+                operations=[
+                    make_operation(id="op1"),
+                    make_operation(id="op1"),
+                ]
+            )
 
     def test_unique_operation_ids_accepted(self):
-        ir = make_service_ir(operations=[
-            make_operation(id="op1"),
-            make_operation(id="op2"),
-        ])
+        ir = make_service_ir(
+            operations=[
+                make_operation(id="op1"),
+                make_operation(id="op2"),
+            ]
+        )
         assert len(ir.operations) == 2
 
     def test_empty_operations_accepted(self):
@@ -490,6 +503,7 @@ class TestResponseStrategy:
 
 
 # ── Serialization Round-Trip Tests ─────────────────────────────────────────
+
 
 class TestSerialization:
     def test_json_round_trip(self):
@@ -681,6 +695,7 @@ def test_param_round_trip_property(param: Param) -> None:
 
 
 # ── ToolIntent and ToolGroup Tests ──────────────────────────────────────
+
 
 class TestToolIntent:
     def test_operation_accepts_discovery_intent(self) -> None:
@@ -924,6 +939,7 @@ class TestOperationErrorSchemaAndExamples:
 
 # ── Cross-Contract Coherence Validators ────────────────────────────────────
 
+
 def _sql_config(**overrides: Any) -> dict[str, Any]:
     defaults: dict[str, Any] = {
         "schema_name": "public",
@@ -944,7 +960,11 @@ def _soap_config(**overrides: Any) -> dict[str, Any]:
 
 
 def _graphql_config(**overrides: Any) -> dict[str, Any]:
-    return {"operation_type": "query", "operation_name": "GetUser", "document": "{ user { id } }"} | overrides
+    return {
+        "operation_type": "query",
+        "operation_name": "GetUser",
+        "document": "{ user { id } }",
+    } | overrides
 
 
 def _jsonrpc_config(**overrides: Any) -> dict[str, Any]:
@@ -964,19 +984,23 @@ class TestSqlOperationConfigValidator:
 
     def test_insert_with_non_table_relation(self):
         with pytest.raises(ValidationError, match="relation_kind='table'"):
-            SqlOperationConfig(**_sql_config(
-                action=SqlOperationType.insert,
-                relation_kind=SqlRelationKind.view,
-                insertable_columns=["name"],
-            ))
+            SqlOperationConfig(
+                **_sql_config(
+                    action=SqlOperationType.insert,
+                    relation_kind=SqlRelationKind.view,
+                    insertable_columns=["name"],
+                )
+            )
 
     def test_insert_without_insertable_columns(self):
         with pytest.raises(ValidationError, match="insertable_columns"):
-            SqlOperationConfig(**_sql_config(
-                action=SqlOperationType.insert,
-                relation_kind=SqlRelationKind.table,
-                insertable_columns=[],
-            ))
+            SqlOperationConfig(
+                **_sql_config(
+                    action=SqlOperationType.insert,
+                    relation_kind=SqlRelationKind.table,
+                    insertable_columns=[],
+                )
+            )
 
 
 class TestEventDescriptorGrpcStreamValidator:
@@ -988,7 +1012,9 @@ class TestEventDescriptorGrpcStreamValidator:
                 id="evt1",
                 name="stream",
                 transport=EventTransport.grpc_stream,
-                grpc_stream=GrpcStreamRuntimeConfig(rpc_path="/svc/Stream", mode=GrpcStreamMode.server),
+                grpc_stream=GrpcStreamRuntimeConfig(
+                    rpc_path="/svc/Stream", mode=GrpcStreamMode.server
+                ),
                 channel="/different/path",
             )
 

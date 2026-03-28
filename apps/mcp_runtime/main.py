@@ -242,8 +242,7 @@ def _native_grpc_unary_runtime_enabled(service_ir: ServiceIR) -> bool:
 
 def _native_sql_runtime_enabled(service_ir: ServiceIR) -> bool:
     return any(
-        operation.enabled and operation.sql is not None
-        for operation in service_ir.operations
+        operation.enabled and operation.sql is not None for operation in service_ir.operations
     )
 
 

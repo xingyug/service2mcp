@@ -121,9 +121,7 @@ class SQLRuntimeExecutor:
                 if returned_row is not None:
                     inserted_primary_key = [_json_safe_value(value) for value in returned_row]
             row_count = (
-                result.rowcount
-                if result.rowcount is not None and result.rowcount >= 0
-                else 1
+                result.rowcount if result.rowcount is not None and result.rowcount >= 0 else 1
             )
 
         return {
@@ -190,9 +188,7 @@ def _resolve_limit(
     try:
         limit = int(raw_limit)
     except (TypeError, ValueError) as exc:
-        raise ToolError(
-            f"SQL query operation {operation_id} requires an integer limit."
-        ) from exc
+        raise ToolError(f"SQL query operation {operation_id} requires an integer limit.") from exc
     if limit <= 0:
         raise ToolError(f"SQL query operation {operation_id} requires limit > 0.")
     return min(limit, max_limit)

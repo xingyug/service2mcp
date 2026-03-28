@@ -158,10 +158,7 @@ class ToolGrouper:
                     continue
 
                 # Only include operation IDs that actually exist
-                op_ids = [
-                    oid for oid in item.get("operation_ids", [])
-                    if oid in valid_ids
-                ]
+                op_ids = [oid for oid in item.get("operation_ids", []) if oid in valid_ids]
 
                 if not op_ids:
                     continue

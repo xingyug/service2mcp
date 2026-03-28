@@ -66,9 +66,7 @@ def _operations_resource(ir: ServiceIR) -> ResourceDefinition:
     return ResourceDefinition(
         id=f"{ir.service_name}-operations",
         name=f"{ir.service_name} operations",
-        description=(
-            f"List of available operations for {ir.service_name}"
-        ),
+        description=(f"List of available operations for {ir.service_name}"),
         uri=_service_uri(ir.service_name, "operations"),
         mime_type="application/json",
         content_type="static",
@@ -90,9 +88,7 @@ def _auth_requirements_resource(ir: ServiceIR) -> ResourceDefinition:
     return ResourceDefinition(
         id=f"{ir.service_name}-auth-requirements",
         name=f"{ir.service_name} auth-requirements",
-        description=(
-            f"Authentication requirements for {ir.service_name}"
-        ),
+        description=(f"Authentication requirements for {ir.service_name}"),
         uri=_service_uri(ir.service_name, "auth-requirements"),
         mime_type="application/json",
         content_type="static",

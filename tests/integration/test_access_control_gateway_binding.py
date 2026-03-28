@@ -394,9 +394,7 @@ async def test_reconcile_updates_stable_route_target_across_rollout_and_rollback
             assert "billing-api-v1" in routes_after_forward
             assert "billing-api-v2" in routes_after_forward
             assert (
-                routes_after_forward["billing-api-active"]["document"]["target_service"][
-                    "name"
-                ]
+                routes_after_forward["billing-api-active"]["document"]["target_service"]["name"]
                 == "billing-runtime-v2"
             )
 
@@ -436,9 +434,10 @@ async def test_reconcile_updates_stable_route_target_across_rollout_and_rollback
             routes_after_rollback = {
                 item["route_id"]: item for item in listed_after_rollback.json()["items"]
             }
-            assert routes_after_rollback["billing-api-active"]["document"]["target_service"][
-                "name"
-            ] == "billing-runtime-v1"
+            assert (
+                routes_after_rollback["billing-api-active"]["document"]["target_service"]["name"]
+                == "billing-runtime-v1"
+            )
             assert "billing-api-v1" in routes_after_rollback
             assert "billing-api-v2" in routes_after_rollback
 

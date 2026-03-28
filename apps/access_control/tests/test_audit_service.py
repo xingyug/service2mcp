@@ -53,5 +53,6 @@ class TestToResponse:
 
 # Additional tests to cover uncovered lines in audit/service.py
 
+
 class TestListEntries:
     pass

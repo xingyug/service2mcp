@@ -217,20 +217,12 @@ def _upstream_base_url(target_service: dict[str, Any]) -> str:
 
 def _forward_headers(request: Request) -> dict[str, str]:
     excluded = {"host", "connection", "content-length", "transfer-encoding"}
-    return {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower() not in excluded
-    }
+    return {key: value for key, value in request.headers.items() if key.lower() not in excluded}
 
 
 def _response_headers(response: httpx.Response) -> dict[str, str]:
     excluded = {"connection", "content-length", "transfer-encoding"}
-    return {
-        key: value
-        for key, value in response.headers.items()
-        if key.lower() not in excluded
-    }
+    return {key: value for key, value in response.headers.items() if key.lower() not in excluded}
 
 
 app = create_app()

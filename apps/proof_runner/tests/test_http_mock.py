@@ -80,7 +80,10 @@ class TestGraphQL:
         resp = await client.post(
             "/graphql",
             json={
-                "query": "query searchProducts($term: String) { searchProducts(term: $term) { id name } }",
+                "query": (
+                    "query searchProducts($term: String) "
+                    "{ searchProducts(term: $term) { id name } }"
+                ),
                 "operationName": "searchProducts",
                 "variables": {"term": "puzzle"},
             },
@@ -109,7 +112,10 @@ class TestGraphQL:
         resp = await client.post(
             "/graphql",
             json={
-                "query": "mutation adjustInventory($sku: String!, $delta: Int!) { adjustInventory(sku: $sku, delta: $delta) { operation_id } }",
+                "query": (
+                    "mutation adjustInventory($sku: String!, $delta: Int!) "
+                    "{ adjustInventory(sku: $sku, delta: $delta) { operation_id } }"
+                ),
                 "operationName": "adjustInventory",
                 "variables": {"sku": "sku-100", "delta": 5},
             },
@@ -257,7 +263,7 @@ class TestHelpers:
     def test_soap_success(self) -> None:
         result = _soap_success("TestResponse", {"key1": "val1", "key2": "val2"})
         assert "<?xml" in result
-        assert f"tns:TestResponse" in result
+        assert "tns:TestResponse" in result
         assert f'xmlns:tns="{_SOAP_NS}"' in result
         assert "<key1>val1</key1>" in result
         assert "<key2>val2</key2>" in result

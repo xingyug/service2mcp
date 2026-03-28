@@ -100,9 +100,7 @@ async def run_proofs(
 ) -> list[ProofResult]:
     """Execute one or more live proof cases and return serialized results."""
 
-    selected_protocols = (
-        list(_SUPPORTED_PROTOCOLS) if protocol == "all" else [protocol]
-    )
+    selected_protocols = list(_SUPPORTED_PROTOCOLS) if protocol == "all" else [protocol]
     cases = _build_proof_cases(namespace, run_id)
     case_map = {case.protocol: case for case in cases}
     results: list[ProofResult] = []
@@ -579,8 +577,7 @@ def _generated_tool_audit_failure_reason(
     transport = result.get("transport")
     if transport != descriptor.transport.value:
         return (
-            f"Invocation returned transport {transport!r}, "
-            f"expected {descriptor.transport.value!r}."
+            f"Invocation returned transport {transport!r}, expected {descriptor.transport.value!r}."
         )
 
     stream_result = result.get("result")

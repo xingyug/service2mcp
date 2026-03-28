@@ -110,7 +110,7 @@ def test_smoke_scripts_and_quickstart_cover_gateway_route_smoke_flow() -> None:
     assert "apps.proof_runner.grpc_mock" in gke_llm_e2e_smoke
     assert "apps.proof_runner.live_llm_e2e" in gke_llm_e2e_smoke
     assert 'PROTOCOL="${PROTOCOL:-all}"' in gke_llm_e2e_smoke
-    assert 'all|graphql|rest|grpc|soap|sql' in gke_llm_e2e_smoke
+    assert "all|graphql|rest|grpc|soap|sql" in gke_llm_e2e_smoke
     assert '--protocol"' in gke_llm_e2e_smoke
     assert "llm-proof-sql" in gke_llm_e2e_smoke
     assert "startupProbe:" in gke_llm_e2e_smoke
@@ -148,9 +148,7 @@ def test_migration_runtime_assets_include_sync_postgres_driver() -> None:
         ROOT_DIR / "deploy" / "helm" / "tool-compiler" / "templates" / "migration-job.yaml"
     ).read_text(encoding="utf-8")
     values = yaml.safe_load(
-        (ROOT_DIR / "deploy" / "helm" / "tool-compiler" / "values.yaml").read_text(
-            encoding="utf-8"
-        )
+        (ROOT_DIR / "deploy" / "helm" / "tool-compiler" / "values.yaml").read_text(encoding="utf-8")
     )
 
     assert '"psycopg[binary]>=3.1,<4"' in pyproject

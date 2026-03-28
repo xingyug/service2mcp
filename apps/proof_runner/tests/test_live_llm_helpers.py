@@ -72,7 +72,7 @@ def _ir(
 
 class TestParseSseEvents:
     def test_single_event(self) -> None:
-        payload = "event: message\ndata: {\"key\": \"value\"}\n\n"
+        payload = 'event: message\ndata: {"key": "value"}\n\n'
         events = _parse_sse_events(payload)
         assert len(events) == 1
         assert events[0]["event"] == "message"
@@ -80,8 +80,7 @@ class TestParseSseEvents:
 
     def test_multiple_events(self) -> None:
         payload = (
-            "event: start\ndata: {\"stage\": \"extract\"}\n\n"
-            "event: end\ndata: {\"stage\": \"deploy\"}\n\n"
+            'event: start\ndata: {"stage": "extract"}\n\nevent: end\ndata: {"stage": "deploy"}\n\n'
         )
         events = _parse_sse_events(payload)
         assert len(events) == 2
@@ -89,7 +88,7 @@ class TestParseSseEvents:
         assert events[1]["data"]["stage"] == "deploy"
 
     def test_trailing_event_no_newline(self) -> None:
-        payload = "event: done\ndata: {\"ok\": true}"
+        payload = 'event: done\ndata: {"ok": true}'
         events = _parse_sse_events(payload)
         assert len(events) == 1
         assert events[0]["data"]["ok"] is True

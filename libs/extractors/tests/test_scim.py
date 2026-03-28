@@ -33,14 +33,18 @@ class TestDetection:
         assert extractor.detect(source) == 0.85
 
     def test_detect_with_scim_content(self, extractor: SCIMExtractor) -> None:
-        content = json.dumps({
-            "schemas": {
-                "Resources": [{
-                    "id": "urn:ietf:params:scim:schemas:core:2.0:User",
-                    "name": "User",
-                }]
+        content = json.dumps(
+            {
+                "schemas": {
+                    "Resources": [
+                        {
+                            "id": "urn:ietf:params:scim:schemas:core:2.0:User",
+                            "name": "User",
+                        }
+                    ]
+                }
             }
-        })
+        )
         source = SourceConfig(file_content=content)
         assert extractor.detect(source) == 0.9
 
@@ -64,8 +68,12 @@ class TestUserGroupExtraction:
     def test_user_operations_exist(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         expected_ops = (
-            "list_users", "get_user", "create_user",
-            "update_user", "patch_user", "delete_user",
+            "list_users",
+            "get_user",
+            "create_user",
+            "update_user",
+            "patch_user",
+            "delete_user",
         )
         for expected in expected_ops:
             assert expected in op_names, f"Missing operation: {expected}"
@@ -73,8 +81,12 @@ class TestUserGroupExtraction:
     def test_group_operations_exist(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         expected_ops = (
-            "list_groups", "get_group", "create_group",
-            "update_group", "patch_group", "delete_group",
+            "list_groups",
+            "get_group",
+            "create_group",
+            "update_group",
+            "patch_group",
+            "delete_group",
         )
         for expected in expected_ops:
             assert expected in op_names, f"Missing operation: {expected}"
@@ -94,15 +106,13 @@ class TestUserGroupExtraction:
         assert "meta" not in param_names
 
     def test_readonly_excluded_from_update_user(self, ir: ServiceIR) -> None:
-        update_op = next(
-            op for op in ir.operations if op.name == "update_user"
-        )
+        update_op = next(op for op in ir.operations if op.name == "update_user")
         # readOnly 'id' attribute should not appear as body param;
         # only the path id (description "user identifier") is expected.
         readonly_body_params = {
-            p.name for p in update_op.params
-            if p.name in ("meta",)
-            or (p.name == "id" and p.description != "user identifier")
+            p.name
+            for p in update_op.params
+            if p.name in ("meta",) or (p.name == "id" and p.description != "user identifier")
         }
         assert len(readonly_body_params) == 0
 
@@ -124,8 +134,11 @@ class TestCustomResourceExtraction:
     def test_device_operations_exist(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         expected_ops = (
-            "list_devices", "get_device", "create_device",
-            "update_device", "delete_device",
+            "list_devices",
+            "get_device",
+            "create_device",
+            "update_device",
+            "delete_device",
         )
         for expected in expected_ops:
             assert expected in op_names, f"Missing operation: {expected}"
@@ -136,9 +149,7 @@ class TestCustomResourceExtraction:
         assert "serialNumber" in create_params
 
         update_op = next(op for op in ir.operations if op.name == "update_device")
-        update_body_params = {
-            p.name for p in update_op.params if p.name != "id"
-        }
+        update_body_params = {p.name for p in update_op.params if p.name != "id"}
         assert "serialNumber" not in update_body_params
 
     def test_readonly_excluded_from_create_and_update(self, ir: ServiceIR) -> None:
@@ -175,17 +186,27 @@ class TestExtractEdgeCases:
 
     def test_resource_without_name_is_skipped(self, extractor: SCIMExtractor) -> None:
         """Lines 93-97: resource without 'name' field is skipped with warning."""
-        content = json.dumps({
-            "schemas": {
-                "Resources": [
-                    {"id": "urn:ietf:params:scim:schemas:core:2.0:NoName", "attributes": []},
-                    {"name": "User", "attributes": [
-                        {"name": "userName", "type": "string", "required": True, "mutability": "readWrite"},
-                    ]},
-                ]
-            },
-            "service_provider_config": {},
-        })
+        content = json.dumps(
+            {
+                "schemas": {
+                    "Resources": [
+                        {"id": "urn:ietf:params:scim:schemas:core:2.0:NoName", "attributes": []},
+                        {
+                            "name": "User",
+                            "attributes": [
+                                {
+                                    "name": "userName",
+                                    "type": "string",
+                                    "required": True,
+                                    "mutability": "readWrite",
+                                },
+                            ],
+                        },
+                    ]
+                },
+                "service_provider_config": {},
+            }
+        )
         source = SourceConfig(file_content=content)
         ir = extractor.extract(source)
         # The nameless resource should be skipped; only User operations

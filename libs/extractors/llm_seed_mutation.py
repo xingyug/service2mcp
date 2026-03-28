@@ -149,11 +149,7 @@ def _parse_seed_response(content: str) -> list[SeedCandidate]:
             path = item.get("path", "")
             if not path or not isinstance(path, str):
                 continue
-            methods = tuple(
-                m.upper()
-                for m in item.get("methods", ["GET"])
-                if isinstance(m, str)
-            )
+            methods = tuple(m.upper() for m in item.get("methods", ["GET"]) if isinstance(m, str))
             if not methods:
                 methods = ("GET",)
             candidates.append(

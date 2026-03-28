@@ -24,6 +24,7 @@ import httpx
 # Ground-truth endpoint registry
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class EndpointTruth:
     """Expected properties for one canonical endpoint."""
@@ -65,23 +66,38 @@ GROUND_TRUTH: list[EndpointTruth] = [
     _ep("GET", "/posts", resource_group="posts", description="List all posts"),
     _ep("GET", "/posts/{id}", resource_group="posts", description="Get post by ID"),
     _ep(
-        "POST", "/posts", resource_group="posts",
-        writes_state=True, idempotent=False, description="Create post",
+        "POST",
+        "/posts",
+        resource_group="posts",
+        writes_state=True,
+        idempotent=False,
+        description="Create post",
     ),
     _ep(
-        "PUT", "/posts/{id}", resource_group="posts",
-        writes_state=True, description="Replace post",
+        "PUT",
+        "/posts/{id}",
+        resource_group="posts",
+        writes_state=True,
+        description="Replace post",
     ),
     _ep(
-        "PATCH", "/posts/{id}", resource_group="posts",
-        writes_state=True, description="Partial update post",
+        "PATCH",
+        "/posts/{id}",
+        resource_group="posts",
+        writes_state=True,
+        description="Partial update post",
     ),
     _ep(
-        "DELETE", "/posts/{id}", resource_group="posts",
-        destructive=True, description="Delete post",
+        "DELETE",
+        "/posts/{id}",
+        resource_group="posts",
+        destructive=True,
+        description="Delete post",
     ),
     _ep(
-        "GET", "/posts/{id}/comments", resource_group="posts",
+        "GET",
+        "/posts/{id}/comments",
+        resource_group="posts",
         description="List comments for post",
     ),
     # --- comments ---
@@ -118,6 +134,7 @@ BASE_URL = "https://jsonplaceholder.typicode.com"
 # Mock HTTP transport for offline testing
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _MockState:
     """Mutable response state for the mock transport."""
@@ -152,12 +169,18 @@ _POSTS_LIST: list[dict[str, Any]] = [
 
 _COMMENTS_LIST: list[dict[str, Any]] = [
     {
-        "id": 1, "postId": 1, "name": "id labore",
-        "email": "Eliseo@gardner.biz", "body": "laudantium enim",
+        "id": 1,
+        "postId": 1,
+        "name": "id labore",
+        "email": "Eliseo@gardner.biz",
+        "body": "laudantium enim",
     },
     {
-        "id": 2, "postId": 1, "name": "quo vero",
-        "email": "Jayne_Kuhic@sydney.com", "body": "est natus enim",
+        "id": 2,
+        "postId": 1,
+        "name": "quo vero",
+        "email": "Jayne_Kuhic@sydney.com",
+        "body": "est natus enim",
     },
 ]
 
@@ -168,7 +191,9 @@ _ALBUMS_LIST: list[dict[str, Any]] = [
 
 _PHOTOS_LIST: list[dict[str, Any]] = [
     {
-        "id": 1, "albumId": 1, "title": "accusamus beatae",
+        "id": 1,
+        "albumId": 1,
+        "title": "accusamus beatae",
         "url": "https://via.placeholder.com/600/92c952",
         "thumbnailUrl": "https://via.placeholder.com/150/92c952",
     },
@@ -245,9 +270,7 @@ def _handle_request(request: httpx.Request, state: _MockState) -> httpx.Response
     matched_template, params = _match_path(path)
     if method == "OPTIONS":
         if matched_template is not None:
-            allowed = sorted(
-                {ep.method for ep in GROUND_TRUTH if ep.path == matched_template}
-            )
+            allowed = sorted({ep.method for ep in GROUND_TRUTH if ep.path == matched_template})
             return httpx.Response(
                 204,
                 headers={"Allow": ", ".join(allowed)},

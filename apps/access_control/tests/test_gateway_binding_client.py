@@ -137,6 +137,7 @@ class TestHTTPGatewayAdminClient:
 
     def test_init_with_external_client(self) -> None:
         import httpx
+
         ext_client = httpx.AsyncClient()
         client = HTTPGatewayAdminClient(
             base_url="http://localhost:9080",
@@ -199,40 +200,41 @@ class TestLoadGatewayAdminClientFromEnv:
 
 # Additional tests to cover uncovered lines in gateway_binding/client.py
 
+
 class TestHTTPGatewayAdminClientAclose:
     async def test_aclose_when_owns_client(self) -> None:
         """Test lines 140-141: aclose when client owns the httpx client."""
-        import httpx
-        from unittest.mock import AsyncMock, patch
-        
+        from unittest.mock import AsyncMock
+
         # Create client that owns its httpx.AsyncClient
         client = HTTPGatewayAdminClient(base_url="http://test:9080")
         assert client._owns_client is True
-        
+
         # Mock the _client.aclose method
         client._client.aclose = AsyncMock()
-        
+
         await client.aclose()
-        
+
         client._client.aclose.assert_called_once()
 
 
 class TestHTTPGatewayAdminClientRequest:
     async def test_request_error_handling(self):
         """Test lines 151, 162, 177, 184: error handling in HTTP client methods."""
-        import httpx
         from unittest.mock import AsyncMock
-        
+
+        import httpx
+
         client = HTTPGatewayAdminClient(base_url="http://test:9080")
-        
+
         # Mock the httpx client to raise an exception
         client._client.request = AsyncMock()
         client._client.request.side_effect = httpx.HTTPStatusError(
             "Server error",
             request=httpx.Request("GET", "http://test:9080/admin/consumers"),
-            response=httpx.Response(500)
+            response=httpx.Response(500),
         )
-        
+
         # Test that HTTP errors are propagated
         with pytest.raises(httpx.HTTPStatusError):
             await client.list_consumers()
@@ -240,98 +242,104 @@ class TestHTTPGatewayAdminClientRequest:
 
 class TestHTTPGatewayAdminClientSpecificMethods:
     async def test_delete_consumer_error(self):
-        """Test line 162: delete_consumer error handling.""" 
-        import httpx
+        """Test line 162: delete_consumer error handling."""
         from unittest.mock import AsyncMock
-        
+
+        import httpx
+
         client = HTTPGatewayAdminClient(base_url="http://test:9080")
         client._client.request = AsyncMock()
         client._client.request.side_effect = httpx.HTTPStatusError(
             "Not found",
             request=httpx.Request("DELETE", "http://test:9080/admin/consumers/c1"),
-            response=httpx.Response(404)
+            response=httpx.Response(404),
         )
-        
+
         with pytest.raises(httpx.HTTPStatusError):
             await client.delete_consumer("c1")
 
     async def test_upsert_policy_binding_error(self):
         """Test line 177: upsert_policy_binding error handling."""
-        import httpx  
         from unittest.mock import AsyncMock
-        
+
+        import httpx
+
         client = HTTPGatewayAdminClient(base_url="http://test:9080")
         client._client.request = AsyncMock()
         client._client.request.side_effect = httpx.HTTPStatusError(
             "Bad request",
             request=httpx.Request("PUT", "http://test:9080/admin/policy-bindings/p1"),
-            response=httpx.Response(400)
+            response=httpx.Response(400),
         )
-        
+
         with pytest.raises(httpx.HTTPStatusError):
             await client.upsert_policy_binding(binding_id="p1", document={"id": "p1"})
 
     async def test_delete_policy_binding_error(self):
         """Test line 184: delete_policy_binding error handling."""
-        import httpx
         from unittest.mock import AsyncMock
-        
+
+        import httpx
+
         client = HTTPGatewayAdminClient(base_url="http://test:9080")
         client._client.request = AsyncMock()
         client._client.request.side_effect = httpx.HTTPStatusError(
             "Not found",
             request=httpx.Request("DELETE", "http://test:9080/admin/policy-bindings/p1"),
-            response=httpx.Response(404)
+            response=httpx.Response(404),
         )
-        
+
         with pytest.raises(httpx.HTTPStatusError):
             await client.delete_policy_binding("p1")
 
     async def test_list_policy_bindings_error(self):
         """Test line 225: list_policy_bindings error handling."""
-        import httpx
         from unittest.mock import AsyncMock
-        
+
+        import httpx
+
         client = HTTPGatewayAdminClient(base_url="http://test:9080")
         client._client.request = AsyncMock()
         client._client.request.side_effect = httpx.HTTPStatusError(
             "Internal error",
             request=httpx.Request("GET", "http://test:9080/admin/policy-bindings"),
-            response=httpx.Response(500)
+            response=httpx.Response(500),
         )
-        
+
         with pytest.raises(httpx.HTTPStatusError):
             await client.list_policy_bindings()
 
     async def test_list_routes_error(self):
         """Test line 228: list_routes error handling."""
-        import httpx
         from unittest.mock import AsyncMock
-        
+
+        import httpx
+
         client = HTTPGatewayAdminClient(base_url="http://test:9080")
         client._client.request = AsyncMock()
         client._client.request.side_effect = httpx.HTTPStatusError(
             "Internal error",
             request=httpx.Request("GET", "http://test:9080/admin/routes"),
-            response=httpx.Response(500)
+            response=httpx.Response(500),
         )
-        
+
         with pytest.raises(httpx.HTTPStatusError):
             await client.list_routes()
 
     async def test_upsert_route_error(self):
         """Test line 239-240: upsert_route error handling."""
-        import httpx
         from unittest.mock import AsyncMock
-        
+
+        import httpx
+
         client = HTTPGatewayAdminClient(base_url="http://test:9080")
         client._client.request = AsyncMock()
         client._client.request.side_effect = httpx.HTTPStatusError(
             "Bad request",
             request=httpx.Request("PUT", "http://test:9080/admin/routes/r1"),
-            response=httpx.Response(400)
+            response=httpx.Response(400),
         )
-        
+
         with pytest.raises(httpx.HTTPStatusError):
             await client.upsert_route(route_id="r1", document={"route_id": "r1"})
 
@@ -340,10 +348,9 @@ class TestHTTPGatewayAdminClientInit:
     def test_init_with_admin_token(self):
         """Test lines 131: HTTPGatewayAdminClient init with admin token."""
         client = HTTPGatewayAdminClient(
-            base_url="http://localhost:9080",
-            admin_token="admin-secret"
+            base_url="http://localhost:9080", admin_token="admin-secret"
         )
-        
+
         # Should set Authorization header
         assert "Authorization" in client._client.headers
         assert client._client.headers["Authorization"] == "Bearer admin-secret"
@@ -351,6 +358,6 @@ class TestHTTPGatewayAdminClientInit:
     def test_init_without_admin_token(self):
         """Test HTTPGatewayAdminClient init without admin token."""
         client = HTTPGatewayAdminClient(base_url="http://localhost:9080")
-        
+
         # Should not set Authorization header
         assert "Authorization" not in client._client.headers

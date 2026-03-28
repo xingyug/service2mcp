@@ -147,9 +147,7 @@ class FakeRollbackValidator:
         if not isinstance(served_entries, list):
             served_entries = []
         served_operations = [
-            operation["id"]
-            for operation in served_entries
-            if isinstance(operation, dict)
+            operation["id"] for operation in served_entries if isinstance(operation, dict)
         ]
         expected_operations = [
             operation["id"]
@@ -251,8 +249,6 @@ async def test_rollback_reactivates_previous_version_and_serves_its_tools(
     operations = deployer.current_ir.get("operations", [])
     if not isinstance(operations, list):
         operations = []
-    assert [
-        operation["id"]
-        for operation in operations
-        if isinstance(operation, dict)
-    ] == ["getPet"]
+    assert [operation["id"] for operation in operations if isinstance(operation, dict)] == [
+        "getPet"
+    ]

@@ -55,9 +55,7 @@ class TestCreateHistogram:
     def test_custom_buckets(self) -> None:
         registry = CollectorRegistry()
         custom = (0.1, 0.5, 1.0)
-        hist = create_histogram(
-            "custom_bucket_hist", "Custom", buckets=custom, registry=registry
-        )
+        hist = create_histogram("custom_bucket_hist", "Custom", buckets=custom, registry=registry)
         hist.observe(0.3)
         text = get_metrics_text(registry)
         assert b"custom_bucket_hist" in text

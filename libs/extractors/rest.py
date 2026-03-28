@@ -426,9 +426,7 @@ class RESTExtractor:
                 parent_leaf = parent.rsplit("/", 1)[-1] if parent else ""
                 if "json_server_db" in endpoint.sources:
                     sub_candidates = (
-                        sorted(relation_hints.get(parent_leaf, ()))
-                        if len(segments) == 2
-                        else []
+                        sorted(relation_hints.get(parent_leaf, ())) if len(segments) == 2 else []
                     )
                 else:
                     sub_candidates = _common_sub_resources(parent_leaf)

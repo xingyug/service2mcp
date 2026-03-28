@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -17,11 +16,11 @@ from libs.extractors.rest import (
     EndpointClassifier,
     HeuristicRESTClassifier,
     RESTExtractor,
-    _ObservedEndpoint,
     _coalesce_sibling_endpoints,
     _is_path_like,
     _looks_like_value_segment,
     _normalize_classification_path,
+    _ObservedEndpoint,
     _risk_for_method,
     _slugify,
 )
@@ -822,7 +821,10 @@ class TestDetect:
         """detect() returns 1.0 when hint protocol=rest (line 149-150)."""
         transport = httpx.MockTransport(lambda r: httpx.Response(404, request=r))
         extractor = RESTExtractor(client=httpx.Client(transport=transport))
-        assert extractor.detect(SourceConfig(url="https://example.com", hints={"protocol": "rest"})) == 1.0
+        assert (
+            extractor.detect(SourceConfig(url="https://example.com", hints={"protocol": "rest"}))
+            == 1.0
+        )
 
     def test_detect_no_url(self) -> None:
         """detect() returns 0.0 when no URL (line 152)."""
@@ -1052,7 +1054,7 @@ class TestSubResourceInference:
         assert len(inferred) == 0
 
     def test_detail_endpoint_probes_sub_resources(self) -> None:
-        """Detail endpoints (with {param} leaf) probe sub-resource names (lines 319-334, 376-377)."""
+        """Detail endpoints with a `{param}` leaf probe candidate sub-resources."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             if request.method == "OPTIONS" and "/comments" in str(request.url):
@@ -1251,7 +1253,7 @@ class TestSiblingCoalescing:
         assert any("{id}" in p for p in paths)
 
     def test_existing_template_is_preserved_during_coalescing(self) -> None:
-        """When siblings include an existing {param} template, it is reused (lines 874-875, 879-880)."""
+        """When siblings include an existing `{param}` template, it is reused."""
         observed = {
             "/api/items/{item_id}": _ObservedEndpoint(
                 path="/api/items/{item_id}",
@@ -1281,13 +1283,22 @@ class TestSiblingCoalescing:
         """When no siblings look like values, all are preserved."""
         observed = {
             "/api/alpha": _ObservedEndpoint(
-                path="/api/alpha", absolute_url="https://x.com/api/alpha", methods={"GET"}, confidence=0.7,
+                path="/api/alpha",
+                absolute_url="https://x.com/api/alpha",
+                methods={"GET"},
+                confidence=0.7,
             ),
             "/api/beta": _ObservedEndpoint(
-                path="/api/beta", absolute_url="https://x.com/api/beta", methods={"GET"}, confidence=0.7,
+                path="/api/beta",
+                absolute_url="https://x.com/api/beta",
+                methods={"GET"},
+                confidence=0.7,
             ),
             "/api/gamma": _ObservedEndpoint(
-                path="/api/gamma", absolute_url="https://x.com/api/gamma", methods={"GET"}, confidence=0.7,
+                path="/api/gamma",
+                absolute_url="https://x.com/api/gamma",
+                methods={"GET"},
+                confidence=0.7,
             ),
         }
         result = _coalesce_sibling_endpoints(observed)

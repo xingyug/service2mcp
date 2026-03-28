@@ -66,21 +66,25 @@ def make_raw_ir(num_ops: int = 3) -> ServiceIR:
     """Create a raw ServiceIR with minimal descriptions."""
     operations = []
     for i in range(num_ops):
-        operations.append(Operation(
-            id=f"op_{i}",
-            name=f"Operation {i}",
-            description="",  # empty — needs enhancement
-            method="GET",
-            path=f"/endpoint_{i}",
-            params=[
-                Param(name="id", type="integer", required=True, description="", confidence=0.9),
-                Param(name="filter", type="string", required=False, description="", confidence=0.9),
-            ],
-            risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
-            source=SourceType.extractor,
-            confidence=0.9,
-            enabled=True,
-        ))
+        operations.append(
+            Operation(
+                id=f"op_{i}",
+                name=f"Operation {i}",
+                description="",  # empty — needs enhancement
+                method="GET",
+                path=f"/endpoint_{i}",
+                params=[
+                    Param(name="id", type="integer", required=True, description="", confidence=0.9),
+                    Param(
+                        name="filter", type="string", required=False, description="", confidence=0.9
+                    ),
+                ],
+                risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
+                source=SourceType.extractor,
+                confidence=0.9,
+                enabled=True,
+            )
+        )
     return ServiceIR(
         source_hash="abc123",
         protocol="openapi",
@@ -94,19 +98,21 @@ def make_llm_response(operations: list[Operation]) -> str:
     """Create a mock LLM response for the given operations."""
     result = []
     for op in operations:
-        result.append({
-            "operation_id": op.id,
-            "description": f"Enhanced: {op.name} retrieves data from the server",
-            "confidence": 0.85,
-            "params": [
-                {
-                    "name": p.name,
-                    "description": f"Enhanced: The {p.name} parameter",
-                    "confidence": 0.8,
-                }
-                for p in op.params
-            ],
-        })
+        result.append(
+            {
+                "operation_id": op.id,
+                "description": f"Enhanced: {op.name} retrieves data from the server",
+                "confidence": 0.85,
+                "params": [
+                    {
+                        "name": p.name,
+                        "description": f"Enhanced: The {p.name} parameter",
+                        "confidence": 0.8,
+                    }
+                    for p in op.params
+                ],
+            }
+        )
     return json.dumps(result)
 
 
@@ -556,35 +562,38 @@ class TestEnhancerConfig:
 
 def test_getenv_stripped_returns_none_for_missing_env():
     """Test _getenv_stripped returns None for missing environment variables."""
-    from libs.enhancer.enhancer import _getenv_stripped
     import os
-    
+
+    from libs.enhancer.enhancer import _getenv_stripped
+
     # Ensure env var doesn't exist
     if "NONEXISTENT_VAR_TEST" in os.environ:
         del os.environ["NONEXISTENT_VAR_TEST"]
-    
+
     result = _getenv_stripped("NONEXISTENT_VAR_TEST")
     assert result is None
 
 
 def test_getenv_stripped_returns_default_for_missing_env():
     """Test _getenv_stripped returns default for missing environment variables."""
-    from libs.enhancer.enhancer import _getenv_stripped
     import os
-    
+
+    from libs.enhancer.enhancer import _getenv_stripped
+
     # Ensure env var doesn't exist
     if "NONEXISTENT_VAR_TEST" in os.environ:
         del os.environ["NONEXISTENT_VAR_TEST"]
-    
+
     result = _getenv_stripped("NONEXISTENT_VAR_TEST", "default_value")
     assert result == "default_value"
 
 
 def test_getenv_stripped_returns_default_for_empty_env():
     """Test _getenv_stripped returns default for empty environment variables."""
-    from libs.enhancer.enhancer import _getenv_stripped
     import os
-    
+
+    from libs.enhancer.enhancer import _getenv_stripped
+
     os.environ["EMPTY_VAR_TEST"] = "   "
     result = _getenv_stripped("EMPTY_VAR_TEST", "default_value")
     assert result == "default_value"
@@ -592,22 +601,24 @@ def test_getenv_stripped_returns_default_for_empty_env():
 
 def test_getenv_bool_returns_default_for_missing_env():
     """Test _getenv_bool returns default for missing environment variables."""
-    from libs.enhancer.enhancer import _getenv_bool
     import os
-    
+
+    from libs.enhancer.enhancer import _getenv_bool
+
     # Ensure env var doesn't exist
     if "NONEXISTENT_BOOL_VAR" in os.environ:
         del os.environ["NONEXISTENT_BOOL_VAR"]
-    
+
     result = _getenv_bool("NONEXISTENT_BOOL_VAR", default=True)
     assert result is True
 
 
 def test_getenv_bool_returns_default_for_invalid_value():
     """Test _getenv_bool returns default for invalid boolean values."""
-    from libs.enhancer.enhancer import _getenv_bool
     import os
-    
+
+    from libs.enhancer.enhancer import _getenv_bool
+
     os.environ["INVALID_BOOL_VAR"] = "maybe"
     result = _getenv_bool("INVALID_BOOL_VAR", default=False)
     assert result is False
@@ -616,7 +627,7 @@ def test_getenv_bool_returns_default_for_invalid_value():
 def test_vertex_ai_llm_client_with_project():
     """Test VertexAILLMClient initialization with project."""
     from libs.enhancer.enhancer import VertexAILLMClient
-    
+
     client = VertexAILLMClient(project="test-project")
     assert client.project == "test-project"
     assert client.model == "gemini-2.0-flash"
@@ -625,39 +636,40 @@ def test_vertex_ai_llm_client_with_project():
 
 def test_vertex_ai_llm_client_complete_mocked(monkeypatch):
     """Test VertexAILLMClient.complete method."""
-    from libs.enhancer.enhancer import VertexAILLMClient
     from types import SimpleNamespace
-    
+
+    from libs.enhancer.enhancer import VertexAILLMClient
+
     # Mock the vertexai modules
     fake_usage = SimpleNamespace()
     fake_usage.prompt_token_count = 150
     fake_usage.candidates_token_count = 75
-    
+
     fake_response = SimpleNamespace()
     fake_response.text = "test response"
     fake_response.usage_metadata = fake_usage
-    
+
     fake_model = SimpleNamespace()
     fake_model.generate_content = lambda prompt, generation_config: fake_response
-    
+
     fake_generative_models = SimpleNamespace()
     fake_generative_models.GenerativeModel = lambda model: fake_model
-    
+
     fake_vertexai = SimpleNamespace()
     fake_vertexai.init = lambda **kwargs: None
-    
+
     def fake_import_module(name):
         if name == "vertexai":
             return fake_vertexai
         elif name == "vertexai.generative_models":
             return fake_generative_models
         return None
-    
+
     monkeypatch.setattr("libs.enhancer.enhancer.import_module", fake_import_module)
-    
+
     client = VertexAILLMClient(project="test-project")
     response = client.complete("test prompt", max_tokens=2048)
-    
+
     assert response.content == "test response"
     assert response.input_tokens == 150
     assert response.output_tokens == 75
@@ -665,10 +677,10 @@ def test_vertex_ai_llm_client_complete_mocked(monkeypatch):
 
 def test_create_llm_client_raises_for_missing_api_key():
     """Test create_llm_client raises ValueError when api_key is required but missing."""
-    from libs.enhancer.enhancer import create_llm_client, EnhancerConfig, LLMProvider
-    
+    from libs.enhancer.enhancer import EnhancerConfig, LLMProvider, create_llm_client
+
     config = EnhancerConfig(provider=LLMProvider.anthropic, api_key=None)
-    
+
     try:
         create_llm_client(config)
         assert False, "Should have raised ValueError"
@@ -678,38 +690,36 @@ def test_create_llm_client_raises_for_missing_api_key():
 
 def test_create_llm_client_anthropic():
     """Test create_llm_client creates AnthropicLLMClient."""
-    from libs.enhancer.enhancer import create_llm_client, EnhancerConfig, LLMProvider
-    
+    from libs.enhancer.enhancer import EnhancerConfig, LLMProvider, create_llm_client
+
     config = EnhancerConfig(provider=LLMProvider.anthropic, api_key="test-key")
     client = create_llm_client(config)
-    
+
     assert client.__class__.__name__ == "AnthropicLLMClient"
 
 
 def test_create_llm_client_openai():
     """Test create_llm_client creates OpenAILLMClient for OpenAI provider."""
-    from libs.enhancer.enhancer import create_llm_client, EnhancerConfig, LLMProvider
-    
+    from libs.enhancer.enhancer import EnhancerConfig, LLMProvider, create_llm_client
+
     config = EnhancerConfig(
-        provider=LLMProvider.openai,
-        api_key="test-key",
-        api_base_url="https://api.openai.com/v1"
+        provider=LLMProvider.openai, api_key="test-key", api_base_url="https://api.openai.com/v1"
     )
     client = create_llm_client(config)
-    
+
     assert client.__class__.__name__ == "OpenAILLMClient"
 
 
 def test_create_llm_client_raises_for_unsupported_provider():
     """Test create_llm_client raises ValueError for unsupported provider."""
-    from libs.enhancer.enhancer import create_llm_client, EnhancerConfig, LLMProvider
-    
+    from libs.enhancer.enhancer import EnhancerConfig, create_llm_client
+
     # Create a fake provider that doesn't exist
     class FakeProvider:
         pass
-    
+
     config = EnhancerConfig(provider=FakeProvider(), api_key="test-key")
-    
+
     try:
         create_llm_client(config)
         assert False, "Should have raised ValueError"
@@ -719,8 +729,8 @@ def test_create_llm_client_raises_for_unsupported_provider():
 
 def test_default_model_for_provider():
     """Test _default_model_for_provider returns correct models."""
-    from libs.enhancer.enhancer import _default_model_for_provider, LLMProvider
-    
+    from libs.enhancer.enhancer import LLMProvider, _default_model_for_provider
+
     assert _default_model_for_provider(LLMProvider.anthropic) == "claude-sonnet-4-20250514"
     assert _default_model_for_provider(LLMProvider.deepseek) == "deepseek-chat"
     assert _default_model_for_provider(LLMProvider.vertexai) == "gemini-2.0-flash"
@@ -729,8 +739,8 @@ def test_default_model_for_provider():
 
 def test_default_api_base_url_for_provider():
     """Test _default_api_base_url_for_provider returns correct URLs."""
-    from libs.enhancer.enhancer import _default_api_base_url_for_provider, LLMProvider
-    
+    from libs.enhancer.enhancer import LLMProvider, _default_api_base_url_for_provider
+
     assert _default_api_base_url_for_provider(LLMProvider.deepseek) == "https://api.deepseek.com"
     assert _default_api_base_url_for_provider(LLMProvider.openai) is None
     assert _default_api_base_url_for_provider(LLMProvider.anthropic) is None
@@ -738,8 +748,8 @@ def test_default_api_base_url_for_provider():
 
 def test_enhancer_skips_all_operations_with_good_descriptions():
     """Test enhancer returns early when all operations have good descriptions."""
-    from libs.enhancer.enhancer import IREnhancer, EnhancerConfig
-    
+    from libs.enhancer.enhancer import EnhancerConfig, IREnhancer
+
     # Create IR with all good descriptions
     good_op = Operation(
         id="good_op",
@@ -759,7 +769,7 @@ def test_enhancer_skips_all_operations_with_good_descriptions():
         risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
         enabled=True,
     )
-    
+
     ir = ServiceIR(
         source_hash="abc123",
         protocol="openapi",
@@ -767,13 +777,13 @@ def test_enhancer_skips_all_operations_with_good_descriptions():
         base_url="https://api.example.com",
         operations=[good_op],
     )
-    
+
     client = MockLLMClient()
     config = EnhancerConfig(skip_if_description_exists=True)
     enhancer = IREnhancer(client=client, config=config)
-    
+
     result = enhancer.enhance(ir)
-    
+
     # Should skip all operations and not call LLM
     assert len(client.calls) == 0
     assert result.operations_enhanced == 0
@@ -783,28 +793,26 @@ def test_enhancer_skips_all_operations_with_good_descriptions():
 def test_enhancer_handles_llm_batch_failure():
     """Test enhancer continues with other batches when one fails."""
     ir = make_raw_ir(5)
-    
+
     class FailingBatchClient:
         def __init__(self):
             self.calls = []
-        
+
         def complete(self, prompt: str, max_tokens: int = 4096) -> LLMResponse:
             self.calls.append(prompt)
             if len(self.calls) == 1:
                 raise RuntimeError("First batch failed")
             # Second batch succeeds
             return LLMResponse(
-                content=make_llm_response(ir.operations[2:]),
-                input_tokens=100,
-                output_tokens=50
+                content=make_llm_response(ir.operations[2:]), input_tokens=100, output_tokens=50
             )
-    
+
     client = FailingBatchClient()
     config = EnhancerConfig(skip_if_description_exists=False, batch_size=2)
     enhancer = IREnhancer(client=client, config=config)
-    
-    result = enhancer.enhance(ir)
-    
+
+    enhancer.enhance(ir)
+
     # Should have made multiple calls despite one failure
     assert len(client.calls) >= 2
 
@@ -812,22 +820,22 @@ def test_enhancer_handles_llm_batch_failure():
 def test_enhancer_returns_original_when_no_enhancements():
     """Test enhancer returns original IR when no enhancements are produced."""
     ir = make_raw_ir(2)
-    
+
     class NoEnhancementsClient:
         def __init__(self):
             self.calls = []
-        
+
         def complete(self, prompt: str, max_tokens: int = 4096) -> LLMResponse:
             self.calls.append(prompt)
             # Return empty or invalid response
             return LLMResponse(content="[]", input_tokens=100, output_tokens=50)
-    
+
     client = NoEnhancementsClient()
     config = EnhancerConfig(skip_if_description_exists=False)
     enhancer = IREnhancer(client=client, config=config)
-    
+
     result = enhancer.enhance(ir)
-    
+
     assert result.operations_enhanced == 0
     assert result.enhanced_ir is ir  # Should be original object
 
@@ -835,35 +843,35 @@ def test_enhancer_returns_original_when_no_enhancements():
 def test_enhancer_respects_token_budget():
     """Test enhancer skips batches when token budget is exhausted."""
     ir = make_raw_ir(2)
-    
+
     class TokenConsumingClient:
         def __init__(self):
             self.calls = []
-        
+
         def complete(self, prompt: str, max_tokens: int = 4096) -> LLMResponse:
             self.calls.append(prompt)
             # Return a response that uses many tokens
             return LLMResponse(content="[]", input_tokens=1000, output_tokens=500)
-    
+
     client = TokenConsumingClient()
     # Set very low token budget
     config = EnhancerConfig(skip_if_description_exists=False, max_tokens_per_job=1200)
     enhancer = IREnhancer(client=client, config=config)
-    
-    result = enhancer.enhance(ir)
-    
+
+    enhancer.enhance(ir)
+
     # Should only make one call due to token budget
     assert len(client.calls) == 1
 
 
 def test_parse_llm_response_handles_non_list_response():
     """Test _parse_llm_response handles non-list JSON responses."""
-    from libs.enhancer.enhancer import IREnhancer, EnhancerConfig
-    
+    from libs.enhancer.enhancer import EnhancerConfig, IREnhancer
+
     client = MockLLMClient()
     config = EnhancerConfig()
     enhancer = IREnhancer(client=client, config=config)
-    
+
     # Test with dict instead of list
     result = enhancer._parse_llm_response('{"error": "not a list"}')
     assert result == {}
@@ -871,46 +879,46 @@ def test_parse_llm_response_handles_non_list_response():
 
 def test_parse_llm_response_handles_markdown_with_tildes():
     """Test _parse_llm_response handles markdown fences with tildes."""
-    from libs.enhancer.enhancer import IREnhancer, EnhancerConfig
-    
+    from libs.enhancer.enhancer import EnhancerConfig, IREnhancer
+
     client = MockLLMClient()
     config = EnhancerConfig()
     enhancer = IREnhancer(client=client, config=config)
-    
+
     json_content = '[{"operation_id": "test", "description": "test"}]'
     fenced_content = f"~~~json\n{json_content}\n~~~"
-    
+
     result = enhancer._parse_llm_response(fenced_content)
     assert "test" in result
 
 
 def test_apply_enhancements_handles_non_dict_enhancement():
     """Test _apply_enhancements handles non-dict enhancement values."""
-    from libs.enhancer.enhancer import IREnhancer, EnhancerConfig
-    
+    from libs.enhancer.enhancer import EnhancerConfig, IREnhancer
+
     ir = make_raw_ir(1)
     client = MockLLMClient()
     config = EnhancerConfig()
     enhancer = IREnhancer(client=client, config=config)
-    
+
     # Pass non-dict value
     enhancements = {ir.operations[0].id: "not a dict"}
-    
+
     new_ir = enhancer._apply_enhancements(ir, enhancements)
-    
+
     # Should keep original operation unchanged
     assert new_ir.operations[0].description == ir.operations[0].description
 
 
 def test_apply_enhancements_handles_invalid_confidence():
     """Test _apply_enhancements handles invalid confidence values."""
-    from libs.enhancer.enhancer import IREnhancer, EnhancerConfig
-    
+    from libs.enhancer.enhancer import EnhancerConfig, IREnhancer
+
     ir = make_raw_ir(1)
     client = MockLLMClient()
     config = EnhancerConfig()
     enhancer = IREnhancer(client=client, config=config)
-    
+
     enhancements = {
         ir.operations[0].id: {
             "description": "Enhanced description",
@@ -921,12 +929,12 @@ def test_apply_enhancements_handles_invalid_confidence():
                     "description": "Enhanced param",
                     "confidence": "also invalid",
                 }
-            ]
+            ],
         }
     }
-    
+
     new_ir = enhancer._apply_enhancements(ir, enhancements)
-    
+
     # Should use default confidence values
     enhanced_op = new_ir.operations[0]
     assert enhanced_op.confidence == 0.7  # Default

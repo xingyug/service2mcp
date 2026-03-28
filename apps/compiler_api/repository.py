@@ -137,9 +137,7 @@ class ServiceCatalogRepository:
         if environment is not None:
             query = query.where(ServiceVersion.environment == environment)
 
-        result = await self._session.scalars(
-            query.order_by(ServiceVersion.service_id).limit(1000)
-        )
+        result = await self._session.scalars(query.order_by(ServiceVersion.service_id).limit(1000))
         versions = result.all()
         return ServiceListResponse(
             services=[self._to_service_summary(version) for version in versions]
@@ -226,9 +224,11 @@ class ArtifactRegistryRepository:
         tenant: str | None = None,
         environment: str | None = None,
     ) -> ArtifactVersionListResponse:
-        query = self._version_query(service_id, tenant=tenant, environment=environment).order_by(
-            desc(ServiceVersion.version_number)
-        ).limit(1000)
+        query = (
+            self._version_query(service_id, tenant=tenant, environment=environment)
+            .order_by(desc(ServiceVersion.version_number))
+            .limit(1000)
+        )
         result = await self._session.scalars(query)
         versions = [self._to_response(record) for record in result.all()]
         return ArtifactVersionListResponse(service_id=service_id, versions=versions)

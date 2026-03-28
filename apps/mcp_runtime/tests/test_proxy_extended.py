@@ -13,18 +13,19 @@ import httpx
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from apps.mcp_runtime.circuit_breaker import CircuitBreaker
 from apps.mcp_runtime.observability import RuntimeObservability
 from apps.mcp_runtime.proxy import (
     PreparedRequestPayload,
     RuntimeProxy,
     _append_soap_argument,
+    _apply_field_filter,
+    _apply_truncation,
     _build_multipart_request_body,
     _build_raw_request_body,
     _build_sse_event,
+    _coerce_xml_text,
     _collect_sse_events,
     _collect_websocket_messages,
-    _coerce_xml_text,
     _descriptor_positive_float,
     _descriptor_positive_int,
     _extract_async_status_url,
@@ -35,8 +36,6 @@ from apps.mcp_runtime.proxy import (
     _normalize_form_value,
     _normalize_websocket_message,
     _normalize_websocket_messages,
-    _apply_field_filter,
-    _apply_truncation,
     _set_nested,
     _unwrap_graphql_payload,
     _unwrap_soap_payload,
@@ -46,7 +45,6 @@ from libs.ir.models import (
     AuthConfig,
     AuthType,
     EventDescriptor,
-    EventDirection,
     EventSupportLevel,
     EventTransport,
     GraphQLOperationConfig,
@@ -88,7 +86,9 @@ def _minimal_ir(**overrides: Any) -> ServiceIR:
     defaults.update(overrides)
     # Auto-create stub operations for any event_descriptors referencing unknown op IDs
     if "event_descriptors" in defaults and defaults["event_descriptors"]:
-        existing_op_ids = {op.id if hasattr(op, "id") else op["id"] for op in defaults.get("operations", [])}
+        existing_op_ids = {
+            op.id if hasattr(op, "id") else op["id"] for op in defaults.get("operations", [])
+        }
         for ed in defaults["event_descriptors"]:
             op_id = ed.operation_id if hasattr(ed, "operation_id") else ed.get("operation_id")
             if op_id and op_id not in existing_op_ids:
@@ -193,8 +193,10 @@ class TestPerformSql:
 
         sql_config = SqlOperationConfig(
             action=SqlOperationType.query,
-            schema_name="public", relation_name="users",
-            relation_kind=SqlRelationKind.table, filterable_columns=["id"],
+            schema_name="public",
+            relation_name="users",
+            relation_kind=SqlRelationKind.table,
+            filterable_columns=["id"],
         )
         op = _op(sql=sql_config)
         p = _proxy(sql_executor=None)
@@ -206,8 +208,10 @@ class TestPerformSql:
 
         sql_config = SqlOperationConfig(
             action=SqlOperationType.query,
-            schema_name="public", relation_name="users",
-            relation_kind=SqlRelationKind.table, filterable_columns=["id"],
+            schema_name="public",
+            relation_name="users",
+            relation_kind=SqlRelationKind.table,
+            filterable_columns=["id"],
         )
         op = _op(sql=sql_config)
         executor = AsyncMock()
@@ -1083,7 +1087,9 @@ class TestCollectSSEEvents:
 
         response = MagicMock()
         response.aiter_lines.return_value = slow_lines()
-        events, reason = await _collect_sse_events(response, max_events=10, idle_timeout_seconds=0.01)
+        events, reason = await _collect_sse_events(
+            response, max_events=10, idle_timeout_seconds=0.01
+        )
         assert reason == "idle_timeout"
         assert len(events) == 1
 
@@ -1106,7 +1112,9 @@ class TestCollectSSEEvents:
 
         response = MagicMock()
         response.aiter_lines.return_value = lines()
-        events, reason = await _collect_sse_events(response, max_events=10, idle_timeout_seconds=5.0)
+        events, reason = await _collect_sse_events(
+            response, max_events=10, idle_timeout_seconds=5.0
+        )
         assert reason == "eof"
         assert len(events) == 1
 
@@ -1118,7 +1126,9 @@ class TestCollectSSEEvents:
 
         response = MagicMock()
         response.aiter_lines.return_value = lines()
-        events, reason = await _collect_sse_events(response, max_events=10, idle_timeout_seconds=5.0)
+        events, reason = await _collect_sse_events(
+            response, max_events=10, idle_timeout_seconds=5.0
+        )
         assert len(events) == 1
         assert events[0]["data"] == "real"
 
@@ -1130,7 +1140,9 @@ class TestCollectSSEEvents:
 
         response = MagicMock()
         response.aiter_lines.return_value = lines()
-        events, reason = await _collect_sse_events(response, max_events=10, idle_timeout_seconds=5.0)
+        events, reason = await _collect_sse_events(
+            response, max_events=10, idle_timeout_seconds=5.0
+        )
         assert events[0]["event"] == "custom"
 
     async def test_id_line(self) -> None:
@@ -1141,7 +1153,9 @@ class TestCollectSSEEvents:
 
         response = MagicMock()
         response.aiter_lines.return_value = lines()
-        events, reason = await _collect_sse_events(response, max_events=10, idle_timeout_seconds=5.0)
+        events, reason = await _collect_sse_events(
+            response, max_events=10, idle_timeout_seconds=5.0
+        )
         assert events[0]["id"] == "42"
 
     async def test_trailing_event_with_max_events(self) -> None:
@@ -1252,7 +1266,9 @@ class TestCollectWebsocketMessages:
     async def test_timeout_returns_idle_timeout(self) -> None:
         ws = AsyncMock()
         ws.recv.side_effect = TimeoutError()
-        events, reason = await _collect_websocket_messages(ws, max_messages=10, idle_timeout_seconds=0.01)
+        events, reason = await _collect_websocket_messages(
+            ws, max_messages=10, idle_timeout_seconds=0.01
+        )
         assert reason == "idle_timeout"
         assert events == []
 
@@ -1261,13 +1277,17 @@ class TestCollectWebsocketMessages:
 
         ws = AsyncMock()
         ws.recv.side_effect = websockets.ConnectionClosed(None, None)
-        events, reason = await _collect_websocket_messages(ws, max_messages=10, idle_timeout_seconds=5.0)
+        events, reason = await _collect_websocket_messages(
+            ws, max_messages=10, idle_timeout_seconds=5.0
+        )
         assert reason == "connection_closed"
 
     async def test_bytes_message(self) -> None:
         ws = AsyncMock()
         ws.recv.side_effect = [b"\x00\x01", TimeoutError()]
-        events, reason = await _collect_websocket_messages(ws, max_messages=10, idle_timeout_seconds=0.01)
+        events, reason = await _collect_websocket_messages(
+            ws, max_messages=10, idle_timeout_seconds=0.01
+        )
         assert len(events) == 1
         assert events[0]["message_type"] == "bytes"
         assert events[0]["content_base64"] == base64.b64encode(b"\x00\x01").decode()
@@ -1275,7 +1295,9 @@ class TestCollectWebsocketMessages:
     async def test_text_message_with_json(self) -> None:
         ws = AsyncMock()
         ws.recv.side_effect = ['{"key":"val"}', TimeoutError()]
-        events, reason = await _collect_websocket_messages(ws, max_messages=10, idle_timeout_seconds=0.01)
+        events, reason = await _collect_websocket_messages(
+            ws, max_messages=10, idle_timeout_seconds=0.01
+        )
         assert events[0]["message_type"] == "text"
         assert events[0]["parsed_data"] == {"key": "val"}
 
@@ -1289,14 +1311,18 @@ class TestCollectWebsocketMessages:
 
         ws = AsyncMock()
         ws.recv = recv_side_effect
-        events, reason = await _collect_websocket_messages(ws, max_messages=2, idle_timeout_seconds=5.0)
+        events, reason = await _collect_websocket_messages(
+            ws, max_messages=2, idle_timeout_seconds=5.0
+        )
         assert reason == "max_messages"
         assert len(events) == 2
 
     async def test_empty_loop_returns_connection_closed(self) -> None:
         """Cover line 1441: loop ends without any messages collected (max_messages=0)."""
         ws = AsyncMock()
-        events, reason = await _collect_websocket_messages(ws, max_messages=0, idle_timeout_seconds=5.0)
+        events, reason = await _collect_websocket_messages(
+            ws, max_messages=0, idle_timeout_seconds=5.0
+        )
         assert reason == "connection_closed"
         assert events == []
 
@@ -2061,8 +2087,10 @@ class TestInvokeIntegration:
 
         sql_config = SqlOperationConfig(
             action=SqlOperationType.query,
-            schema_name="public", relation_name="users",
-            relation_kind=SqlRelationKind.table, filterable_columns=["id"],
+            schema_name="public",
+            relation_name="users",
+            relation_kind=SqlRelationKind.table,
+            filterable_columns=["id"],
         )
         op = _op(sql=sql_config)
         executor = AsyncMock()
@@ -2087,8 +2115,10 @@ class TestInvokeIntegration:
 
         sql_config = SqlOperationConfig(
             action=SqlOperationType.query,
-            schema_name="public", relation_name="users",
-            relation_kind=SqlRelationKind.table, filterable_columns=["id"],
+            schema_name="public",
+            relation_name="users",
+            relation_kind=SqlRelationKind.table,
+            filterable_columns=["id"],
         )
         op = _op(sql=sql_config)
         executor = AsyncMock()

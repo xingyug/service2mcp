@@ -305,7 +305,8 @@ class RuntimeProxy:
                     raise tool_error
 
                 odata_error = self._odata_error_message(
-                    response, self._service_ir.protocol,
+                    response,
+                    self._service_ir.protocol,
                 )
                 if odata_error is not None:
                     _failure_recorded = True
@@ -337,7 +338,8 @@ class RuntimeProxy:
                     raise tool_error
 
                 scim_error = self._scim_error_message(
-                    response, self._service_ir.protocol,
+                    response,
+                    self._service_ir.protocol,
                 )
                 if scim_error is not None:
                     _failure_recorded = True
@@ -354,7 +356,9 @@ class RuntimeProxy:
                     raise tool_error
 
                 result, truncated = self._sanitize_response(
-                    response, operation, protocol=self._service_ir.protocol,
+                    response,
+                    operation,
+                    protocol=self._service_ir.protocol,
                 )
             except httpx.TimeoutException as exc:
                 _failure_recorded = True
@@ -455,8 +459,7 @@ class RuntimeProxy:
         )
         if not isinstance(result, dict):
             raise ToolError(
-                f"Native SQL executor for operation {operation.id} returned "
-                "a non-dict result."
+                f"Native SQL executor for operation {operation.id} returned a non-dict result."
             )
         return result
 
@@ -484,7 +487,7 @@ class RuntimeProxy:
         if operation.soap is not None:
             headers.setdefault("Accept", "text/xml, application/xml")
             if operation.soap.soap_action:
-                headers.setdefault("SOAPAction", f"\"{operation.soap.soap_action}\"")
+                headers.setdefault("SOAPAction", f'"{operation.soap.soap_action}"')
         query_params = dict(payload.query_params)
         query_params.update(auth_query_params)
 
@@ -745,9 +748,7 @@ class RuntimeProxy:
             params: Any = [remaining.get(n) for n in config.params_names]
         else:
             params = {
-                name: remaining[name]
-                for name in config.params_names
-                if name in remaining
+                name: remaining[name] for name in config.params_names if name in remaining
             } or remaining
         json_body: dict[str, Any] = {
             "jsonrpc": config.jsonrpc_version,
@@ -1307,18 +1308,14 @@ class RuntimeProxy:
 
         payload = _parse_response_payload(response)
         if not isinstance(payload, dict):
-            return (
-                f"GraphQL operation {operation.id} returned a non-object response body."
-            )
+            return f"GraphQL operation {operation.id} returned a non-object response body."
 
         raw_errors = payload.get("errors")
         if not isinstance(raw_errors, list) or not raw_errors:
             return None
 
         messages = [
-            error.get("message", "unknown GraphQL error")
-            if isinstance(error, dict)
-            else str(error)
+            error.get("message", "unknown GraphQL error") if isinstance(error, dict) else str(error)
             for error in raw_errors
         ]
         return f"GraphQL operation {operation.id} failed: {'; '.join(messages)}"
@@ -1697,8 +1694,7 @@ def _parse_response_payload(response: httpx.Response) -> Any:
             return response.text
     normalized_content_type = content_type.lower()
     if any(
-        normalized_content_type.startswith(textual)
-        or textual in normalized_content_type
+        normalized_content_type.startswith(textual) or textual in normalized_content_type
         for textual in _TEXTUAL_CONTENT_TYPES
     ):
         return response.text
@@ -1852,9 +1848,7 @@ def _apply_field_filter(payload: Any, field_filter: list[str] | None) -> Any:
         if not nested_paths and not array_paths:
             # Simple flat filter on list items.
             return [
-                {k: v for k, v in item.items() if k in top_keys}
-                if isinstance(item, dict)
-                else item
+                {k: v for k, v in item.items() if k in top_keys} if isinstance(item, dict) else item
                 for item in payload
             ]
         return [
@@ -1944,10 +1938,7 @@ def _apply_array_limit(payload: Any, max_items: int | None) -> Any:
     if isinstance(payload, list):
         return payload[:max_items]
     if isinstance(payload, dict):
-        return {
-            k: v[:max_items] if isinstance(v, list) else v
-            for k, v in payload.items()
-        }
+        return {k: v[:max_items] if isinstance(v, list) else v for k, v in payload.items()}
     return payload
 
 
@@ -1975,9 +1966,7 @@ def _unwrap_graphql_payload(payload: Any, operation: Operation) -> Any:
     if operation.graphql is None:
         return payload
     if not isinstance(payload, dict):
-        raise ToolError(
-            f"GraphQL operation {operation.id} returned a non-object response body."
-        )
+        raise ToolError(f"GraphQL operation {operation.id} returned a non-object response body.")
     data = payload.get("data")
     if not isinstance(data, dict):
         raise ToolError(f"GraphQL operation {operation.id} returned no data object.")
@@ -2052,9 +2041,7 @@ def _unwrap_soap_payload(response: httpx.Response, operation: Operation) -> Any:
     try:
         root = ET.fromstring(response.text)
     except ET.ParseError as exc:
-        raise ToolError(
-            f"SOAP operation {operation.id} returned invalid XML: {exc}"
-        ) from exc
+        raise ToolError(f"SOAP operation {operation.id} returned invalid XML: {exc}") from exc
 
     body = _soap_body_element(root)
     if body is None:
@@ -2105,8 +2092,7 @@ def _build_multipart_request_body(
         raise ToolError(f"Multipart files payload must be an object for operation {operation_id}.")
 
     form_data = {
-        str(key): _normalize_form_value(field_value)
-        for key, field_value in raw_form.items()
+        str(key): _normalize_form_value(field_value) for key, field_value in raw_form.items()
     }
     files: dict[str, tuple[str, bytes, str | None]] = {}
     signable_files: dict[str, dict[str, str]] = {}
@@ -2189,15 +2175,11 @@ def _build_raw_request_body(
         return value, None, value
 
     if not isinstance(value, dict):
-        raise ToolError(
-            f"Raw-body operation {operation_id} requires a string or object payload."
-        )
+        raise ToolError(f"Raw-body operation {operation_id} requires a string or object payload.")
 
     content_type = value.get("content_type")
     if content_type is not None and not isinstance(content_type, str):
-        raise ToolError(
-            f"Raw-body operation {operation_id} received a non-string content_type."
-        )
+        raise ToolError(f"Raw-body operation {operation_id} received a non-string content_type.")
 
     if "content_base64" in value:
         encoded = value["content_base64"]
@@ -2239,7 +2221,7 @@ def _is_same_origin(base_url: str, resolved_url: str) -> bool:
     """Check that resolved_url shares the same scheme+host+port as base_url."""
     base = urlsplit(base_url)
     resolved = urlsplit(resolved_url)
-    return (base.scheme == resolved.scheme and base.netloc == resolved.netloc)
+    return base.scheme == resolved.scheme and base.netloc == resolved.netloc
 
 
 def _extract_async_status_url(async_job: AsyncJobConfig, response: httpx.Response) -> str | None:

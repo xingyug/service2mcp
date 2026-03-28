@@ -499,11 +499,7 @@ class PostDeployValidator:
             passed=True,
             details=(
                 f"Invocation smoke test succeeded for {operation.id}"
-                + (
-                    f" using {descriptor.transport.value}."
-                    if descriptor is not None
-                    else "."
-                )
+                + (f" using {descriptor.transport.value}." if descriptor is not None else ".")
             ),
             duration_ms=self._duration_ms(started_at),
         )

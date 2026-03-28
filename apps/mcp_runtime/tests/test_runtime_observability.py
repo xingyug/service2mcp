@@ -40,9 +40,7 @@ class TestRecordToolCall:
         obs.record_tool_call("op1", "success")
         obs.record_tool_call("op1", "success")
         obs.record_tool_call("op1", "error")
-        val = obs.tool_calls_total.labels(
-            operation_id="op1", outcome="success"
-        )._value.get()
+        val = obs.tool_calls_total.labels(operation_id="op1", outcome="success")._value.get()
         assert val == 2.0
 
 

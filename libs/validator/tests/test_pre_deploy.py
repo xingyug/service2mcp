@@ -190,9 +190,10 @@ async def test_advanced_auth_config_passes_when_oauth2_endpoint_is_reachable() -
     assert report.overall_passed is True
     assert report.get_result("schema").passed is True
     assert report.get_result("auth_smoke").passed is True
-    assert "oauth2 client credentials endpoint reachable" in report.get_result(
-        "auth_smoke"
-    ).details.lower()
+    assert (
+        "oauth2 client credentials endpoint reachable"
+        in report.get_result("auth_smoke").details.lower()
+    )
 
 
 @pytest.mark.asyncio
@@ -280,9 +281,7 @@ async def test_supported_event_descriptors_fail_until_runtime_support_lands() ->
     assert report.overall_passed is False
     assert report.get_result("schema").passed is True
     assert report.get_result("event_support").passed is False
-    assert "native runtime enablement" in report.get_result(
-        "event_support"
-    ).details.lower()
+    assert "native runtime enablement" in report.get_result("event_support").details.lower()
 
 
 @pytest.mark.asyncio
@@ -338,9 +337,7 @@ async def test_extracted_grpc_ir_with_native_stream_enabled_passes_pre_deploy_va
 
     assert report.overall_passed is True
     assert report.get_result("event_support").passed is True
-    assert "watchinventory(grpc_stream)" in report.get_result(
-        "event_support"
-    ).details.lower()
+    assert "watchinventory(grpc_stream)" in report.get_result("event_support").details.lower()
 
 
 @pytest.mark.asyncio
@@ -350,7 +347,9 @@ async def test_native_grpc_unary_operation_fails_until_runtime_support_lands() -
             "protocol": "grpc",
             "base_url": "grpc://inventory.example.test:443",
             "operations": [
-                _build_ir().operations[0].model_copy(
+                _build_ir()
+                .operations[0]
+                .model_copy(
                     update={
                         "id": "ListItems",
                         "name": "List Items",
@@ -383,7 +382,9 @@ async def test_native_grpc_unary_operation_passes_with_native_opt_in() -> None:
             "protocol": "grpc",
             "base_url": "grpc://inventory.example.test:443",
             "operations": [
-                _build_ir().operations[0].model_copy(
+                _build_ir()
+                .operations[0]
+                .model_copy(
                     update={
                         "id": "ListItems",
                         "name": "List Items",
@@ -434,9 +435,10 @@ async def test_supported_sse_event_descriptor_passes_with_operation_reference() 
 
     assert report.overall_passed is True
     assert report.get_result("event_support").passed is True
-    assert "approved streaming transports configured" in report.get_result(
-        "event_support"
-    ).details.lower()
+    assert (
+        "approved streaming transports configured"
+        in report.get_result("event_support").details.lower()
+    )
 
 
 class TestValidationReportAuditSummary:

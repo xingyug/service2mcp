@@ -85,11 +85,13 @@ class TestDetectionResult:
 
 class TestTypeDetectorDetect:
     def test_selects_highest_confidence(self) -> None:
-        td = TypeDetector([
-            FakeExtractor("a", 0.3),
-            FakeExtractor("b", 0.9),
-            FakeExtractor("c", 0.5),
-        ])
+        td = TypeDetector(
+            [
+                FakeExtractor("a", 0.3),
+                FakeExtractor("b", 0.9),
+                FakeExtractor("c", 0.5),
+            ]
+        )
         result = td.detect(SourceConfig(url="https://example.com"))
         assert result.protocol_name == "b"
         assert result.confidence == 0.9
@@ -133,19 +135,23 @@ class TestTypeDetectorDetect:
 
 class TestTypeDetectorDetectAll:
     def test_returns_sorted_by_confidence(self) -> None:
-        td = TypeDetector([
-            FakeExtractor("a", 0.3),
-            FakeExtractor("b", 0.9),
-            FakeExtractor("c", 0.5),
-        ])
+        td = TypeDetector(
+            [
+                FakeExtractor("a", 0.3),
+                FakeExtractor("b", 0.9),
+                FakeExtractor("c", 0.5),
+            ]
+        )
         results = td.detect_all(SourceConfig(url="https://example.com"))
         assert [r.protocol_name for r in results] == ["b", "c", "a"]
 
     def test_excludes_zero_confidence(self) -> None:
-        td = TypeDetector([
-            FakeExtractor("a", 0.0),
-            FakeExtractor("b", 0.5),
-        ])
+        td = TypeDetector(
+            [
+                FakeExtractor("a", 0.0),
+                FakeExtractor("b", 0.5),
+            ]
+        )
         results = td.detect_all(SourceConfig(url="https://example.com"))
         assert len(results) == 1
         assert results[0].protocol_name == "b"

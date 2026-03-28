@@ -22,8 +22,15 @@ from apps.compiler_worker.models import (
 class TestCompilationStage:
     def test_all_stages_present(self) -> None:
         expected = {
-            "detect", "extract", "enhance", "validate_ir",
-            "generate", "deploy", "validate_runtime", "route", "register",
+            "detect",
+            "extract",
+            "enhance",
+            "validate_ir",
+            "generate",
+            "deploy",
+            "validate_runtime",
+            "route",
+            "register",
         }
         assert {s.value for s in CompilationStage} == expected
 

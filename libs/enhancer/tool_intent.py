@@ -99,11 +99,7 @@ def bifurcate_descriptions(ir: ServiceIR) -> ServiceIR:
             new_operations.append(op)
             continue
 
-        prefix = (
-            _DISCOVERY_PREFIX
-            if op.tool_intent == ToolIntent.discovery
-            else _ACTION_PREFIX
-        )
+        prefix = _DISCOVERY_PREFIX if op.tool_intent == ToolIntent.discovery else _ACTION_PREFIX
 
         if op.description.startswith(prefix):
             new_operations.append(op)
@@ -113,12 +109,10 @@ def bifurcate_descriptions(ir: ServiceIR) -> ServiceIR:
         desc = op.description
         for p in (_DISCOVERY_PREFIX, _ACTION_PREFIX):
             if desc.startswith(p):
-                desc = desc[len(p):]
+                desc = desc[len(p) :]
                 break
 
-        new_operations.append(
-            op.model_copy(update={"description": f"{prefix}{desc}"})
-        )
+        new_operations.append(op.model_copy(update={"description": f"{prefix}{desc}"}))
         changed = True
 
     if not changed:

@@ -149,28 +149,32 @@ def _identify_failure_patterns(
     # Pattern 1: Nested resource endpoints not discovered
     nested = [(m, p) for m, p in unmatched if p.count("/") >= 3]
     if nested:
-        patterns.append(FailurePattern(
-            pattern_name="nested_resource_not_discovered",
-            affected_endpoints=nested,
-            description=(
-                "Nested resource endpoints (e.g. /users/{id}/posts) were not "
-                "discovered, likely because the crawler did not follow "
-                "sub-resource links."
-            ),
-        ))
+        patterns.append(
+            FailurePattern(
+                pattern_name="nested_resource_not_discovered",
+                affected_endpoints=nested,
+                description=(
+                    "Nested resource endpoints (e.g. /users/{id}/posts) were not "
+                    "discovered, likely because the crawler did not follow "
+                    "sub-resource links."
+                ),
+            )
+        )
 
     # Pattern 2: Mutation endpoints not discovered
     mutations = [(m, p) for m, p in unmatched if m in ("POST", "PUT", "PATCH", "DELETE")]
     if mutations:
-        patterns.append(FailurePattern(
-            pattern_name="mutation_endpoints_not_discovered",
-            affected_endpoints=mutations,
-            description=(
-                "Write/delete endpoints were not discovered; the extractor "
-                "may only probe GET/OPTIONS or skip methods not advertised "
-                "in Allow headers."
-            ),
-        ))
+        patterns.append(
+            FailurePattern(
+                pattern_name="mutation_endpoints_not_discovered",
+                affected_endpoints=mutations,
+                description=(
+                    "Write/delete endpoints were not discovered; the extractor "
+                    "may only probe GET/OPTIONS or skip methods not advertised "
+                    "in Allow headers."
+                ),
+            )
+        )
 
     # Pattern 3: Parameterized paths not generalized
     templated_unmatched = [(m, p) for m, p in unmatched if "{" in p]
@@ -181,32 +185,32 @@ def _identify_failure_patterns(
             base = "/" + p.split("/")[1]
             base_paths.add(base)
 
-        discovered_paths = {
-            _normalize_template(op.path) for op in ops if op.path
-        }
-        missing_bases = base_paths - {
-            _normalize_template(p) for p in discovered_paths
-        }
+        discovered_paths = {_normalize_template(op.path) for op in ops if op.path}
+        missing_bases = base_paths - {_normalize_template(p) for p in discovered_paths}
         if not missing_bases and templated_unmatched:
-            patterns.append(FailurePattern(
-                pattern_name="item_endpoints_not_generalized",
-                affected_endpoints=templated_unmatched,
-                description=(
-                    "Collection endpoints were discovered but item-level "
-                    "parameterized paths were not generalized from probing."
-                ),
-            ))
+            patterns.append(
+                FailurePattern(
+                    pattern_name="item_endpoints_not_generalized",
+                    affected_endpoints=templated_unmatched,
+                    description=(
+                        "Collection endpoints were discovered but item-level "
+                        "parameterized paths were not generalized from probing."
+                    ),
+                )
+            )
 
     # Pattern 4: Rate limiting / auth walls (empty result)
     if not ops:
-        patterns.append(FailurePattern(
-            pattern_name="no_operations_extracted",
-            affected_endpoints=unmatched,
-            description=(
-                "Zero operations were extracted, suggesting the target may "
-                "require authentication, be rate-limiting, or be unreachable."
-            ),
-        ))
+        patterns.append(
+            FailurePattern(
+                pattern_name="no_operations_extracted",
+                affected_endpoints=unmatched,
+                description=(
+                    "Zero operations were extracted, suggesting the target may "
+                    "require authentication, be rate-limiting, or be unreachable."
+                ),
+            )
+        )
 
     return patterns
 
@@ -261,13 +265,15 @@ def evaluate_black_box(
             if key not in matched_truth_keys:
                 matched_truth_keys.add(key)
                 matched_op_ids.add(op.id)
-                matched_endpoints.append(EndpointMatch(
-                    ground_truth_method=truth.method,
-                    ground_truth_path=truth.path,
-                    matched_operation_id=op.id,
-                    risk_correct=_risk_matches(op, truth),
-                    description=truth.description,
-                ))
+                matched_endpoints.append(
+                    EndpointMatch(
+                        ground_truth_method=truth.method,
+                        ground_truth_path=truth.path,
+                        matched_operation_id=op.id,
+                        risk_correct=_risk_matches(op, truth),
+                        description=truth.description,
+                    )
+                )
 
     # Unmatched ground truth
     unmatched_gt: list[tuple[str, str]] = []
@@ -286,20 +292,12 @@ def evaluate_black_box(
     gt_count = len(ground_truth)
     discovery_coverage = len(matched_truth_keys) / gt_count if gt_count > 0 else 0.0
 
-    risk_correct_count = sum(
-        1 for m in matched_endpoints
-        if m.risk_correct is True
-    )
-    risk_total = sum(
-        1 for m in matched_endpoints
-        if m.risk_correct is not None
-    )
+    risk_correct_count = sum(1 for m in matched_endpoints if m.risk_correct is True)
+    risk_total = sum(1 for m in matched_endpoints if m.risk_correct is not None)
     risk_accuracy = risk_correct_count / risk_total if risk_total > 0 else 0.0
 
     # Discovered paths
-    discovered_paths = [
-        op.path for op in ir.operations if op.path and op.enabled
-    ]
+    discovered_paths = [op.path for op in ir.operations if op.path and op.enabled]
 
     # Failure patterns
     failure_patterns = _identify_failure_patterns(unmatched_gt, list(ir.operations))

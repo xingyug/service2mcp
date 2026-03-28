@@ -172,9 +172,7 @@ class TestAuthRequirementsResource:
         auth_r = next(r for r in resources if "auth" in r.id)
         content = json.loads(auth_r.content)  # type: ignore[arg-type]
         assert content["type"] == "oauth2"
-        assert content["oauth2_token_url"] == (
-            "https://auth.example.com/token"
-        )
+        assert content["oauth2_token_url"] == ("https://auth.example.com/token")
         assert content["oauth2_scopes"] == ["read", "write"]
 
 
@@ -187,6 +185,4 @@ class TestGenerateResourcesIntegration:
             update={"resource_definitions": resources},
         )
         assert len(ir_with_resources.resource_definitions) == 3
-        assert ir_with_resources.resource_definitions[0].id == (
-            "petstore-schema"
-        )
+        assert ir_with_resources.resource_definitions[0].id == ("petstore-schema")

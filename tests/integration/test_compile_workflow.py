@@ -276,9 +276,7 @@ async def test_compile_workflow_happy_path_records_all_stages() -> None:
 
     events = await store.list_events(result.job_id)
     stage_successes = [
-        event.stage
-        for event in events
-        if event.event_type is CompilationEventType.STAGE_SUCCEEDED
+        event.stage for event in events if event.event_type is CompilationEventType.STAGE_SUCCEEDED
     ]
     assert stage_successes == [definition.stage for definition in DEFAULT_STAGE_DEFINITIONS]
     assert events[0].event_type is CompilationEventType.JOB_CREATED
@@ -397,9 +395,5 @@ async def test_sqlalchemy_store_persists_workflow_state(
     assert events[0].event_type is CompilationEventType.JOB_CREATED
     assert events[-1].event_type is CompilationEventType.JOB_SUCCEEDED
     assert [
-        event.stage
-        for event in events
-        if event.event_type is CompilationEventType.STAGE_SUCCEEDED
-    ] == [
-        definition.stage for definition in DEFAULT_STAGE_DEFINITIONS
-    ]
+        event.stage for event in events if event.event_type is CompilationEventType.STAGE_SUCCEEDED
+    ] == [definition.stage for definition in DEFAULT_STAGE_DEFINITIONS]

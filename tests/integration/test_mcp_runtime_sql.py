@@ -50,9 +50,7 @@ def _initialize_sqlite_catalog(tmp_path: Path) -> tuple[str, Path]:
 
 def _extract_sql_ir(tmp_path: Path) -> tuple[Path, Path]:
     database_url, database_path = _initialize_sqlite_catalog(tmp_path)
-    service_ir = SQLExtractor().extract(
-        SourceConfig(url=database_url, hints={"schema": "main"})
-    )
+    service_ir = SQLExtractor().extract(SourceConfig(url=database_url, hints={"schema": "main"}))
     service_ir_path = tmp_path / "sql_runtime_ir.json"
     service_ir_path.write_text(serialize_ir(service_ir), encoding="utf-8")
     return service_ir_path, database_path

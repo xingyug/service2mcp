@@ -329,7 +329,7 @@ async def test_runtime_tool_call_builds_soap_envelope_and_parses_response(
 
     assert captured["method"] == "POST"
     assert captured["url"] == "https://orders.example.com/soap/order-service"
-    assert captured["soap_action"] == "\"http://example.com/orders/GetOrderStatus\""
+    assert captured["soap_action"] == '"http://example.com/orders/GetOrderStatus"'
     assert str(captured["content_type"]).startswith("text/xml")
     envelope = ET.fromstring(str(captured["body"]))
     body = next(element for element in envelope.iter() if _xml_local_name(element.tag) == "Body")
@@ -397,7 +397,7 @@ async def test_runtime_tool_call_supports_rest_discovery_base_paths(
             ): httpx.Response(
                 200,
                 text=(
-                    '<html><body>'
+                    "<html><body>"
                     '<a href="/catalog/products/{product_id}?view=detail">Product</a>'
                     "</body></html>"
                 ),

@@ -233,7 +233,7 @@ message Msg { string text = 1; }
 
 
 def test_client_streaming_rpc_event_descriptor() -> None:
-    """Client-streaming RPC produces outbound EventDescriptor with client mode (lines 276-278, 284-286)."""
+    """Client-streaming RPC produces an outbound EventDescriptor in client mode."""
     extractor = GrpcProtoExtractor()
     content = """\
 syntax = "proto3";
@@ -290,7 +290,13 @@ message PingResp { string id = 1; }
 def test_get_content_fetches_from_url() -> None:
     """_get_content fetches proto from URL when file_path/file_content not set (lines 236-244)."""
     extractor = GrpcProtoExtractor()
-    proto_text = 'syntax = "proto3";\npackage url_test;\nservice Svc { rpc Do(Req) returns (Resp); }\nmessage Req { string id = 1; }\nmessage Resp { string ok = 1; }'
+    proto_text = """\
+syntax = "proto3";
+package url_test;
+service Svc { rpc Do(Req) returns (Resp); }
+message Req { string id = 1; }
+message Resp { string ok = 1; }
+"""
 
     def mock_get(*args, **kwargs):
         request = httpx.Request("GET", args[0] if args else "https://example.com/test.proto")

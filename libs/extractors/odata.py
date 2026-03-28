@@ -195,15 +195,11 @@ class ODataExtractor:
             return Path(source.file_path).read_text(encoding="utf-8")
         if source.url:
             try:
-                response = httpx.get(
-                    source.url, timeout=30, headers=self._auth_headers(source)
-                )
+                response = httpx.get(source.url, timeout=30, headers=self._auth_headers(source))
                 response.raise_for_status()
                 return response.text
             except Exception:
-                logger.warning(
-                    "Failed to fetch OData $metadata from %s", source.url, exc_info=True
-                )
+                logger.warning("Failed to fetch OData $metadata from %s", source.url, exc_info=True)
                 return None
         return None
 
@@ -273,9 +269,7 @@ def _parse_function_imports(container: ET.Element) -> list[str]:
 
 def _parse_action_imports(container: ET.Element) -> list[str]:
     return [
-        ai.attrib["Name"]
-        for ai in container.findall("edm:ActionImport", NS)
-        if "Name" in ai.attrib
+        ai.attrib["Name"] for ai in container.findall("edm:ActionImport", NS) if "Name" in ai.attrib
     ]
 
 
@@ -316,9 +310,7 @@ def _parse_actions(schema: ET.Element) -> dict[str, dict[str, Any]]:
 # ── Operation builders ─────────────────────────────────────────────────────
 
 
-def _build_entity_set_operations(
-    entity_set_name: str, et_info: EntityTypeInfo
-) -> list[Operation]:
+def _build_entity_set_operations(entity_set_name: str, et_info: EntityTypeInfo) -> list[Operation]:
     """Generate the 5 CRUD operations for an EntitySet."""
     ops: list[Operation] = []
     es_lower = entity_set_name.lower()
@@ -327,58 +319,92 @@ def _build_entity_set_operations(
     key_type = _edm_to_json_type(key_props[0].type_name) if key_props else "integer"
 
     odata_query_params = [
-        Param(name="$filter", type="string", required=False,
-              description="OData filter expression",
-              source=SourceType.extractor, confidence=1.0),
-        Param(name="$select", type="string", required=False,
-              description="Comma-separated list of properties to include",
-              source=SourceType.extractor, confidence=1.0),
-        Param(name="$top", type="integer", required=False,
-              description="Maximum number of items to return",
-              source=SourceType.extractor, confidence=1.0),
-        Param(name="$skip", type="integer", required=False,
-              description="Number of items to skip",
-              source=SourceType.extractor, confidence=1.0),
-        Param(name="$orderby", type="string", required=False,
-              description="Comma-separated list of properties to sort by",
-              source=SourceType.extractor, confidence=1.0),
+        Param(
+            name="$filter",
+            type="string",
+            required=False,
+            description="OData filter expression",
+            source=SourceType.extractor,
+            confidence=1.0,
+        ),
+        Param(
+            name="$select",
+            type="string",
+            required=False,
+            description="Comma-separated list of properties to include",
+            source=SourceType.extractor,
+            confidence=1.0,
+        ),
+        Param(
+            name="$top",
+            type="integer",
+            required=False,
+            description="Maximum number of items to return",
+            source=SourceType.extractor,
+            confidence=1.0,
+        ),
+        Param(
+            name="$skip",
+            type="integer",
+            required=False,
+            description="Number of items to skip",
+            source=SourceType.extractor,
+            confidence=1.0,
+        ),
+        Param(
+            name="$orderby",
+            type="string",
+            required=False,
+            description="Comma-separated list of properties to sort by",
+            source=SourceType.extractor,
+            confidence=1.0,
+        ),
     ]
 
     # LIST
-    ops.append(Operation(
-        id=f"list_{es_lower}",
-        name=f"List {entity_set_name}",
-        description=f"List entities from {entity_set_name} with OData query options.",
-        method="GET",
-        path=f"/{entity_set_name}",
-        params=odata_query_params,
-        risk=_risk_safe(),
-        tags=["odata", entity_set_name],
-        source=SourceType.extractor,
-        confidence=1.0,
-        enabled=True,
-        error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
-    ))
+    ops.append(
+        Operation(
+            id=f"list_{es_lower}",
+            name=f"List {entity_set_name}",
+            description=f"List entities from {entity_set_name} with OData query options.",
+            method="GET",
+            path=f"/{entity_set_name}",
+            params=odata_query_params,
+            risk=_risk_safe(),
+            tags=["odata", entity_set_name],
+            source=SourceType.extractor,
+            confidence=1.0,
+            enabled=True,
+            error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
+        )
+    )
 
     # GET by key
-    ops.append(Operation(
-        id=f"get_{es_lower}_by_key",
-        name=f"Get {entity_set_name} by key",
-        description=f"Get a single entity from {entity_set_name} by its key.",
-        method="GET",
-        path=f"/{entity_set_name}({{{key_name}}})",
-        params=[
-            Param(name=key_name, type=key_type, required=True,
-                  description=f"Key property {key_name}",
-                  source=SourceType.extractor, confidence=1.0),
-        ],
-        risk=_risk_safe(),
-        tags=["odata", entity_set_name],
-        source=SourceType.extractor,
-        confidence=1.0,
-        enabled=True,
-        error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
-    ))
+    ops.append(
+        Operation(
+            id=f"get_{es_lower}_by_key",
+            name=f"Get {entity_set_name} by key",
+            description=f"Get a single entity from {entity_set_name} by its key.",
+            method="GET",
+            path=f"/{entity_set_name}({{{key_name}}})",
+            params=[
+                Param(
+                    name=key_name,
+                    type=key_type,
+                    required=True,
+                    description=f"Key property {key_name}",
+                    source=SourceType.extractor,
+                    confidence=1.0,
+                ),
+            ],
+            risk=_risk_safe(),
+            tags=["odata", entity_set_name],
+            source=SourceType.extractor,
+            confidence=1.0,
+            enabled=True,
+            error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
+        )
+    )
 
     # CREATE
     create_params = [
@@ -392,26 +418,33 @@ def _build_entity_set_operations(
         )
         for p in et_info.non_key_properties
     ]
-    ops.append(Operation(
-        id=f"create_{es_lower}",
-        name=f"Create {entity_set_name}",
-        description=f"Create a new entity in {entity_set_name}.",
-        method="POST",
-        path=f"/{entity_set_name}",
-        params=create_params,
-        risk=_risk_cautious(),
-        tags=["odata", entity_set_name],
-        source=SourceType.extractor,
-        confidence=1.0,
-        enabled=True,
-        error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
-    ))
+    ops.append(
+        Operation(
+            id=f"create_{es_lower}",
+            name=f"Create {entity_set_name}",
+            description=f"Create a new entity in {entity_set_name}.",
+            method="POST",
+            path=f"/{entity_set_name}",
+            params=create_params,
+            risk=_risk_cautious(),
+            tags=["odata", entity_set_name],
+            source=SourceType.extractor,
+            confidence=1.0,
+            enabled=True,
+            error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
+        )
+    )
 
     # UPDATE
     update_params = [
-        Param(name=key_name, type=key_type, required=True,
-              description=f"Key property {key_name}",
-              source=SourceType.extractor, confidence=1.0),
+        Param(
+            name=key_name,
+            type=key_type,
+            required=True,
+            description=f"Key property {key_name}",
+            source=SourceType.extractor,
+            confidence=1.0,
+        ),
     ] + [
         Param(
             name=p.name,
@@ -423,47 +456,54 @@ def _build_entity_set_operations(
         )
         for p in et_info.non_key_properties
     ]
-    ops.append(Operation(
-        id=f"update_{es_lower}",
-        name=f"Update {entity_set_name}",
-        description=f"Update an entity in {entity_set_name} (partial update).",
-        method="PATCH",
-        path=f"/{entity_set_name}({{{key_name}}})",
-        params=update_params,
-        risk=_risk_cautious(),
-        tags=["odata", entity_set_name],
-        source=SourceType.extractor,
-        confidence=1.0,
-        enabled=True,
-        error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
-    ))
+    ops.append(
+        Operation(
+            id=f"update_{es_lower}",
+            name=f"Update {entity_set_name}",
+            description=f"Update an entity in {entity_set_name} (partial update).",
+            method="PATCH",
+            path=f"/{entity_set_name}({{{key_name}}})",
+            params=update_params,
+            risk=_risk_cautious(),
+            tags=["odata", entity_set_name],
+            source=SourceType.extractor,
+            confidence=1.0,
+            enabled=True,
+            error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
+        )
+    )
 
     # DELETE
-    ops.append(Operation(
-        id=f"delete_{es_lower}",
-        name=f"Delete {entity_set_name}",
-        description=f"Delete an entity from {entity_set_name}.",
-        method="DELETE",
-        path=f"/{entity_set_name}({{{key_name}}})",
-        params=[
-            Param(name=key_name, type=key_type, required=True,
-                  description=f"Key property {key_name}",
-                  source=SourceType.extractor, confidence=1.0),
-        ],
-        risk=_risk_dangerous(),
-        tags=["odata", entity_set_name],
-        source=SourceType.extractor,
-        confidence=1.0,
-        enabled=True,
-        error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
-    ))
+    ops.append(
+        Operation(
+            id=f"delete_{es_lower}",
+            name=f"Delete {entity_set_name}",
+            description=f"Delete an entity from {entity_set_name}.",
+            method="DELETE",
+            path=f"/{entity_set_name}({{{key_name}}})",
+            params=[
+                Param(
+                    name=key_name,
+                    type=key_type,
+                    required=True,
+                    description=f"Key property {key_name}",
+                    source=SourceType.extractor,
+                    confidence=1.0,
+                ),
+            ],
+            risk=_risk_dangerous(),
+            tags=["odata", entity_set_name],
+            source=SourceType.extractor,
+            confidence=1.0,
+            enabled=True,
+            error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
+        )
+    )
 
     return ops
 
 
-def _build_function_import_operation(
-    name: str, params: list[dict[str, str]]
-) -> Operation:
+def _build_function_import_operation(name: str, params: list[dict[str, str]]) -> Operation:
     """Build a GET operation for a FunctionImport."""
     ir_params = [
         Param(
@@ -500,9 +540,7 @@ def _build_function_import_path(name: str, params: list[dict[str, str]]) -> str:
     return f"/{name}({assignments})"
 
 
-def _build_action_import_operation(
-    name: str, params: list[dict[str, str]]
-) -> Operation:
+def _build_action_import_operation(name: str, params: list[dict[str, str]]) -> Operation:
     """Build a POST operation for an ActionImport."""
     ir_params = [
         Param(

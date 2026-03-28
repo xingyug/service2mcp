@@ -43,9 +43,7 @@ class TestRecordStage:
         obs.record_stage(CompilationStage.EXTRACT, outcome="success", duration_seconds=1.5)
         obs.record_stage(CompilationStage.EXTRACT, outcome="failure", duration_seconds=0.3)
         # histogram sum for extract/success should be 1.5
-        sample = obs.stage_duration_seconds.labels(
-            stage="extract", outcome="success"
-        )._sum.get()
+        sample = obs.stage_duration_seconds.labels(stage="extract", outcome="success")._sum.get()
         assert sample == 1.5
 
 

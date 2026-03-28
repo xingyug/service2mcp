@@ -58,9 +58,7 @@ class FakeVersionStore:
     ) -> ArtifactVersionResponse | None:
         return self.versions.get((service_id, version_number))
 
-    async def get_active_version(
-        self, service_id: str
-    ) -> ArtifactVersionResponse | None:
+    async def get_active_version(self, service_id: str) -> ArtifactVersionResponse | None:
         return self.active.get(service_id)
 
     async def update_version(
@@ -97,9 +95,7 @@ class FakeValidator:
     def __init__(self, passed: bool = True) -> None:
         self._passed = passed
 
-    async def validate(
-        self, version: ArtifactVersionResponse
-    ) -> dict[str, Any]:
+    async def validate(self, version: ArtifactVersionResponse) -> dict[str, Any]:
         return {"overall_passed": self._passed}
 
 
@@ -191,9 +187,7 @@ class TestRollbackWorkflowErrors:
         store.versions[("svc-1", 2)] = v2
 
         # Monkey-patch activate to return None
-        async def _activate_none(
-            service_id: str, version_number: int
-        ) -> None:
+        async def _activate_none(service_id: str, version_number: int) -> None:
             return None
 
         store.activate_version = _activate_none  # type: ignore[method-assign]

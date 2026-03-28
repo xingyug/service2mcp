@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
@@ -148,15 +148,10 @@ class TestInvokeSyncRejectsNonServerMode:
         with pytest.raises(ToolError, match="not implemented yet"):
             executor._invoke_sync(op, {}, config)
 
-
-# Additional test coverage for uncovered lines 
-from unittest.mock import patch
-import grpc
-from libs.ir.models import EventDescriptor, GrpcStreamRuntimeConfig
-
-
 class TestInvokeSyncErrorHandling:
-    def _make_executor(self, base_url: str = "grpc://localhost:50051") -> ReflectionGrpcStreamExecutor:
+    def _make_executor(
+        self, base_url: str = "grpc://localhost:50051"
+    ) -> ReflectionGrpcStreamExecutor:
         ir = ServiceIR(
             service_id="test-svc",
             service_name="Test",
@@ -183,56 +178,59 @@ class TestInvokeSyncErrorHandling:
             max_messages=2,
             idle_timeout_seconds=10,
         )
-        
-        with patch.object(executor, '_build_channel') as mock_build_channel:
+
+        with patch.object(executor, "_build_channel") as mock_build_channel:
             mock_channel = MagicMock()
             mock_build_channel.return_value = mock_channel
-            
+
             # Mock the reflection and protobuf setup
-            with patch('apps.mcp_runtime.grpc_stream.ProtoReflectionDescriptorDatabase'), \
-                 patch('apps.mcp_runtime.grpc_stream.DescriptorPool') as mock_pool_cls, \
-                 patch('apps.mcp_runtime.grpc_stream._method_full_name') as mock_method_name, \
-                 patch('apps.mcp_runtime.grpc_stream._prime_service_descriptor'), \
-                 patch('apps.mcp_runtime.grpc_stream.GetMessageClass') as mock_get_class, \
-                 patch('apps.mcp_runtime.grpc_stream._request_payload') as mock_payload, \
-                 patch('apps.mcp_runtime.grpc_stream.json_format') as mock_json:
-                
+            with (
+                patch("apps.mcp_runtime.grpc_stream.ProtoReflectionDescriptorDatabase"),
+                patch("apps.mcp_runtime.grpc_stream.DescriptorPool") as mock_pool_cls,
+                patch("apps.mcp_runtime.grpc_stream._method_full_name") as mock_method_name,
+                patch("apps.mcp_runtime.grpc_stream._prime_service_descriptor"),
+                patch("apps.mcp_runtime.grpc_stream.GetMessageClass") as mock_get_class,
+                patch("apps.mcp_runtime.grpc_stream._request_payload") as mock_payload,
+                patch("apps.mcp_runtime.grpc_stream.json_format") as mock_json,
+            ):
                 mock_method_name.return_value = "pkg.Svc.Watch"
                 mock_payload.return_value = {}
-                
+
                 # Setup mock classes and descriptors
                 mock_pool = MagicMock()
                 mock_pool_cls.return_value = mock_pool
                 mock_method_desc = MagicMock()
                 mock_pool.FindMethodByName.return_value = mock_method_desc
-                
+
                 mock_request_class = MagicMock()
                 mock_response_class = MagicMock()
                 mock_get_class.side_effect = [mock_request_class, mock_response_class]
-                
+
                 # Mock the stream call - create a mock that supports cancel()
                 mock_stream = MagicMock()
                 mock_responses = MagicMock()
                 mock_responses.cancel = MagicMock()  # Mock the cancel method
                 mock_stream.return_value = mock_responses
                 mock_channel.unary_stream.return_value = mock_stream
-                
+
                 # Mock responses that exceed max_messages
                 mock_response1 = MagicMock()
                 mock_response2 = MagicMock()
                 mock_response3 = MagicMock()  # This one should trigger max_messages termination
-                
+
                 mock_json.MessageToDict.side_effect = [
                     {"data": "response1"},
                     {"data": "response2"},
-                    {"data": "response3"}
+                    {"data": "response3"},
                 ]
-                
+
                 # Mock the iterator to return 3 responses
-                mock_responses.__iter__ = lambda self: iter([mock_response1, mock_response2, mock_response3])
-                
+                mock_responses.__iter__ = lambda self: iter(
+                    [mock_response1, mock_response2, mock_response3]
+                )
+
                 result = executor._invoke_sync(op, {}, config)
-                
+
                 assert result["lifecycle"]["termination_reason"] == "max_messages"
                 assert len(result["events"]) == 2
                 # Verify cancel was called due to max_messages reached
@@ -252,16 +250,18 @@ class TestInvokeSyncErrorHandling:
             rpc_path="/pkg.Svc/Watch",
             mode=GrpcStreamMode.server,
         )
-        
-        with patch.object(executor, '_build_channel') as mock_build_channel:
+
+        with patch.object(executor, "_build_channel") as mock_build_channel:
             mock_channel = MagicMock()
             mock_build_channel.return_value = mock_channel
-            
+
             # Mock a ToolError being raised
             tool_error = ToolError("Custom tool error")
-            with patch('apps.mcp_runtime.grpc_stream.ProtoReflectionDescriptorDatabase') as mock_reflection_db:
+            with patch(
+                "apps.mcp_runtime.grpc_stream.ProtoReflectionDescriptorDatabase"
+            ) as mock_reflection_db:
                 mock_reflection_db.side_effect = tool_error
-                
+
                 # ToolError should be re-raised as-is
                 with pytest.raises(ToolError, match="Custom tool error"):
                     executor._invoke_sync(op, {}, config)
@@ -270,7 +270,7 @@ class TestInvokeSyncErrorHandling:
         """Test general exception handling."""
         executor = self._make_executor()
         op = Operation(
-            id="op1", 
+            id="op1",
             name="watch",
             method="grpc",
             path="/pkg.Svc/Watch",
@@ -281,16 +281,18 @@ class TestInvokeSyncErrorHandling:
             rpc_path="/pkg.Svc/Watch",
             mode=GrpcStreamMode.server,
         )
-        
-        with patch.object(executor, '_build_channel') as mock_build_channel:
+
+        with patch.object(executor, "_build_channel") as mock_build_channel:
             mock_channel = MagicMock()
             mock_build_channel.return_value = mock_channel
-            
+
             # Mock a general exception
             general_error = ValueError("Test exception")
-            with patch('apps.mcp_runtime.grpc_stream.ProtoReflectionDescriptorDatabase') as mock_reflection_db:
+            with patch(
+                "apps.mcp_runtime.grpc_stream.ProtoReflectionDescriptorDatabase"
+            ) as mock_reflection_db:
                 mock_reflection_db.side_effect = general_error
-                
+
                 with pytest.raises(ToolError, match="Native grpc_stream invocation failed"):
                     executor._invoke_sync(op, {}, config)
 
@@ -300,7 +302,7 @@ class TestInvokeSyncErrorHandling:
             id="op1",
             name="watch",
             method="grpc",
-            path="/pkg.Svc/Watch", 
+            path="/pkg.Svc/Watch",
             description="Watch stream",
             enabled=True,
         )
@@ -308,15 +310,19 @@ class TestInvokeSyncErrorHandling:
             rpc_path="/pkg.Svc/Watch",
             mode=GrpcStreamMode.server,
         )
-        
-        with patch.object(executor, '_build_channel') as mock_build_channel:
+
+        with patch.object(executor, "_build_channel") as mock_build_channel:
             mock_channel = MagicMock()
             mock_build_channel.return_value = mock_channel
-            
+
             # Mock a general exception
             general_error = ValueError("Some unexpected error")
-            with patch('apps.mcp_runtime.grpc_stream.ProtoReflectionDescriptorDatabase') as mock_reflection_db:
+            with patch(
+                "apps.mcp_runtime.grpc_stream.ProtoReflectionDescriptorDatabase"
+            ) as mock_reflection_db:
                 mock_reflection_db.side_effect = general_error
-                
-                with pytest.raises(ToolError, match="Native grpc_stream invocation failed.*Some unexpected error"):
+
+                with pytest.raises(
+                    ToolError, match="Native grpc_stream invocation failed.*Some unexpected error"
+                ):
                     executor._invoke_sync(op, {}, config)

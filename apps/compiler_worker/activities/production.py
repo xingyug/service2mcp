@@ -1134,9 +1134,7 @@ def _is_safe_optional_grpc_sample_param(param: Param) -> bool:
 
 def _sample_graphql_arguments(operation: Operation) -> dict[str, Any]:
     if operation.graphql is None:
-        return {
-            param.name: _sample_value(param, operation=operation) for param in operation.params
-        }
+        return {param.name: _sample_value(param, operation=operation) for param in operation.params}
 
     arguments: dict[str, Any] = {}
     for param in operation.params:
@@ -1149,17 +1147,12 @@ def _sample_graphql_arguments(operation: Operation) -> dict[str, Any]:
     if operation.graphql.operation_type is GraphQLOperationType.query:
         return {}
 
-    return {
-        param.name: _sample_value(param, operation=operation) for param in operation.params
-    }
+    return {param.name: _sample_value(param, operation=operation) for param in operation.params}
 
 
 def _sample_sql_arguments(operation: Operation) -> dict[str, Any]:
     if operation.sql is None:
-        return {
-            param.name: _sample_value(param, operation=operation)
-            for param in operation.params
-        }
+        return {param.name: _sample_value(param, operation=operation) for param in operation.params}
 
     if operation.sql.action is SqlOperationType.query:
         arguments: dict[str, Any] = {}

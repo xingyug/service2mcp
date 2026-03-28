@@ -30,10 +30,13 @@ class TestBuildHttpCommand:
             assert "8002" in cmd
 
     def test_custom_host_port(self) -> None:
-        with patch.dict(os.environ, {
-            "WORKER_HTTP_HOST": "127.0.0.1",
-            "WORKER_HTTP_PORT": "9999",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "WORKER_HTTP_HOST": "127.0.0.1",
+                "WORKER_HTTP_PORT": "9999",
+            },
+        ):
             cmd = _build_http_command()
             assert "127.0.0.1" in cmd
             assert "9999" in cmd
@@ -108,18 +111,14 @@ class TestWaitForCeleryReady:
         process = MagicMock(spec=subprocess.Popen)
         process.poll.return_value = 1
         with pytest.raises(RuntimeError, match="exited before becoming ready"):
-            _wait_for_celery_ready(
-                process, ready, timeout_seconds=1.0, poll_interval_seconds=0.01
-            )
+            _wait_for_celery_ready(process, ready, timeout_seconds=1.0, poll_interval_seconds=0.01)
 
     def test_timeout_raises(self) -> None:
         ready = Event()
         process = MagicMock(spec=subprocess.Popen)
         process.poll.return_value = None
         with pytest.raises(RuntimeError, match="did not report ready"):
-            _wait_for_celery_ready(
-                process, ready, timeout_seconds=0.05, poll_interval_seconds=0.01
-            )
+            _wait_for_celery_ready(process, ready, timeout_seconds=0.05, poll_interval_seconds=0.01)
 
 
 class TestTerminateProcesses:
@@ -139,6 +138,7 @@ class TestTerminateProcesses:
 class TestConnectTcp:
     def test_connection_returns_none(self) -> None:
         from apps.compiler_worker.entrypoint import _connect_tcp
+
         with patch("socket.create_connection") as mock_socket:
             mock_socket.return_value.__enter__ = MagicMock()
             mock_socket.return_value.__exit__ = MagicMock()
@@ -150,22 +150,36 @@ class TestConnectTcp:
 class TestWaitForBrokerSocket:
     def test_no_broker_endpoint_returns_early(self) -> None:
         from apps.compiler_worker.entrypoint import _wait_for_broker_socket
+
         with patch("apps.compiler_worker.entrypoint._broker_endpoint", return_value=None):
             # Should return without raising
             _wait_for_broker_socket(timeout_seconds=1.0)
 
     def test_successful_connection(self) -> None:
         from apps.compiler_worker.entrypoint import _wait_for_broker_socket
-        with patch("apps.compiler_worker.entrypoint._broker_endpoint", return_value=("localhost", 6379)), \
-             patch("apps.compiler_worker.entrypoint._connect_tcp") as mock_connect:
+
+        with (
+            patch(
+                "apps.compiler_worker.entrypoint._broker_endpoint", return_value=("localhost", 6379)
+            ),
+            patch("apps.compiler_worker.entrypoint._connect_tcp") as mock_connect,
+        ):
             _wait_for_broker_socket(timeout_seconds=1.0)
             mock_connect.assert_called_once_with("localhost", 6379, 2.0)
 
     def test_timeout_raises_runtime_error(self) -> None:
         from apps.compiler_worker.entrypoint import _wait_for_broker_socket
-        with patch("apps.compiler_worker.entrypoint._broker_endpoint", return_value=("localhost", 6379)), \
-             patch("apps.compiler_worker.entrypoint._connect_tcp", side_effect=OSError("Connection refused")), \
-             patch("time.sleep") as mock_sleep:
+
+        with (
+            patch(
+                "apps.compiler_worker.entrypoint._broker_endpoint", return_value=("localhost", 6379)
+            ),
+            patch(
+                "apps.compiler_worker.entrypoint._connect_tcp",
+                side_effect=OSError("Connection refused"),
+            ),
+            patch("time.sleep") as mock_sleep,
+        ):
             with pytest.raises(RuntimeError, match="did not become reachable"):
                 _wait_for_broker_socket(timeout_seconds=0.1, poll_interval_seconds=0.05)
             # Should have tried to sleep at least once
@@ -173,34 +187,38 @@ class TestWaitForBrokerSocket:
 
     def test_custom_connect_timeout(self) -> None:
         from apps.compiler_worker.entrypoint import _wait_for_broker_socket
-        with patch("apps.compiler_worker.entrypoint._broker_endpoint", return_value=("localhost", 6379)), \
-             patch("apps.compiler_worker.entrypoint._connect_tcp") as mock_connect, \
-             patch.dict(os.environ, {"WORKER_BROKER_CONNECT_TIMEOUT_SECONDS": "5"}):
+
+        with (
+            patch(
+                "apps.compiler_worker.entrypoint._broker_endpoint", return_value=("localhost", 6379)
+            ),
+            patch("apps.compiler_worker.entrypoint._connect_tcp") as mock_connect,
+            patch.dict(os.environ, {"WORKER_BROKER_CONNECT_TIMEOUT_SECONDS": "5"}),
+        ):
             _wait_for_broker_socket(timeout_seconds=1.0)
             mock_connect.assert_called_once_with("localhost", 6379, 5.0)
 
 
 class TestStreamCeleryOutput:
     def test_output_streaming_and_ready_detection(self) -> None:
-        from apps.compiler_worker.entrypoint import _stream_celery_output
-        from threading import Event
         import io
-        
+        from threading import Event
+
+        from apps.compiler_worker.entrypoint import _stream_celery_output
+
         ready_event = Event()
         process = MagicMock(spec=subprocess.Popen)
         # Mock stdout as an iterator returning lines
-        process.stdout = iter([
-            "Starting worker\n",
-            "[2024-01-01 12:00:00,000] Worker ready.\n",
-            "Another line\n"
-        ])
-        
+        process.stdout = iter(
+            ["Starting worker\n", "[2024-01-01 12:00:00,000] Worker ready.\n", "Another line\n"]
+        )
+
         with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
             _stream_celery_output(process, ready_event)
-            
+
         # Check that ready event was set when " ready." was found
         assert ready_event.is_set()
-        
+
         # Check that all output was written to stdout
         output = mock_stdout.getvalue()
         assert "Starting worker" in output
@@ -211,162 +229,185 @@ class TestStreamCeleryOutput:
 class TestMain:
     def test_broker_timeout_env_var_invalid_uses_default(self) -> None:
         from apps.compiler_worker.entrypoint import main
-        with patch.dict(os.environ, {"WORKER_BROKER_READY_TIMEOUT_SECONDS": "invalid"}), \
-             patch("apps.compiler_worker.entrypoint._wait_for_broker_socket") as mock_wait, \
-             patch("subprocess.Popen") as mock_popen, \
-             patch("signal.signal"), \
-             patch("time.sleep", side_effect=KeyboardInterrupt("Stop loop")):
-            
+
+        with (
+            patch.dict(os.environ, {"WORKER_BROKER_READY_TIMEOUT_SECONDS": "invalid"}),
+            patch("apps.compiler_worker.entrypoint._wait_for_broker_socket") as mock_wait,
+            patch("subprocess.Popen") as mock_popen,
+            patch("signal.signal"),
+            patch("time.sleep", side_effect=KeyboardInterrupt("Stop loop")),
+        ):
             # Mock processes
             celery_process = MagicMock()
             celery_process.poll.return_value = None
             http_process = MagicMock()
             http_process.poll.return_value = None
             mock_popen.side_effect = [celery_process, http_process]
-            
+
             # Mock stdout for celery process
             celery_process.stdout = iter(["Worker ready.\n"])
-            
+
             with patch("threading.Thread") as mock_thread:
                 mock_thread_instance = MagicMock()
                 mock_thread.return_value = mock_thread_instance
-                
+
                 try:
                     main()
                 except KeyboardInterrupt:
                     pass
-                
+
             # Verify broker timeout used default value (60.0)
             mock_wait.assert_called_once_with(timeout_seconds=60.0)
 
     def test_celery_process_fails_to_start(self) -> None:
         from apps.compiler_worker.entrypoint import main
-        with patch("apps.compiler_worker.entrypoint._wait_for_broker_socket"), \
-             patch("subprocess.Popen") as mock_popen, \
-             patch("apps.compiler_worker.entrypoint._wait_for_celery_ready", side_effect=RuntimeError("Celery failed")), \
-             patch("apps.compiler_worker.entrypoint._terminate_processes") as mock_terminate:
-            
+
+        with (
+            patch("apps.compiler_worker.entrypoint._wait_for_broker_socket"),
+            patch("subprocess.Popen") as mock_popen,
+            patch(
+                "apps.compiler_worker.entrypoint._wait_for_celery_ready",
+                side_effect=RuntimeError("Celery failed"),
+            ),
+            patch("apps.compiler_worker.entrypoint._terminate_processes") as mock_terminate,
+        ):
             celery_process = MagicMock()
             mock_popen.return_value = celery_process
             celery_process.wait.return_value = None
-            
+
             with patch("threading.Thread"):
                 with pytest.raises(RuntimeError, match="Celery failed"):
                     main()
-                
+
             # Verify processes were terminated
             mock_terminate.assert_called_once_with([celery_process])
             celery_process.wait.assert_called_once_with(timeout=30)
 
     def test_process_exits_during_loop(self) -> None:
         from apps.compiler_worker.entrypoint import main
-        with patch("apps.compiler_worker.entrypoint._wait_for_broker_socket"), \
-             patch("subprocess.Popen") as mock_popen, \
-             patch("apps.compiler_worker.entrypoint._wait_for_celery_ready"), \
-             patch("signal.signal"), \
-             patch("apps.compiler_worker.entrypoint._terminate_processes") as mock_terminate:
-            
+
+        with (
+            patch("apps.compiler_worker.entrypoint._wait_for_broker_socket"),
+            patch("subprocess.Popen") as mock_popen,
+            patch("apps.compiler_worker.entrypoint._wait_for_celery_ready"),
+            patch("signal.signal"),
+            patch("apps.compiler_worker.entrypoint._terminate_processes") as mock_terminate,
+        ):
             # Mock celery process startup
             celery_process = MagicMock()
             celery_process.stdout = iter(["Worker ready.\n"])
             # The loop calls poll() for both processes in each iteration
             # For celery: None, None, 1 (exits on third check)
-            celery_process.poll.side_effect = [None, None, 1, None]  # Added extra None for finally block
-            
-            # Mock HTTP process  
-            http_process = MagicMock() 
+            celery_process.poll.side_effect = [
+                None,
+                None,
+                1,
+                None,
+            ]  # Added extra None for finally block
+
+            # Mock HTTP process
+            http_process = MagicMock()
             http_process.poll.side_effect = [None, None, None, None]  # Always None
             http_process.wait.return_value = None
-            
+
             mock_popen.side_effect = [celery_process, http_process]
-            
+
             with patch("threading.Thread") as mock_thread:
                 mock_thread_instance = MagicMock()
                 mock_thread.return_value = mock_thread_instance
-                
+
                 result = main()
-                
+
             assert result == 1  # Should return the exit code
             mock_terminate.assert_called()
             # Verify the sibling process was waited for
             http_process.wait.assert_called_with(timeout=30)
 
     def test_signal_handler_terminates_processes(self) -> None:
-        from apps.compiler_worker.entrypoint import main
         import signal as signal_module
-        
-        with patch("apps.compiler_worker.entrypoint._wait_for_broker_socket"), \
-             patch("subprocess.Popen") as mock_popen, \
-             patch("apps.compiler_worker.entrypoint._wait_for_celery_ready"), \
-             patch("signal.signal") as mock_signal, \
-             patch("apps.compiler_worker.entrypoint._terminate_processes") as mock_terminate:
-            
-            # Mock celery process startup  
+
+        from apps.compiler_worker.entrypoint import main
+
+        with (
+            patch("apps.compiler_worker.entrypoint._wait_for_broker_socket"),
+            patch("subprocess.Popen") as mock_popen,
+            patch("apps.compiler_worker.entrypoint._wait_for_celery_ready"),
+            patch("signal.signal") as mock_signal,
+            patch("apps.compiler_worker.entrypoint._terminate_processes") as mock_terminate,
+        ):
+            # Mock celery process startup
             celery_process = MagicMock()
             celery_process.stdout = iter(["Worker ready.\n"])
             celery_process.poll.return_value = None
-            
+
             # Mock HTTP process
             http_process = MagicMock()
             http_process.poll.return_value = None
-            
+
             mock_popen.side_effect = [celery_process, http_process]
-            
+
             # Capture the signal handler
             signal_handler = None
+
             def capture_signal(sig, handler):
                 nonlocal signal_handler
                 signal_handler = handler
-                
+
             mock_signal.side_effect = capture_signal
-            
-            with patch("threading.Thread") as mock_thread, \
-                 patch("time.sleep", side_effect=KeyboardInterrupt("Stop loop")):
+
+            with (
+                patch("threading.Thread") as mock_thread,
+                patch("time.sleep", side_effect=KeyboardInterrupt("Stop loop")),
+            ):
                 mock_thread_instance = MagicMock()
                 mock_thread.return_value = mock_thread_instance
-                
+
                 try:
                     main()
                 except KeyboardInterrupt:
                     pass
-                
+
             # Verify signal handler was registered
             assert mock_signal.call_count == 2  # SIGTERM and SIGINT
             assert signal_handler is not None
-            
+
             # Test the signal handler
             signal_handler(signal_module.SIGTERM, None)
             mock_terminate.assert_called()
 
     def test_cleanup_in_finally_block(self) -> None:
         from apps.compiler_worker.entrypoint import main
-        with patch("apps.compiler_worker.entrypoint._wait_for_broker_socket"), \
-             patch("subprocess.Popen") as mock_popen, \
-             patch("apps.compiler_worker.entrypoint._wait_for_celery_ready"), \
-             patch("signal.signal"), \
-             patch("apps.compiler_worker.entrypoint._terminate_processes") as mock_terminate:
-            
+
+        with (
+            patch("apps.compiler_worker.entrypoint._wait_for_broker_socket"),
+            patch("subprocess.Popen") as mock_popen,
+            patch("apps.compiler_worker.entrypoint._wait_for_celery_ready"),
+            patch("signal.signal"),
+            patch("apps.compiler_worker.entrypoint._terminate_processes") as mock_terminate,
+        ):
             # Mock processes
             celery_process = MagicMock()
             celery_process.stdout = iter(["Worker ready.\n"])
             celery_process.poll.side_effect = [None, None, None, None]  # Still running
-            
+
             http_process = MagicMock()
             http_process.poll.side_effect = [None, None, None, None]  # Still running
-            
+
             mock_popen.side_effect = [celery_process, http_process]
-            
+
             # Mock time.sleep to raise KeyboardInterrupt in the main loop
-            with patch("threading.Thread") as mock_thread, \
-                 patch("time.sleep", side_effect=KeyboardInterrupt("Stop loop")):
+            with (
+                patch("threading.Thread") as mock_thread,
+                patch("time.sleep", side_effect=KeyboardInterrupt("Stop loop")),
+            ):
                 mock_thread_instance = MagicMock()
                 mock_thread.return_value = mock_thread_instance
-                
+
                 try:
                     main()
                 except KeyboardInterrupt:
                     pass
-                
+
             # Verify cleanup happened in finally block - focus on main cleanup actions
             mock_terminate.assert_called()
             celery_process.wait.assert_called_with(timeout=30)
@@ -379,9 +420,10 @@ class TestMainEntryPoint:
         with patch("apps.compiler_worker.entrypoint.main", return_value=42):
             # Mock the __name__ check by importing and executing the module's main block
             import apps.compiler_worker.entrypoint as entrypoint_module
+
             original_name = getattr(entrypoint_module, "__name__", None)
             entrypoint_module.__name__ = "__main__"
-            
+
             try:
                 with pytest.raises(SystemExit) as exc_info:
                     # Simulate the module being run directly

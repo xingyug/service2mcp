@@ -48,14 +48,14 @@ from tests.fixtures.ground_truth.petstore_v3 import (
 # ---------------------------------------------------------------------------
 
 # JSONPlaceholder REST discovery thresholds
-JP_MIN_DISCOVERY_COVERAGE = 0.25   # ≥25% of ground truth discovered
-JP_MIN_DISCOVERED_OPS = 4          # at least 4 operations extracted
-JP_MAX_FAILURE_PATTERNS = 4        # at most 4 failure pattern categories
+JP_MIN_DISCOVERY_COVERAGE = 0.25  # ≥25% of ground truth discovered
+JP_MIN_DISCOVERED_OPS = 4  # at least 4 operations extracted
+JP_MAX_FAILURE_PATTERNS = 4  # at most 4 failure pattern categories
 
 # PetStore OpenAPI spec-first thresholds
-PS_MIN_DISCOVERY_COVERAGE = 0.80   # spec-first should be very accurate
-PS_MIN_DISCOVERED_OPS = 15         # at least 15 of 19 operations
-PS_MIN_RISK_ACCURACY = 0.50        # ≥50% risk classification accuracy
+PS_MIN_DISCOVERY_COVERAGE = 0.80  # spec-first should be very accurate
+PS_MIN_DISCOVERED_OPS = 15  # at least 15 of 19 operations
+PS_MIN_RISK_ACCURACY = 0.50  # ≥50% risk classification accuracy
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +103,7 @@ class TestJSONPlaceholderBlackBox:
     def test_minimum_discovered_operations(self, report: BlackBoxReport) -> None:
         """At least JP_MIN_DISCOVERED_OPS operations extracted."""
         assert report.discovered_operations >= JP_MIN_DISCOVERED_OPS, (
-            f"Expected ≥{JP_MIN_DISCOVERED_OPS} discovered ops, "
-            f"got {report.discovered_operations}"
+            f"Expected ≥{JP_MIN_DISCOVERED_OPS} discovered ops, got {report.discovered_operations}"
         )
 
     def test_discovery_coverage_threshold(self, report: BlackBoxReport) -> None:
@@ -186,8 +185,7 @@ class TestPetStoreBlackBox:
     def test_minimum_discovered_operations(self, report: BlackBoxReport) -> None:
         """At least PS_MIN_DISCOVERED_OPS operations extracted."""
         assert report.discovered_operations >= PS_MIN_DISCOVERED_OPS, (
-            f"Expected ≥{PS_MIN_DISCOVERED_OPS} discovered ops, "
-            f"got {report.discovered_operations}"
+            f"Expected ≥{PS_MIN_DISCOVERED_OPS} discovered ops, got {report.discovered_operations}"
         )
 
     def test_discovery_coverage_threshold(self, report: BlackBoxReport) -> None:
@@ -201,8 +199,7 @@ class TestPetStoreBlackBox:
     def test_risk_accuracy_threshold(self, report: BlackBoxReport) -> None:
         """Risk classification accuracy meets minimum."""
         assert report.risk_accuracy >= PS_MIN_RISK_ACCURACY, (
-            f"Risk accuracy {report.risk_accuracy:.2%} below "
-            f"threshold {PS_MIN_RISK_ACCURACY:.2%}"
+            f"Risk accuracy {report.risk_accuracy:.2%} below threshold {PS_MIN_RISK_ACCURACY:.2%}"
         )
 
     def test_no_zero_operations(self, report: BlackBoxReport) -> None:
@@ -219,8 +216,7 @@ class TestPetStoreBlackBox:
                     (
                         ep
                         for ep in PS_GROUND_TRUTH
-                        if ep.method == m.ground_truth_method
-                        and ep.path == m.ground_truth_path
+                        if ep.method == m.ground_truth_method and ep.path == m.ground_truth_path
                     ),
                     None,
                 )

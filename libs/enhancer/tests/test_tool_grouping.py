@@ -43,30 +43,46 @@ def _make_ir() -> ServiceIR:
     """Create a ServiceIR with operations spanning multiple business domains."""
     operations = [
         Operation(
-            id="list_users", name="List Users", description="List all users",
-            method="GET", path="/api/users",
+            id="list_users",
+            name="List Users",
+            description="List all users",
+            method="GET",
+            path="/api/users",
             risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
-            source=SourceType.extractor, confidence=0.9,
+            source=SourceType.extractor,
+            confidence=0.9,
         ),
         Operation(
-            id="get_user", name="Get User", description="Get user by ID",
-            method="GET", path="/api/users/{id}",
+            id="get_user",
+            name="Get User",
+            description="Get user by ID",
+            method="GET",
+            path="/api/users/{id}",
             params=[Param(name="id", type="string", required=True, confidence=0.9)],
             risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
-            source=SourceType.extractor, confidence=0.9,
+            source=SourceType.extractor,
+            confidence=0.9,
         ),
         Operation(
-            id="list_orders", name="List Orders", description="List all orders",
-            method="GET", path="/api/orders",
+            id="list_orders",
+            name="List Orders",
+            description="List all orders",
+            method="GET",
+            path="/api/orders",
             risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
-            source=SourceType.extractor, confidence=0.9,
+            source=SourceType.extractor,
+            confidence=0.9,
         ),
         Operation(
-            id="get_order", name="Get Order", description="Get order by ID",
-            method="GET", path="/api/orders/{id}",
+            id="get_order",
+            name="Get Order",
+            description="Get order by ID",
+            method="GET",
+            path="/api/orders/{id}",
             params=[Param(name="id", type="string", required=True, confidence=0.9)],
             risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
-            source=SourceType.extractor, confidence=0.9,
+            source=SourceType.extractor,
+            confidence=0.9,
         ),
     ]
     return ServiceIR(
@@ -81,22 +97,24 @@ def _make_ir() -> ServiceIR:
 class TestToolGrouper:
     def test_groups_operations_by_intent(self) -> None:
         ir = _make_ir()
-        mock_response = json.dumps([
-            {
-                "id": "user-management",
-                "label": "User Management",
-                "intent": "CRUD operations for user accounts",
-                "operation_ids": ["list_users", "get_user"],
-                "confidence": 0.85,
-            },
-            {
-                "id": "order-processing",
-                "label": "Order Processing",
-                "intent": "Order lifecycle management",
-                "operation_ids": ["list_orders", "get_order"],
-                "confidence": 0.80,
-            },
-        ])
+        mock_response = json.dumps(
+            [
+                {
+                    "id": "user-management",
+                    "label": "User Management",
+                    "intent": "CRUD operations for user accounts",
+                    "operation_ids": ["list_users", "get_user"],
+                    "confidence": 0.85,
+                },
+                {
+                    "id": "order-processing",
+                    "label": "Order Processing",
+                    "intent": "Order lifecycle management",
+                    "operation_ids": ["list_orders", "get_order"],
+                    "confidence": 0.80,
+                },
+            ]
+        )
         client = MockGroupingLLMClient(response=mock_response)
         grouper = ToolGrouper(client)
 
@@ -111,8 +129,10 @@ class TestToolGrouper:
 
     def test_empty_ir_returns_empty(self) -> None:
         ir = ServiceIR(
-            source_hash="test_hash", protocol="rest",
-            service_name="test", base_url="https://example.com",
+            source_hash="test_hash",
+            protocol="rest",
+            service_name="test",
+            base_url="https://example.com",
         )
         client = MockGroupingLLMClient()
         grouper = ToolGrouper(client)
@@ -134,15 +154,17 @@ class TestToolGrouper:
 
     def test_filters_unknown_operation_ids(self) -> None:
         ir = _make_ir()
-        mock_response = json.dumps([
-            {
-                "id": "all-ops",
-                "label": "All Operations",
-                "intent": "Everything",
-                "operation_ids": ["list_users", "nonexistent_op"],
-                "confidence": 0.7,
-            },
-        ])
+        mock_response = json.dumps(
+            [
+                {
+                    "id": "all-ops",
+                    "label": "All Operations",
+                    "intent": "Everything",
+                    "operation_ids": ["list_users", "nonexistent_op"],
+                    "confidence": 0.7,
+                },
+            ]
+        )
         client = MockGroupingLLMClient(response=mock_response)
         grouper = ToolGrouper(client)
 
@@ -153,15 +175,17 @@ class TestToolGrouper:
 
     def test_identifies_ungrouped_operations(self) -> None:
         ir = _make_ir()
-        mock_response = json.dumps([
-            {
-                "id": "user-management",
-                "label": "User Management",
-                "intent": "User ops",
-                "operation_ids": ["list_users", "get_user"],
-                "confidence": 0.8,
-            },
-        ])
+        mock_response = json.dumps(
+            [
+                {
+                    "id": "user-management",
+                    "label": "User Management",
+                    "intent": "User ops",
+                    "operation_ids": ["list_users", "get_user"],
+                    "confidence": 0.8,
+                },
+            ]
+        )
         client = MockGroupingLLMClient(response=mock_response)
         grouper = ToolGrouper(client)
 
@@ -171,15 +195,17 @@ class TestToolGrouper:
 
     def test_skips_groups_with_no_valid_ops(self) -> None:
         ir = _make_ir()
-        mock_response = json.dumps([
-            {
-                "id": "phantom",
-                "label": "Phantom Group",
-                "intent": "Nothing valid",
-                "operation_ids": ["fake_op_1", "fake_op_2"],
-                "confidence": 0.5,
-            },
-        ])
+        mock_response = json.dumps(
+            [
+                {
+                    "id": "phantom",
+                    "label": "Phantom Group",
+                    "intent": "Nothing valid",
+                    "operation_ids": ["fake_op_1", "fake_op_2"],
+                    "confidence": 0.5,
+                },
+            ]
+        )
         client = MockGroupingLLMClient(response=mock_response)
         grouper = ToolGrouper(client)
 
@@ -189,10 +215,21 @@ class TestToolGrouper:
 
     def test_parse_markdown_fenced_response(self) -> None:
         ir = _make_ir()
-        fenced = "```json\n" + json.dumps([{
-            "id": "g1", "label": "Group 1", "intent": "test",
-            "operation_ids": ["list_users"], "confidence": 0.7,
-        }]) + "\n```"
+        fenced = (
+            "```json\n"
+            + json.dumps(
+                [
+                    {
+                        "id": "g1",
+                        "label": "Group 1",
+                        "intent": "test",
+                        "operation_ids": ["list_users"],
+                        "confidence": 0.7,
+                    }
+                ]
+            )
+            + "\n```"
+        )
         client = MockGroupingLLMClient(response=fenced)
         grouper = ToolGrouper(client)
 
@@ -205,9 +242,12 @@ class TestApplyGrouping:
         ir = _make_ir()
         groups = [
             ToolGroup(
-                id="user-mgmt", label="User Management", intent="User ops",
+                id="user-mgmt",
+                label="User Management",
+                intent="User ops",
                 operation_ids=["list_users", "get_user"],
-                source=SourceType.llm, confidence=0.85,
+                source=SourceType.llm,
+                confidence=0.85,
             ),
         ]
         result = GroupingResult(groups=groups)

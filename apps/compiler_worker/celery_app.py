@@ -30,10 +30,7 @@ def create_celery_app(
     """Create a Celery app with the compilation task registered."""
 
     resolved_broker_url = (
-        broker_url
-        or os.getenv("CELERY_BROKER_URL")
-        or os.getenv("REDIS_URL")
-        or "memory://"
+        broker_url or os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL") or "memory://"
     )
     resolved_result_backend = (
         result_backend
@@ -52,9 +49,7 @@ def create_celery_app(
             "Set CELERY_RESULT_BACKEND or REDIS_URL for production."
         )
     resolved_queue_name = (
-        queue_name
-        or os.getenv("COMPILATION_TASK_QUEUE")
-        or DEFAULT_COMPILATION_QUEUE
+        queue_name or os.getenv("COMPILATION_TASK_QUEUE") or DEFAULT_COMPILATION_QUEUE
     )
 
     app = Celery(

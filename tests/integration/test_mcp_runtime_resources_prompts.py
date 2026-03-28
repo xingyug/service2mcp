@@ -91,10 +91,7 @@ def _build_test_ir() -> ServiceIR:
                 id="explore-test",
                 name="Explore Test Service",
                 description="Explore available operations",
-                template=(
-                    "List operations for {service_name}. "
-                    "Focus on {focus_area}."
-                ),
+                template=("List operations for {service_name}. Focus on {focus_area}."),
                 arguments=[
                     PromptArgument(
                         name="service_name",

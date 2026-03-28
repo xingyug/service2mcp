@@ -263,7 +263,8 @@ class OpenAPIExtractor:
 
         if len(parsed_schemes) > 1:
             logger.info(
-                "OpenAPI auth inference skipped because multiple security schemes were declared: %s",
+                "OpenAPI auth inference skipped because "
+                "multiple security schemes were declared: %s",
                 [name for name, _ in parsed_schemes],
             )
             return AuthConfig(type=AuthType.none)

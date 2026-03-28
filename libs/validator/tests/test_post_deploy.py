@@ -383,6 +383,7 @@ async def test_healthy_runtime_passes_post_deploy_validation(
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
             async def tool_invoker(
                 tool_name: str,
                 arguments: dict[str, object],
@@ -445,6 +446,7 @@ async def test_post_deploy_validator_uses_first_available_sample_invocation(
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
             async def tool_invoker(
                 tool_name: str,
                 arguments: dict[str, object],
@@ -497,6 +499,7 @@ async def test_post_deploy_validator_accepts_graphql_runtime_smoke(
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
             async def tool_invoker(
                 tool_name: str,
                 arguments: dict[str, object],
@@ -536,6 +539,7 @@ async def test_post_deploy_validator_prefers_graphql_query_over_mutation(
     invoked: list[str] = []
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
         async def tool_invoker(
             tool_name: str,
             arguments: dict[str, object],
@@ -618,6 +622,7 @@ async def test_post_deploy_validator_accepts_supported_sse_streaming_tool(
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
             async def tool_invoker(
                 tool_name: str,
                 arguments: dict[str, object],
@@ -683,6 +688,7 @@ async def test_post_deploy_validator_accepts_supported_native_grpc_streaming_too
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
         async def tool_invoker(
             tool_name: str,
             arguments: dict[str, object],
@@ -731,6 +737,7 @@ async def test_post_deploy_validator_accepts_supported_native_grpc_unary_tool(
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
         async def tool_invoker(
             tool_name: str,
             arguments: dict[str, object],
@@ -784,6 +791,7 @@ async def test_post_deploy_validator_accepts_soap_runtime_smoke(
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
             async def tool_invoker(
                 tool_name: str,
                 arguments: dict[str, object],
@@ -818,6 +826,7 @@ async def test_post_deploy_validator_accepts_sql_runtime_smoke(
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
         async def tool_invoker(
             tool_name: str,
             arguments: dict[str, object],
@@ -855,6 +864,7 @@ async def test_post_deploy_validator_prefers_sql_query_over_insert(
     invoked: list[str] = []
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
         async def tool_invoker(
             tool_name: str,
             arguments: dict[str, object],
@@ -892,6 +902,7 @@ async def test_post_deploy_validator_rejects_wrong_grpc_stream_transport_shape(
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
         async def tool_invoker(
             tool_name: str,
             arguments: dict[str, object],
@@ -936,6 +947,7 @@ async def test_validate_with_audit_returns_report_and_audit_summary(
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
             async def tool_invoker(
                 tool_name: str,
                 arguments: dict[str, object],
@@ -993,6 +1005,7 @@ async def test_validate_with_audit_threshold_violations_detected(
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
             async def tool_invoker(
                 tool_name: str,
                 arguments: dict[str, object],
@@ -1213,7 +1226,7 @@ async def test_post_deploy_invocation_smoke_no_enabled_operations(
             ),
         ],
     )
-    service_ir_path = _write_service_ir(tmp_path, "empty_ops_ir.json", service_ir)
+    _write_service_ir(tmp_path, "empty_ops_ir.json", service_ir)
 
     async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
         return {"status": "ok"}
@@ -1246,7 +1259,7 @@ async def test_post_deploy_invocation_smoke_no_available_tool(
 ) -> None:
     """Invocation smoke fails when no enabled tool is in runtime listing."""
     service_ir = _build_graphql_ir()
-    service_ir_path = _write_service_ir(tmp_path, "no_available_tool_ir.json", service_ir)
+    _write_service_ir(tmp_path, "no_available_tool_ir.json", service_ir)
 
     async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
         return {"status": "ok"}
@@ -1446,7 +1459,9 @@ async def test_audit_tool_not_in_runtime_listing(
             return httpx.Response(200, request=request)
         if "/tools" in path:
             return httpx.Response(
-                200, json={"tools": []}, request=request,
+                200,
+                json={"tools": []},
+                request=request,
             )
         return httpx.Response(200, json={}, request=request)
 
@@ -1510,8 +1525,10 @@ async def test_audit_tool_invoker_raises_exception(
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
             async def tool_invoker(
-                name: str, args: dict[str, object],
+                name: str,
+                args: dict[str, object],
             ) -> dict[str, object]:
                 raise RuntimeError("simulated failure")
 
@@ -1551,8 +1568,10 @@ async def test_audit_invocation_non_ok_status(
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
             async def tool_invoker(
-                name: str, args: dict[str, object],
+                name: str,
+                args: dict[str, object],
             ) -> dict[str, object]:
                 return {"status": "error", "detail": "bad"}
 
@@ -1587,8 +1606,10 @@ async def test_audit_health_failed_skips_invocation(
     transport = httpx.MockTransport(handler)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
         async def tool_invoker(
-            name: str, args: dict[str, object],
+            name: str,
+            args: dict[str, object],
         ) -> dict[str, object]:
             return {"status": "ok"}
 
@@ -1600,7 +1621,4 @@ async def test_audit_health_failed_skips_invocation(
         )
 
     assert audit_summary.failed > 0
-    assert any(
-        r.outcome == "failed"
-        for r in audit_summary.results
-    )
+    assert any(r.outcome == "failed" for r in audit_summary.results)

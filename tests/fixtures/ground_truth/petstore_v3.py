@@ -49,64 +49,107 @@ def _ep(
 GROUND_TRUTH: list[EndpointTruth] = [
     # --- pet ---
     _ep(
-        "PUT", "/pet", resource_group="pet",
-        writes_state=True, description="Update an existing pet",
+        "PUT",
+        "/pet",
+        resource_group="pet",
+        writes_state=True,
+        description="Update an existing pet",
     ),
     _ep(
-        "POST", "/pet", resource_group="pet",
-        writes_state=True, idempotent=False, description="Add a new pet",
+        "POST",
+        "/pet",
+        resource_group="pet",
+        writes_state=True,
+        idempotent=False,
+        description="Add a new pet",
     ),
     _ep("GET", "/pet/findByStatus", resource_group="pet", description="Find pets by status"),
     _ep("GET", "/pet/findByTags", resource_group="pet", description="Find pets by tags"),
     _ep("GET", "/pet/{petId}", resource_group="pet", description="Find pet by ID"),
     _ep(
-        "POST", "/pet/{petId}", resource_group="pet",
-        writes_state=True, idempotent=False, description="Update pet with form data",
+        "POST",
+        "/pet/{petId}",
+        resource_group="pet",
+        writes_state=True,
+        idempotent=False,
+        description="Update pet with form data",
     ),
     _ep(
-        "DELETE", "/pet/{petId}", resource_group="pet",
-        destructive=True, description="Delete a pet",
+        "DELETE",
+        "/pet/{petId}",
+        resource_group="pet",
+        destructive=True,
+        description="Delete a pet",
     ),
     _ep(
-        "POST", "/pet/{petId}/uploadImage", resource_group="pet",
-        writes_state=True, idempotent=False, description="Upload pet image",
+        "POST",
+        "/pet/{petId}/uploadImage",
+        resource_group="pet",
+        writes_state=True,
+        idempotent=False,
+        description="Upload pet image",
     ),
     # --- store ---
     _ep(
-        "GET", "/store/inventory", resource_group="store",
+        "GET",
+        "/store/inventory",
+        resource_group="store",
         description="Returns pet inventories",
     ),
     _ep(
-        "POST", "/store/order", resource_group="store",
-        writes_state=True, idempotent=False, description="Place order",
+        "POST",
+        "/store/order",
+        resource_group="store",
+        writes_state=True,
+        idempotent=False,
+        description="Place order",
     ),
     _ep(
-        "GET", "/store/order/{orderId}", resource_group="store",
+        "GET",
+        "/store/order/{orderId}",
+        resource_group="store",
         description="Find purchase order by ID",
     ),
     _ep(
-        "DELETE", "/store/order/{orderId}", resource_group="store",
-        destructive=True, description="Delete purchase order",
+        "DELETE",
+        "/store/order/{orderId}",
+        resource_group="store",
+        destructive=True,
+        description="Delete purchase order",
     ),
     # --- user ---
     _ep(
-        "POST", "/user", resource_group="user",
-        writes_state=True, idempotent=False, description="Create user",
+        "POST",
+        "/user",
+        resource_group="user",
+        writes_state=True,
+        idempotent=False,
+        description="Create user",
     ),
     _ep(
-        "POST", "/user/createWithList", resource_group="user",
-        writes_state=True, idempotent=False, description="Create users from list",
+        "POST",
+        "/user/createWithList",
+        resource_group="user",
+        writes_state=True,
+        idempotent=False,
+        description="Create users from list",
     ),
     _ep("GET", "/user/login", resource_group="user", description="Log user into system"),
     _ep("GET", "/user/logout", resource_group="user", description="Log out current user"),
     _ep("GET", "/user/{username}", resource_group="user", description="Get user by name"),
     _ep(
-        "PUT", "/user/{username}", resource_group="user",
-        writes_state=True, description="Update user",
+        "PUT",
+        "/user/{username}",
+        resource_group="user",
+        writes_state=True,
+        description="Update user",
     ),
     _ep(
-        "DELETE", "/user/{username}", resource_group="user",
-        destructive=True, description="Delete user",
+        "DELETE",
+        "/user/{username}",
+        resource_group="user",
+        destructive=True,
+        description="Delete user",
     ),
 ]
 
@@ -146,15 +189,22 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Add a new pet to the store",
                 "operationId": "addPet",
                 "requestBody": {
-                    "content": {"application/json": {"schema": {
-                        "type": "object",
-                        "required": ["name", "photoUrls"],
-                        "properties": {
-                            "name": {"type": "string"},
-                            "photoUrls": {"type": "array", "items": {"type": "string"}},
-                            "status": {"type": "string", "enum": ["available", "pending", "sold"]},
-                        },
-                    }}},
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["name", "photoUrls"],
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "photoUrls": {"type": "array", "items": {"type": "string"}},
+                                    "status": {
+                                        "type": "string",
+                                        "enum": ["available", "pending", "sold"],
+                                    },
+                                },
+                            }
+                        }
+                    },
                     "required": True,
                 },
                 "responses": {"200": {"description": "Successful operation"}},
@@ -166,8 +216,12 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Finds Pets by status",
                 "operationId": "findPetsByStatus",
                 "parameters": [
-                    {"name": "status", "in": "query", "required": False,
-                     "schema": {"type": "string", "enum": ["available", "pending", "sold"]}}
+                    {
+                        "name": "status",
+                        "in": "query",
+                        "required": False,
+                        "schema": {"type": "string", "enum": ["available", "pending", "sold"]},
+                    }
                 ],
                 "responses": {"200": {"description": "successful operation"}},
             },
@@ -178,8 +232,12 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Finds Pets by tags",
                 "operationId": "findPetsByTags",
                 "parameters": [
-                    {"name": "tags", "in": "query", "required": False,
-                     "schema": {"type": "array", "items": {"type": "string"}}}
+                    {
+                        "name": "tags",
+                        "in": "query",
+                        "required": False,
+                        "schema": {"type": "array", "items": {"type": "string"}},
+                    }
                 ],
                 "responses": {"200": {"description": "successful operation"}},
             },
@@ -190,8 +248,12 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Find pet by ID",
                 "operationId": "getPetById",
                 "parameters": [
-                    {"name": "petId", "in": "path", "required": True,
-                     "schema": {"type": "integer", "format": "int64"}}
+                    {
+                        "name": "petId",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "integer", "format": "int64"},
+                    }
                 ],
                 "responses": {"200": {"description": "successful operation"}},
             },
@@ -200,8 +262,12 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Updates a pet in the store with form data",
                 "operationId": "updatePetWithForm",
                 "parameters": [
-                    {"name": "petId", "in": "path", "required": True,
-                     "schema": {"type": "integer", "format": "int64"}},
+                    {
+                        "name": "petId",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "integer", "format": "int64"},
+                    },
                     {"name": "name", "in": "query", "schema": {"type": "string"}},
                     {"name": "status", "in": "query", "schema": {"type": "string"}},
                 ],
@@ -212,8 +278,12 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Deletes a pet",
                 "operationId": "deletePet",
                 "parameters": [
-                    {"name": "petId", "in": "path", "required": True,
-                     "schema": {"type": "integer", "format": "int64"}}
+                    {
+                        "name": "petId",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "integer", "format": "int64"},
+                    }
                 ],
                 "responses": {"400": {"description": "Invalid pet value"}},
             },
@@ -224,13 +294,19 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "uploads an image",
                 "operationId": "uploadFile",
                 "parameters": [
-                    {"name": "petId", "in": "path", "required": True,
-                     "schema": {"type": "integer", "format": "int64"}}
+                    {
+                        "name": "petId",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "integer", "format": "int64"},
+                    }
                 ],
                 "requestBody": {
-                    "content": {"application/octet-stream": {
-                        "schema": {"type": "string", "format": "binary"},
-                    }},
+                    "content": {
+                        "application/octet-stream": {
+                            "schema": {"type": "string", "format": "binary"},
+                        }
+                    },
                 },
                 "responses": {"200": {"description": "successful operation"}},
             },
@@ -258,8 +334,12 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Find purchase order by ID",
                 "operationId": "getOrderById",
                 "parameters": [
-                    {"name": "orderId", "in": "path", "required": True,
-                     "schema": {"type": "integer", "format": "int64"}}
+                    {
+                        "name": "orderId",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "integer", "format": "int64"},
+                    }
                 ],
                 "responses": {"200": {"description": "successful operation"}},
             },
@@ -268,8 +348,12 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Delete purchase order by ID",
                 "operationId": "deleteOrder",
                 "parameters": [
-                    {"name": "orderId", "in": "path", "required": True,
-                     "schema": {"type": "integer", "format": "int64"}}
+                    {
+                        "name": "orderId",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "integer", "format": "int64"},
+                    }
                 ],
                 "responses": {"400": {"description": "Invalid ID supplied"}},
             },
@@ -289,9 +373,11 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Creates list of users with given input array",
                 "operationId": "createUsersWithListInput",
                 "requestBody": {
-                    "content": {"application/json": {
-                        "schema": {"type": "array", "items": {"type": "object"}},
-                    }},
+                    "content": {
+                        "application/json": {
+                            "schema": {"type": "array", "items": {"type": "object"}},
+                        }
+                    },
                 },
                 "responses": {"200": {"description": "Successful operation"}},
             },
@@ -322,8 +408,12 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Get user by user name",
                 "operationId": "getUserByName",
                 "parameters": [
-                    {"name": "username", "in": "path", "required": True,
-                     "schema": {"type": "string"}}
+                    {
+                        "name": "username",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
                 ],
                 "responses": {"200": {"description": "successful operation"}},
             },
@@ -332,8 +422,12 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Update user",
                 "operationId": "updateUser",
                 "parameters": [
-                    {"name": "username", "in": "path", "required": True,
-                     "schema": {"type": "string"}}
+                    {
+                        "name": "username",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
                 ],
                 "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}},
                 "responses": {"default": {"description": "successful operation"}},
@@ -343,8 +437,12 @@ _OPENAPI_SPEC: dict[str, Any] = {
                 "summary": "Delete user",
                 "operationId": "deleteUser",
                 "parameters": [
-                    {"name": "username", "in": "path", "required": True,
-                     "schema": {"type": "string"}}
+                    {
+                        "name": "username",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
                 ],
                 "responses": {"400": {"description": "Invalid username supplied"}},
             },
@@ -356,6 +454,7 @@ _OPENAPI_SPEC: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # Mock HTTP transport for offline testing
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class _PetStoreState:
@@ -412,7 +511,7 @@ def _handle_petstore_request(
     # Strip /api/v3 prefix for path matching
     api_path = path
     if api_path.startswith("/api/v3"):
-        api_path = api_path[len("/api/v3"):]
+        api_path = api_path[len("/api/v3") :]
 
     if not api_path:
         api_path = "/"

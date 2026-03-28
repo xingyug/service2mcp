@@ -229,12 +229,14 @@ def _make_introspection(query_fields: list, mutation_fields: list | None = None)
 def test_root_type_not_in_type_index() -> None:
     """Line 206: root type name not in type_index → empty operations."""
     extractor = GraphQLExtractor()
-    content = json.dumps({
-        "__schema": {
-            "queryType": {"name": "MissingType"},
-            "types": [],
+    content = json.dumps(
+        {
+            "__schema": {
+                "queryType": {"name": "MissingType"},
+                "types": [],
+            }
         }
-    })
+    )
     ir = extractor.extract(SourceConfig(file_content=content, url="https://x.com/graphql"))
     assert ir.operations == []
 
@@ -242,12 +244,14 @@ def test_root_type_not_in_type_index() -> None:
 def test_root_type_fields_not_a_list() -> None:
     """Line 210: fields is not a list → empty operations."""
     extractor = GraphQLExtractor()
-    content = json.dumps({
-        "__schema": {
-            "queryType": {"name": "Query"},
-            "types": [{"kind": "OBJECT", "name": "Query", "fields": "not-a-list"}],
+    content = json.dumps(
+        {
+            "__schema": {
+                "queryType": {"name": "Query"},
+                "types": [{"kind": "OBJECT", "name": "Query", "fields": "not-a-list"}],
+            }
         }
-    })
+    )
     ir = extractor.extract(SourceConfig(file_content=content, url="https://x.com/graphql"))
     assert ir.operations == []
 
@@ -274,12 +278,19 @@ def test_field_name_not_a_string_is_skipped() -> None:
 def test_non_dict_argument_in_operation_config_skipped() -> None:
     """Line 293: non-dict argument is skipped in _build_graphql_operation_config."""
     extractor = GraphQLExtractor()
-    content = _make_introspection(query_fields=[{
-        "name": "myQuery",
-        "description": "",
-        "args": ["not-a-dict", {"name": "validArg", "type": {"kind": "SCALAR", "name": "String"}}],
-        "type": {"kind": "SCALAR", "name": "String", "ofType": None},
-    }])
+    content = _make_introspection(
+        query_fields=[
+            {
+                "name": "myQuery",
+                "description": "",
+                "args": [
+                    "not-a-dict",
+                    {"name": "validArg", "type": {"kind": "SCALAR", "name": "String"}},
+                ],
+                "type": {"kind": "SCALAR", "name": "String", "ofType": None},
+            }
+        ]
+    )
     ir = extractor.extract(SourceConfig(file_content=content, url="https://x.com/graphql"))
     op = next(o for o in ir.operations if o.id == "myQuery")
     assert op.graphql is not None
@@ -289,12 +300,16 @@ def test_non_dict_argument_in_operation_config_skipped() -> None:
 def test_argument_name_not_string_skipped() -> None:
     """Line 296: argument with non-string name is skipped."""
     extractor = GraphQLExtractor()
-    content = _make_introspection(query_fields=[{
-        "name": "myQuery",
-        "description": "",
-        "args": [{"name": 999, "type": {"kind": "SCALAR", "name": "Int"}}],
-        "type": {"kind": "SCALAR", "name": "String", "ofType": None},
-    }])
+    content = _make_introspection(
+        query_fields=[
+            {
+                "name": "myQuery",
+                "description": "",
+                "args": [{"name": 999, "type": {"kind": "SCALAR", "name": "Int"}}],
+                "type": {"kind": "SCALAR", "name": "String", "ofType": None},
+            }
+        ]
+    )
     ir = extractor.extract(SourceConfig(file_content=content, url="https://x.com/graphql"))
     op = next(o for o in ir.operations if o.id == "myQuery")
     assert op.graphql is not None
@@ -418,20 +433,26 @@ def test_selection_set_enum_returns_none() -> None:
 def test_selection_set_unreferenced_type_returns_none() -> None:
     """Line 424: named type not in type_index or not OBJECT/INTERFACE → None."""
     extractor = GraphQLExtractor()
-    assert extractor._selection_set_for_type(
-        {"kind": "OBJECT", "name": "Unknown"}, {}
-    ) is None
+    assert extractor._selection_set_for_type({"kind": "OBJECT", "name": "Unknown"}, {}) is None
     # Also INPUT_OBJECT is not OBJECT/INTERFACE
-    assert extractor._selection_set_for_type(
-        {"kind": "INPUT_OBJECT", "name": "Foo"},
-        {"Foo": {"kind": "INPUT_OBJECT", "fields": []}},
-    ) is None
+    assert (
+        extractor._selection_set_for_type(
+            {"kind": "INPUT_OBJECT", "name": "Foo"},
+            {"Foo": {"kind": "INPUT_OBJECT", "fields": []}},
+        )
+        is None
+    )
 
 
 def test_selection_set_visited_type_returns_typename() -> None:
     """Line 428: already-visited type returns { __typename }."""
     extractor = GraphQLExtractor()
-    type_index = {"Foo": {"kind": "OBJECT", "fields": [{"name": "bar", "type": {"kind": "SCALAR", "name": "String"}}]}}
+    type_index = {
+        "Foo": {
+            "kind": "OBJECT",
+            "fields": [{"name": "bar", "type": {"kind": "SCALAR", "name": "String"}}],
+        }
+    }
     result = extractor._selection_set_for_type(
         {"kind": "OBJECT", "name": "Foo"}, type_index, visited={"Foo"}
     )
@@ -449,10 +470,15 @@ def test_selection_set_fields_not_a_list() -> None:
 def test_selection_set_non_dict_child_field_skipped() -> None:
     """Line 438: non-dict child field is skipped."""
     extractor = GraphQLExtractor()
-    type_index = {"Foo": {"kind": "OBJECT", "fields": [
-        "not-a-dict",
-        {"name": "valid", "type": {"kind": "SCALAR", "name": "String"}},
-    ]}}
+    type_index = {
+        "Foo": {
+            "kind": "OBJECT",
+            "fields": [
+                "not-a-dict",
+                {"name": "valid", "type": {"kind": "SCALAR", "name": "String"}},
+            ],
+        }
+    }
     result = extractor._selection_set_for_type({"kind": "OBJECT", "name": "Foo"}, type_index)
     assert result is not None
     assert "valid" in result
@@ -461,10 +487,15 @@ def test_selection_set_non_dict_child_field_skipped() -> None:
 def test_selection_set_child_name_not_str_skipped() -> None:
     """Line 441: child field with non-string name is skipped."""
     extractor = GraphQLExtractor()
-    type_index = {"Foo": {"kind": "OBJECT", "fields": [
-        {"name": 123, "type": {"kind": "SCALAR", "name": "Int"}},
-        {"name": "ok", "type": {"kind": "SCALAR", "name": "String"}},
-    ]}}
+    type_index = {
+        "Foo": {
+            "kind": "OBJECT",
+            "fields": [
+                {"name": 123, "type": {"kind": "SCALAR", "name": "Int"}},
+                {"name": "ok", "type": {"kind": "SCALAR", "name": "String"}},
+            ],
+        }
+    }
     result = extractor._selection_set_for_type({"kind": "OBJECT", "name": "Foo"}, type_index)
     assert "ok" in result
 
@@ -473,13 +504,19 @@ def test_selection_set_depth_limit_skips_nested_objects() -> None:
     """Lines 446-456: depth >= max_depth skips nested object fields."""
     extractor = GraphQLExtractor()
     type_index = {
-        "Root": {"kind": "OBJECT", "fields": [
-            {"name": "nested", "type": {"kind": "OBJECT", "name": "Child"}},
-            {"name": "leaf", "type": {"kind": "SCALAR", "name": "String"}},
-        ]},
-        "Child": {"kind": "OBJECT", "fields": [
-            {"name": "deep", "type": {"kind": "SCALAR", "name": "Int"}},
-        ]},
+        "Root": {
+            "kind": "OBJECT",
+            "fields": [
+                {"name": "nested", "type": {"kind": "OBJECT", "name": "Child"}},
+                {"name": "leaf", "type": {"kind": "SCALAR", "name": "String"}},
+            ],
+        },
+        "Child": {
+            "kind": "OBJECT",
+            "fields": [
+                {"name": "deep", "type": {"kind": "SCALAR", "name": "Int"}},
+            ],
+        },
     }
     result = extractor._selection_set_for_type(
         {"kind": "OBJECT", "name": "Root"}, type_index, depth=0, max_depth=1
@@ -499,12 +536,18 @@ def test_selection_set_no_leaf_selections_returns_typename() -> None:
     """Line 458-459: all children are nested objects beyond max_depth → { __typename }."""
     extractor = GraphQLExtractor()
     type_index = {
-        "Root": {"kind": "OBJECT", "fields": [
-            {"name": "nested", "type": {"kind": "OBJECT", "name": "Child"}},
-        ]},
-        "Child": {"kind": "OBJECT", "fields": [
-            {"name": "val", "type": {"kind": "SCALAR", "name": "Int"}},
-        ]},
+        "Root": {
+            "kind": "OBJECT",
+            "fields": [
+                {"name": "nested", "type": {"kind": "OBJECT", "name": "Child"}},
+            ],
+        },
+        "Child": {
+            "kind": "OBJECT",
+            "fields": [
+                {"name": "val", "type": {"kind": "SCALAR", "name": "Int"}},
+            ],
+        },
     }
     result = extractor._selection_set_for_type(
         {"kind": "OBJECT", "name": "Root"}, type_index, depth=2, max_depth=2

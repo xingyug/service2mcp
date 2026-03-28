@@ -110,9 +110,7 @@ class TestSafeDiscoveryPrompt:
             ],
         )
         prompts = generate_prompts(ir)
-        safe = next(
-            p for p in prompts if p.id == "safe_discovery_petstore"
-        )
+        safe = next(p for p in prompts if p.id == "safe_discovery_petstore")
         assert "list_pets" in safe.tool_ids
         assert "delete_pet" not in safe.tool_ids
 
@@ -128,17 +126,13 @@ class TestSafeDiscoveryPrompt:
             ],
         )
         prompts = generate_prompts(ir)
-        safe = next(
-            p for p in prompts if p.id == "safe_discovery_petstore"
-        )
+        safe = next(p for p in prompts if p.id == "safe_discovery_petstore")
         assert "search" in safe.tool_ids
 
     def test_safe_discovery_has_safe_tag(self) -> None:
         ir = _make_ir()
         prompts = generate_prompts(ir)
-        safe = next(
-            p for p in prompts if p.id == "safe_discovery_petstore"
-        )
+        safe = next(p for p in prompts if p.id == "safe_discovery_petstore")
         assert "safe" in safe.tags
         assert "discovery" in safe.tags
 
@@ -150,8 +144,9 @@ class TestCrudPrompts:
         ir = _make_ir(
             operations=[
                 _make_op("list_pets", method="GET", path="/pets"),
-                _make_op("create_pet", method="POST", path="/pets",
-                         risk=_make_risk(RiskLevel.cautious)),
+                _make_op(
+                    "create_pet", method="POST", path="/pets", risk=_make_risk(RiskLevel.cautious)
+                ),
                 _make_op("get_pet", method="GET", path="/pets/{id}"),
             ],
         )
@@ -159,7 +154,8 @@ class TestCrudPrompts:
         crud = [p for p in prompts if p.id.startswith("manage_")]
         assert len(crud) >= 1
         pets_prompt = next(
-            (p for p in crud if p.id == "manage_pets"), None,
+            (p for p in crud if p.id == "manage_pets"),
+            None,
         )
         assert pets_prompt is not None
         assert "list_pets" in pets_prompt.tool_ids
@@ -179,8 +175,9 @@ class TestCrudPrompts:
         ir = _make_ir(
             operations=[
                 _make_op("list_pets", method="GET", path="/pets"),
-                _make_op("create_pet", method="POST", path="/pets",
-                         risk=_make_risk(RiskLevel.cautious)),
+                _make_op(
+                    "create_pet", method="POST", path="/pets", risk=_make_risk(RiskLevel.cautious)
+                ),
             ],
         )
         prompts = generate_prompts(ir)
@@ -217,15 +214,13 @@ class TestGeneratePromptsIntegration:
         op_ids = {op.id for op in ir.operations}
         for prompt in prompts:
             for tid in prompt.tool_ids:
-                assert tid in op_ids, (
-                    f"Prompt {prompt.id} references unknown op {tid}"
-                )
+                assert tid in op_ids, f"Prompt {prompt.id} references unknown op {tid}"
 
 
 def test_is_safe_operation_returns_false_for_non_operation():
     """Test _is_safe_operation returns False for non-Operation objects."""
     from libs.enhancer.prompt_generator import _is_safe_operation
-    
+
     assert _is_safe_operation("not an operation") is False
     assert _is_safe_operation(None) is False
     assert _is_safe_operation(42) is False
@@ -234,7 +229,7 @@ def test_is_safe_operation_returns_false_for_non_operation():
 def test_crud_prompts_still_creates_prompt_with_disabled_operations():
     """Test _crud_prompts still creates prompt even when some operations are disabled."""
     from libs.enhancer.prompt_generator import _crud_prompts
-    
+
     ir = _make_ir(
         operations=[
             _make_op("list_pets", method="GET", path="/pets", enabled=True),
@@ -242,7 +237,7 @@ def test_crud_prompts_still_creates_prompt_with_disabled_operations():
             _make_op("get_pet", method="GET", path="/pets/{id}", enabled=True),
         ]
     )
-    
+
     prompts = _crud_prompts(ir)
     # Should create a CRUD prompt for enabled operations
     assert len(prompts) == 1
@@ -254,14 +249,14 @@ def test_crud_prompts_still_creates_prompt_with_disabled_operations():
 def test_crud_prompts_skips_operations_without_path():
     """Test _crud_prompts skips operations without path."""
     from libs.enhancer.prompt_generator import _crud_prompts
-    
+
     ir = _make_ir(
         operations=[
             _make_op("list_pets", method="GET", path="/pets"),
             _make_op("create_pet", method="POST", path=None),  # No path
         ]
     )
-    
+
     prompts = _crud_prompts(ir)
     assert len(prompts) == 0
 
@@ -269,14 +264,14 @@ def test_crud_prompts_skips_operations_without_path():
 def test_crud_prompts_skips_operations_without_method():
     """Test _crud_prompts skips operations without method."""
     from libs.enhancer.prompt_generator import _crud_prompts
-    
+
     ir = _make_ir(
         operations=[
             _make_op("list_pets", method="GET", path="/pets"),
             _make_op("create_pet", method=None, path="/pets"),  # No method
         ]
     )
-    
+
     prompts = _crud_prompts(ir)
     assert len(prompts) == 0
 
@@ -284,14 +279,14 @@ def test_crud_prompts_skips_operations_without_method():
 def test_crud_prompts_skips_non_crud_methods():
     """Test _crud_prompts skips operations with non-CRUD methods."""
     from libs.enhancer.prompt_generator import _crud_prompts
-    
+
     ir = _make_ir(
         operations=[
             _make_op("list_pets", method="GET", path="/pets"),
             _make_op("trace_pets", method="TRACE", path="/pets"),  # Non-CRUD method
         ]
     )
-    
+
     prompts = _crud_prompts(ir)
     assert len(prompts) == 0
 
@@ -299,15 +294,15 @@ def test_crud_prompts_skips_non_crud_methods():
 def test_extract_entity_from_path_returns_none_for_empty_meaningful_segments():
     """Test _extract_entity_from_path returns None when no meaningful segments."""
     from libs.enhancer.prompt_generator import _extract_entity_from_path
-    
+
     # Path with only skip-worthy segments
     result = _extract_entity_from_path("/api/v1/v2")
     assert result is None
-    
+
     # Path with only parameter segments
     result = _extract_entity_from_path("/{id}/{name}")
     assert result is None
-    
+
     # Empty path
     result = _extract_entity_from_path("")
     assert result is None

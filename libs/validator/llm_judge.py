@@ -143,9 +143,7 @@ class LLMJudge:
         avg_overall = sum(s.overall for s in all_scores) / len(all_scores)
 
         low_quality = [
-            s.operation_id
-            for s in all_scores
-            if s.overall < self._low_quality_threshold
+            s.operation_id for s in all_scores if s.overall < self._low_quality_threshold
         ]
 
         return JudgeEvaluation(
@@ -165,9 +163,7 @@ class LLMJudge:
             for i in range(0, len(operations), self._batch_size)
         ]
 
-    def _evaluate_batch(
-        self, ir: ServiceIR, batch: list[Operation]
-    ) -> list[ToolQualityScore]:
+    def _evaluate_batch(self, ir: ServiceIR, batch: list[Operation]) -> list[ToolQualityScore]:
         tools_json = json.dumps(
             [
                 {
@@ -198,9 +194,7 @@ class LLMJudge:
         content = response.content if hasattr(response, "content") else str(response)
         return self._parse_judge_response(content, batch)
 
-    def _parse_judge_response(
-        self, content: str, batch: list[Operation]
-    ) -> list[ToolQualityScore]:
+    def _parse_judge_response(self, content: str, batch: list[Operation]) -> list[ToolQualityScore]:
         try:
             text = content.strip()
             if text.startswith("```"):
@@ -230,7 +224,7 @@ class LLMJudge:
                     clarity = _clamp(float(item.get("clarity", 0.5)))
                 except (ValueError, TypeError):
                     accuracy = completeness = clarity = 0.5
-                overall = (accuracy * 0.35 + completeness * 0.35 + clarity * 0.30)
+                overall = accuracy * 0.35 + completeness * 0.35 + clarity * 0.30
                 feedback = item.get("feedback", "")
 
                 scores.append(

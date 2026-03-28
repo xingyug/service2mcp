@@ -99,9 +99,14 @@ class SCIMExtractor:
             lower = name.lower()
             attributes: list[dict[str, Any]] = resource.get("attributes", [])
 
-            operations.extend(self._build_resource_operations(
-                lower, plural, attributes, spc,
-            ))
+            operations.extend(
+                self._build_resource_operations(
+                    lower,
+                    plural,
+                    attributes,
+                    spc,
+                )
+            )
 
         # Global operations based on service provider config
         if spc.get("changePassword", {}).get("supported"):
@@ -123,9 +128,7 @@ class SCIMExtractor:
             metadata={
                 "scim_version": "2.0",
                 "resource_types": resource_names,
-                "service_provider_config": {
-                    k: v for k, v in spc.items() if isinstance(v, dict)
-                },
+                "service_provider_config": {k: v for k, v in spc.items() if isinstance(v, dict)},
             },
         )
 
@@ -221,107 +224,139 @@ class SCIMExtractor:
         ops: list[Operation] = []
 
         # list
-        ops.append(Operation(
-            id=f"list_{lower}s",
-            name=f"list_{lower}s",
-            description=f"List {plural} with optional filtering",
-            method="GET",
-            path=f"/{plural}",
-            params=[
-                Param(name="filter", type="string", description="SCIM filter expression"),
-                Param(name="startIndex", type="integer", description="1-based start index"),
-                Param(name="count", type="integer", description="Number of results to return"),
-            ],
-            risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=1.0),
-            error_schema=self._error_schema(),
-        ))
+        ops.append(
+            Operation(
+                id=f"list_{lower}s",
+                name=f"list_{lower}s",
+                description=f"List {plural} with optional filtering",
+                method="GET",
+                path=f"/{plural}",
+                params=[
+                    Param(name="filter", type="string", description="SCIM filter expression"),
+                    Param(name="startIndex", type="integer", description="1-based start index"),
+                    Param(name="count", type="integer", description="Number of results to return"),
+                ],
+                risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=1.0),
+                error_schema=self._error_schema(),
+            )
+        )
 
         # get
-        ops.append(Operation(
-            id=f"get_{lower}",
-            name=f"get_{lower}",
-            description=f"Get a single {lower} by ID",
-            method="GET",
-            path=f"/{plural}/{{id}}",
-            params=[
-                Param(name="id", type="string", required=True, description=f"{lower} identifier"),
-            ],
-            risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=1.0),
-            error_schema=self._error_schema(),
-        ))
-
-        # create
-        create_attrs = self._writable_for_create(attributes)
-        ops.append(Operation(
-            id=f"create_{lower}",
-            name=f"create_{lower}",
-            description=f"Create a new {lower}",
-            method="POST",
-            path=f"/{plural}",
-            params=self._attrs_to_params(create_attrs),
-            risk=RiskMetadata(
-                risk_level=RiskLevel.cautious, writes_state=True, confidence=1.0,
-            ),
-            error_schema=self._error_schema(),
-        ))
-
-        # update
-        update_attrs = self._writable_for_update(attributes)
-        ops.append(Operation(
-            id=f"update_{lower}",
-            name=f"update_{lower}",
-            description=f"Replace an existing {lower}",
-            method="PUT",
-            path=f"/{plural}/{{id}}",
-            params=[
-                Param(name="id", type="string", required=True, description=f"{lower} identifier"),
-                *self._attrs_to_params(update_attrs),
-            ],
-            risk=RiskMetadata(
-                risk_level=RiskLevel.cautious, writes_state=True, idempotent=True, confidence=1.0,
-            ),
-            error_schema=self._error_schema(),
-        ))
-
-        # patch (only if supported)
-        if spc.get("patch", {}).get("supported"):
-            ops.append(Operation(
-                id=f"patch_{lower}",
-                name=f"patch_{lower}",
-                description=f"Partially update a {lower}",
-                method="PATCH",
+        ops.append(
+            Operation(
+                id=f"get_{lower}",
+                name=f"get_{lower}",
+                description=f"Get a single {lower} by ID",
+                method="GET",
                 path=f"/{plural}/{{id}}",
                 params=[
                     Param(
-                        name="id", type="string", required=True,
-                        description=f"{lower} identifier",
+                        name="id", type="string", required=True, description=f"{lower} identifier"
                     ),
+                ],
+                risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=1.0),
+                error_schema=self._error_schema(),
+            )
+        )
+
+        # create
+        create_attrs = self._writable_for_create(attributes)
+        ops.append(
+            Operation(
+                id=f"create_{lower}",
+                name=f"create_{lower}",
+                description=f"Create a new {lower}",
+                method="POST",
+                path=f"/{plural}",
+                params=self._attrs_to_params(create_attrs),
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.cautious,
+                    writes_state=True,
+                    confidence=1.0,
+                ),
+                error_schema=self._error_schema(),
+            )
+        )
+
+        # update
+        update_attrs = self._writable_for_update(attributes)
+        ops.append(
+            Operation(
+                id=f"update_{lower}",
+                name=f"update_{lower}",
+                description=f"Replace an existing {lower}",
+                method="PUT",
+                path=f"/{plural}/{{id}}",
+                params=[
                     Param(
-                        name="Operations", type="array", required=True,
-                        description="SCIM patch operations",
+                        name="id", type="string", required=True, description=f"{lower} identifier"
+                    ),
+                    *self._attrs_to_params(update_attrs),
+                ],
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.cautious,
+                    writes_state=True,
+                    idempotent=True,
+                    confidence=1.0,
+                ),
+                error_schema=self._error_schema(),
+            )
+        )
+
+        # patch (only if supported)
+        if spc.get("patch", {}).get("supported"):
+            ops.append(
+                Operation(
+                    id=f"patch_{lower}",
+                    name=f"patch_{lower}",
+                    description=f"Partially update a {lower}",
+                    method="PATCH",
+                    path=f"/{plural}/{{id}}",
+                    params=[
+                        Param(
+                            name="id",
+                            type="string",
+                            required=True,
+                            description=f"{lower} identifier",
+                        ),
+                        Param(
+                            name="Operations",
+                            type="array",
+                            required=True,
+                            description="SCIM patch operations",
+                        ),
+                    ],
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.cautious,
+                        writes_state=True,
+                        confidence=1.0,
+                    ),
+                    error_schema=self._error_schema(),
+                )
+            )
+
+        # delete
+        ops.append(
+            Operation(
+                id=f"delete_{lower}",
+                name=f"delete_{lower}",
+                description=f"Delete a {lower}",
+                method="DELETE",
+                path=f"/{plural}/{{id}}",
+                params=[
+                    Param(
+                        name="id", type="string", required=True, description=f"{lower} identifier"
                     ),
                 ],
                 risk=RiskMetadata(
-                    risk_level=RiskLevel.cautious, writes_state=True, confidence=1.0,
+                    risk_level=RiskLevel.dangerous,
+                    destructive=True,
+                    writes_state=True,
+                    confidence=1.0,
                 ),
                 error_schema=self._error_schema(),
-            ))
-
-        # delete
-        ops.append(Operation(
-            id=f"delete_{lower}",
-            name=f"delete_{lower}",
-            description=f"Delete a {lower}",
-            method="DELETE",
-            path=f"/{plural}/{{id}}",
-            params=[
-                Param(name="id", type="string", required=True, description=f"{lower} identifier"),
-            ],
-            risk=RiskMetadata(
-                risk_level=RiskLevel.dangerous, destructive=True, writes_state=True, confidence=1.0,
-            ),
-            error_schema=self._error_schema(),
-        ))
+            )
+        )
 
         return ops
 
@@ -334,16 +369,22 @@ class SCIMExtractor:
             path="/Me/ChangePassword",
             params=[
                 Param(
-                    name="oldPassword", type="string",
-                    required=True, description="Current password",
+                    name="oldPassword",
+                    type="string",
+                    required=True,
+                    description="Current password",
                 ),
                 Param(
-                    name="newPassword", type="string",
-                    required=True, description="New password",
+                    name="newPassword",
+                    type="string",
+                    required=True,
+                    description="New password",
                 ),
             ],
             risk=RiskMetadata(
-                risk_level=RiskLevel.cautious, writes_state=True, confidence=1.0,
+                risk_level=RiskLevel.cautious,
+                writes_state=True,
+                confidence=1.0,
             ),
             error_schema=self._error_schema(),
         )
@@ -357,12 +398,16 @@ class SCIMExtractor:
             path="/Bulk",
             params=[
                 Param(
-                    name="Operations", type="array", required=True,
+                    name="Operations",
+                    type="array",
+                    required=True,
                     description="List of bulk operations",
                 ),
             ],
             risk=RiskMetadata(
-                risk_level=RiskLevel.dangerous, writes_state=True, confidence=1.0,
+                risk_level=RiskLevel.dangerous,
+                writes_state=True,
+                confidence=1.0,
             ),
             error_schema=self._error_schema(),
         )

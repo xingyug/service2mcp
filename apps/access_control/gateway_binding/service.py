@@ -141,8 +141,7 @@ class GatewayBindingService:
             for pat, user in active_pat_rows.all()
         }
         expected_policy_bindings = {
-            _policy_binding_id(policy.id): _policy_document(policy)
-            for policy in policies
+            _policy_binding_id(policy.id): _policy_document(policy) for policy in policies
         }
         expected_routes: dict[str, dict[str, Any]] = {}
         for version in service_versions:

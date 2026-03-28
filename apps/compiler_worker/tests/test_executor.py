@@ -75,9 +75,7 @@ class TestResolveCompilationExecutor:
                 resolve_compilation_executor()
 
     def test_returns_database_executor_when_url_set(self) -> None:
-        with patch.dict(
-            os.environ, {"DATABASE_URL": "postgresql+asyncpg://u:p@h/db"}
-        ):
+        with patch.dict(os.environ, {"DATABASE_URL": "postgresql+asyncpg://u:p@h/db"}):
             executor = resolve_compilation_executor()
         assert isinstance(executor, DatabaseWorkflowCompilationExecutor)
         assert executor.database_url == "postgresql+asyncpg://u:p@h/db"

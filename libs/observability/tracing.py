@@ -82,6 +82,7 @@ def get_tracer(name: str) -> Any:
     """Return a tracer instance.  Returns a no-op tracer if not configured."""
     if _is_configured:
         from opentelemetry import trace
+
         return trace.get_tracer(name)
     return _NoOpTracer()
 

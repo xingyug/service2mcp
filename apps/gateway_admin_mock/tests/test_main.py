@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -173,7 +172,9 @@ class TestProxyGateway:
         data = resp.json()
         assert "my-service-v2" in data["detail"]
 
-    async def test_proxy_with_upstream_override(self, gateway_app, client: httpx.AsyncClient) -> None:
+    async def test_proxy_with_upstream_override(
+        self, gateway_app, client: httpx.AsyncClient
+    ) -> None:
         # First create a route
         await client.put(
             "/admin/routes/catalog-active",
@@ -197,7 +198,9 @@ class TestProxyGateway:
         assert resp.status_code == 200
         assert resp.json() == {"proxied": True}
 
-    async def test_proxy_with_upstream_override_namespace(self, gateway_app, client: httpx.AsyncClient) -> None:
+    async def test_proxy_with_upstream_override_namespace(
+        self, gateway_app, client: httpx.AsyncClient
+    ) -> None:
         await client.put(
             "/admin/routes/catalog-active",
             json={
@@ -219,7 +222,9 @@ class TestProxyGateway:
         assert resp.status_code == 200
         assert resp.json() == {"ns_proxied": True}
 
-    async def test_proxy_http_error_returns_502(self, gateway_app, client: httpx.AsyncClient) -> None:
+    async def test_proxy_http_error_returns_502(
+        self, gateway_app, client: httpx.AsyncClient
+    ) -> None:
         await client.put(
             "/admin/routes/catalog-active",
             json={
@@ -243,7 +248,9 @@ class TestProxyGateway:
         data = resp.json()
         assert "Failed to reach" in data["detail"]
 
-    async def test_proxy_forwards_query_params(self, gateway_app, client: httpx.AsyncClient) -> None:
+    async def test_proxy_forwards_query_params(
+        self, gateway_app, client: httpx.AsyncClient
+    ) -> None:
         await client.put(
             "/admin/routes/catalog-active",
             json={
@@ -339,7 +346,6 @@ class TestUpstreamBaseUrl:
 
 class TestForwardHeaders:
     def test_excludes_hop_by_hop(self) -> None:
-        from starlette.testclient import TestClient
 
         # Use a simple mock request
         class MockHeaders:

@@ -31,10 +31,7 @@ def _explore_prompt(ir: ServiceIR) -> PromptDefinition:
     return PromptDefinition(
         id=f"explore_{ir.service_name}",
         name=f"Explore {ir.service_name}",
-        description=(
-            f"List available operations for {ir.service_name} "
-            "and their risk levels"
-        ),
+        description=(f"List available operations for {ir.service_name} and their risk levels"),
         template=(
             "List available operations for {service_name} "
             "and their risk levels. "
@@ -54,24 +51,16 @@ def _explore_prompt(ir: ServiceIR) -> PromptDefinition:
 
 
 def _safe_discovery_prompt(ir: ServiceIR) -> PromptDefinition:
-    safe_ops = [
-        op
-        for op in ir.operations
-        if op.enabled and _is_safe_operation(op)
-    ]
+    safe_ops = [op for op in ir.operations if op.enabled and _is_safe_operation(op)]
     safe_ids = [op.id for op in safe_ops]
     safe_tool_list = ", ".join(safe_ids) if safe_ids else "(none)"
     return PromptDefinition(
         id=f"safe_discovery_{ir.service_name}",
         name=f"Safe discovery {ir.service_name}",
-        description=(
-            f"Only use discovery (read-only) tools to explore "
-            f"{ir.service_name}"
-        ),
+        description=(f"Only use discovery (read-only) tools to explore {ir.service_name}"),
         template=(
             "Only use discovery (read-only) tools to explore "
-            "{service_name}. Available safe tools: "
-            + safe_tool_list
+            "{service_name}. Available safe tools: " + safe_tool_list
         ),
         arguments=[
             PromptArgument(
@@ -123,13 +112,10 @@ def _crud_prompts(ir: ServiceIR) -> list[PromptDefinition]:
             PromptDefinition(
                 id=f"manage_{entity}",
                 name=f"Manage {entity}",
-                description=(
-                    f"Create, read, update, or delete {entity}"
-                ),
+                description=(f"Create, read, update, or delete {entity}"),
                 template=(
                     "Create, read, update, or delete {entity}. "
-                    "Available tools: "
-                    + ", ".join(op_ids)
+                    "Available tools: " + ", ".join(op_ids)
                 ),
                 arguments=[
                     PromptArgument(
@@ -151,10 +137,7 @@ def _extract_entity_from_path(path: str) -> str | None:
 
     E.g. /pets/{id} -> pets, /api/v1/users/{user_id}/posts -> posts
     """
-    segments = [
-        s for s in path.split("/")
-        if s and not s.startswith("{") and not s.startswith(":")
-    ]
+    segments = [s for s in path.split("/") if s and not s.startswith("{") and not s.startswith(":")]
     # Skip common prefixes like api, v1, v2 etc.
     skip = {"api", "v1", "v2", "v3", "v4"}
     meaningful = [s for s in segments if s.lower() not in skip]

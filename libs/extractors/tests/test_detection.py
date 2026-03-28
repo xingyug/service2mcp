@@ -11,6 +11,7 @@ from libs.ir.models import ServiceIR
 
 # ── Mock Extractors ────────────────────────────────────────────────────────
 
+
 @dataclass
 class MockExtractor:
     protocol_name: str
@@ -32,6 +33,7 @@ class MockExtractor:
 
 
 # ── SourceConfig Tests ─────────────────────────────────────────────────────
+
 
 class TestSourceConfig:
     def test_url_source(self):
@@ -57,13 +59,16 @@ class TestSourceConfig:
 
 # ── TypeDetector Tests ─────────────────────────────────────────────────────
 
+
 class TestTypeDetector:
     def test_selects_highest_confidence(self):
-        detector = TypeDetector([
-            MockExtractor("openapi", _confidence=0.9),
-            MockExtractor("graphql", _confidence=0.3),
-            MockExtractor("rest", _confidence=0.6),
-        ])
+        detector = TypeDetector(
+            [
+                MockExtractor("openapi", _confidence=0.9),
+                MockExtractor("graphql", _confidence=0.3),
+                MockExtractor("rest", _confidence=0.6),
+            ]
+        )
         result = detector.detect(SourceConfig(url="https://example.com/api"))
         assert result.protocol_name == "openapi"
         assert result.confidence == 0.9
@@ -74,18 +79,22 @@ class TestTypeDetector:
             detector.detect(SourceConfig(url="https://example.com"))
 
     def test_all_zero_confidence_raises(self):
-        detector = TypeDetector([
-            MockExtractor("openapi", _confidence=0.0),
-            MockExtractor("graphql", _confidence=0.0),
-        ])
+        detector = TypeDetector(
+            [
+                MockExtractor("openapi", _confidence=0.0),
+                MockExtractor("graphql", _confidence=0.0),
+            ]
+        )
         with pytest.raises(ValueError, match="No extractor could handle"):
             detector.detect(SourceConfig(url="https://example.com"))
 
     def test_failing_extractor_skipped(self):
-        detector = TypeDetector([
-            MockExtractor("broken", _should_fail=True),
-            MockExtractor("openapi", _confidence=0.8),
-        ])
+        detector = TypeDetector(
+            [
+                MockExtractor("broken", _should_fail=True),
+                MockExtractor("openapi", _confidence=0.8),
+            ]
+        )
         result = detector.detect(SourceConfig(url="https://example.com"))
         assert result.protocol_name == "openapi"
 
@@ -96,12 +105,14 @@ class TestTypeDetector:
         assert result.protocol_name == "openapi"
 
     def test_detect_all_sorted(self):
-        detector = TypeDetector([
-            MockExtractor("openapi", _confidence=0.9),
-            MockExtractor("graphql", _confidence=0.3),
-            MockExtractor("rest", _confidence=0.6),
-            MockExtractor("sql", _confidence=0.0),
-        ])
+        detector = TypeDetector(
+            [
+                MockExtractor("openapi", _confidence=0.9),
+                MockExtractor("graphql", _confidence=0.3),
+                MockExtractor("rest", _confidence=0.6),
+                MockExtractor("sql", _confidence=0.0),
+            ]
+        )
         results = detector.detect_all(SourceConfig(url="https://example.com"))
         assert len(results) == 3  # sql excluded (0.0)
         assert results[0].protocol_name == "openapi"
@@ -111,10 +122,12 @@ class TestTypeDetector:
     def test_detect_all_logs_and_skips_failing_extractor(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        detector = TypeDetector([
-            MockExtractor("broken", _should_fail=True),
-            MockExtractor("openapi", _confidence=0.9),
-        ])
+        detector = TypeDetector(
+            [
+                MockExtractor("broken", _should_fail=True),
+                MockExtractor("openapi", _confidence=0.9),
+            ]
+        )
         with caplog.at_level("WARNING", logger="libs.extractors.base"):
             results = detector.detect_all(SourceConfig(url="https://example.com"))
         assert len(results) == 1
