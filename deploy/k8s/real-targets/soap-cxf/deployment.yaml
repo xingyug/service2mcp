@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: soap-cxf
+  namespace: tc-real-targets
+  labels:
+    app.kubernetes.io/name: soap-cxf
+    app.kubernetes.io/part-of: tool-compiler
+    tool-compiler.io/protocol: soap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: soap-cxf
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: soap-cxf
+        app.kubernetes.io/part-of: tool-compiler
+        tool-compiler.io/protocol: soap
+    spec:
+      containers:
+        - name: soap-cxf
+          image: us-central1-docker.pkg.dev/insightcompass-465300/tool-compiler/real-target-soap-cxf:latest
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            - name: JAVA_OPTS
+              value: "-Xmx384m -Xms128m"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            failureThreshold: 60
+            periodSeconds: 5
