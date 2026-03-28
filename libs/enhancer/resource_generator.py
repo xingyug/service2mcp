@@ -77,7 +77,7 @@ def _operations_resource(ir: ServiceIR) -> ResourceDefinition:
 
 
 def _auth_requirements_resource(ir: ServiceIR) -> ResourceDefinition:
-    auth_info = {
+    auth_info: dict[str, str | list[str]] = {
         "type": ir.auth.type.value,
     }
     if ir.auth.oauth2 is not None:

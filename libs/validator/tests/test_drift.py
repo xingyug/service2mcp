@@ -24,7 +24,7 @@ def _make_op(op_id: str, **kwargs: object) -> Operation:
         "risk": RiskMetadata(risk_level=RiskLevel.safe),
     }
     defaults.update(kwargs)
-    return Operation(**defaults)  # type: ignore[arg-type]
+    return Operation(**defaults)
 
 
 def _make_ir(operations: list[Operation] | None = None, **kwargs: object) -> ServiceIR:
@@ -36,7 +36,7 @@ def _make_ir(operations: list[Operation] | None = None, **kwargs: object) -> Ser
         "operations": operations or [],
     }
     defaults.update(kwargs)
-    return ServiceIR(**defaults)  # type: ignore[arg-type]
+    return ServiceIR(**defaults)
 
 
 class MockExtractor:

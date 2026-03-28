@@ -2719,3 +2719,91 @@ The four P1 features from B-003 (`derive_tool_intents`, `bifurcate_descriptions`
 - `tests/integration/test_mcp_runtime_scim.py` (new)
 - `tests/integration/test_mcp_runtime_jsonrpc.py` (new)
 - `agent.md`, `devlog.md` (updated)
+
+---
+
+### Housekeeping: Stream C Known Issues Fix + B-004 Completion ✅
+
+**Scope:** Fix all known issues left by the Stream C merge and close B-004.
+
+**What changed:**
+
+- `apps/compiler_worker/tests/test_production_helpers.py`:
+  - Renamed `test_returns_six_extractors` → `test_returns_nine_extractors`
+  - Updated assertion from `len(extractors) == 6` to `len(extractors) == 9`
+  - Added assertions for `odata`, `scim`, `jsonrpc` in the extractor name set
+
+- `libs/extractors/tests/test_scim.py`:
+  - Added `ServiceIR` import and type annotations to all 15 test methods and 2 fixtures
+  - Removed all `# noqa: ANN001` / `# noqa: ANN201` suppressions
+
+- `libs/enhancer/resource_generator.py`:
+  - Fixed `auth_info` dict type annotation: `dict[str, str]` → `dict[str, str | list[str]]` to accommodate `oauth2_scopes`
+
+- `libs/validator/tests/test_drift.py`:
+  - Removed 2 stale `# type: ignore[arg-type]` comments on `_make_op()` and `_make_ir()` return lines
+
+- `libs/enhancer/tests/test_examples_generator.py`:
+  - Fixed `dict` → `dict[str, object]` for `response_schema` param type
+
+- `docs/post-sdd-modular-expansion-plan.md`:
+  - Updated B-004 status from "in progress" to "complete"
+
+- `agent.md`, `new-agent-reading-list.md` (updated — status, known issues resolved)
+
+**Verification:** 1285 tests passing (+1 from renamed test), ruff clean, mypy clean (19 errors fixed → 0).
+
+---
+
+### B-005: Real External API Black-Box Validation — Foundation Slice ✅
+
+**Scope:** Build the ground truth definitions, black-box evaluation module, mock transports for two well-known public APIs, integration tests, and operator harness script for B-005.
+
+**What changed:**
+
+- `tests/fixtures/ground_truth/__init__.py` (new):
+  - Package for ground truth definitions
+
+- `tests/fixtures/ground_truth/jsonplaceholder.py` (new):
+  - `EndpointTruth` frozen dataclass for expected endpoint properties
+  - `GROUND_TRUTH`: 21 canonical endpoints across 6 resource groups (posts, comments, albums, photos, todos, users)
+  - `GROUND_TRUTH_BY_KEY`: dict lookup by `(method, path)`
+  - `build_jsonplaceholder_transport()`: mock HTTP transport with HATEOAS root, OPTIONS support, realistic JSON responses for all CRUD operations, parameterized item/nested resource routing
+  - `get_mock_state()`: introspection helper for call log verification
+
+- `tests/fixtures/ground_truth/petstore_v3.py` (new):
+  - `GROUND_TRUTH`: 19 canonical PetStore v3 operations across 3 resource groups (pet, store, user)
+  - `_OPENAPI_SPEC`: inline OpenAPI 3.0.3 spec matching the real PetStore v3 spec structure
+  - `build_petstore_transport()`: mock HTTP transport for all 19 endpoints with realistic response shapes
+  - `get_petstore_spec_json()`: serialize inline spec for extractor consumption
+
+- `libs/validator/black_box.py` (new):
+  - `EndpointMatch`, `FailurePattern`, `BlackBoxReport` frozen dataclasses
+  - `evaluate_black_box()`: compares extracted IR against ground truth endpoints
+  - Path template normalization (`{petId}` ↔ `{id}` matching)
+  - Risk classification accuracy calculation
+  - Failure pattern identification: `nested_resource_not_discovered`, `mutation_endpoints_not_discovered`, `item_endpoints_not_generalized`, `no_operations_extracted`
+
+- `libs/validator/tests/test_black_box.py` (new, 14 tests):
+  - `TestEvaluateBlackBox`: perfect match, partial discovery, extra discovered, empty IR, empty ground truth, path normalization, risk mismatch, disabled ops excluded, resource groups, target name defaults/override
+  - `TestFailurePatterns`: nested resource pattern, mutation pattern, no patterns on full match
+
+- `tests/integration/test_black_box_validation.py` (new, 14 tests):
+  - `TestJSONPlaceholderBlackBox` (7 tests): REST discovery against mock transport → black-box evaluation with coverage thresholds (≥25% discovery, ≥4 ops, ≤4 failure patterns)
+  - `TestPetStoreBlackBox` (7 tests): OpenAPI spec-first extraction → black-box evaluation with coverage thresholds (≥80% discovery, ≥15 ops, ≥50% risk accuracy, all 3 resource groups represented)
+
+- `scripts/smoke-black-box-external.sh` (new):
+  - Operator harness for running against real external APIs (JSONPlaceholder, PetStore, or both)
+  - Env vars: `TARGET`, `TIMEOUT_SECONDS`, `RESULTS_DIR`, `MAX_PAGES`, `VERBOSE`
+  - Outputs JSON reports to `RESULTS_DIR` with coverage metrics and failure patterns
+  - Not intended for CI — external APIs are not under our control
+
+- `agent.md`, `devlog.md`, `docs/post-sdd-modular-expansion-plan.md` (updated)
+
+**B-005 integration test report:**
+- JSONPlaceholder (REST discovery): 6 operations discovered from 21 ground truth (28.6% coverage), 6 matched, 0 failure in extracted ops
+- PetStore v3 (OpenAPI spec-first): 19/19 operations extracted (100% coverage), all 3 resource groups represented, risk accuracy ≥50%
+- Failure patterns on JSONPlaceholder: mutation_endpoints_not_discovered (expected — REST discovery only probes GET/OPTIONS)
+
+**Verification:** 1313 tests passing (+28), ruff clean, mypy clean (183 source files).
+

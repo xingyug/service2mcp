@@ -39,7 +39,7 @@ _SAFE_RISK = RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9)
 def _make_op(
     op_id: str = "op_1",
     *,
-    response_schema: dict | None = None,
+    response_schema: dict[str, object] | None = None,
     response_examples: list[ResponseExample] | None = None,
 ) -> Operation:
     return Operation(

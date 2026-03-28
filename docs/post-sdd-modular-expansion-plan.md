@@ -596,28 +596,11 @@ The B-001 through B-003 pilot cycle proved the black-box discovery pipeline loca
 
 ### B-004: P1 Features Live LLM Proof
 
-Status: in progress
-
-Scope:
-- Wire `WORKER_ENABLE_TOOL_GROUPING` into the GKE live proof harness so real DeepSeek-backed grouping runs during compilation
-- Add `--enable-llm-judge` flag to the proof runner so an LLM-as-a-Judge evaluation runs against the compiled IR after deployment
-- Add `judge_evaluation` to `ProofResult` so judge results are captured in the proof output
-- Verify that `tool_intent` and bifurcated descriptions appear in compiled IR artifacts on GKE
-- Add integration test coverage for the proof runner judge path with mock LLM
-
-Exit criteria:
-- The proof runner can execute LLM judge evaluation and report quality scores
-- `tool_intent` is verified present in compiled IR during proof runs
-- Integration tests prove the judge path locally with mock LLM
-- Quality gates green (ruff, mypy, pytest)
-
-Out of scope:
-- LLM seed mutation in the proof runner (seed mutation runs inside the REST extractor, which requires live HTTP crawling against a discovery target — the current GKE proof already exercises REST discovery without seed mutation; wiring seed mutation into the live proof requires a dedicated REST-focused live target with link-rich responses, deferred to a follow-on)
-- Changing the aggregate audit baseline thresholds based on judge scores
+Status: complete
 
 ### B-005: Real External API Black-Box Validation
 
-Status: planned
+Status: in progress (foundation slice complete)
 
 Scope:
 - Select one or two publicly accessible APIs with documented endpoints (e.g. a public REST API with known endpoint count)

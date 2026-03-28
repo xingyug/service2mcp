@@ -1,8 +1,8 @@
 Current pause-point note:
-- Read `agent.md` first for the latest status (`B-004` in progress — P1 live LLM proof wiring).
-- Then read `devlog.md`: latest entry covers B-004 proof runner + GKE harness changes.
-- Backlogs B-001–B-003 complete; `B-004` (P1 Features Live LLM Proof) in progress, `B-005` (Real External API Black-Box) planned.
-- Quality gates at last verification: **1080+** tests, ruff/mypy clean (see `devlog.md`).
+- Read `agent.md` first for the latest status (`B-005` foundation slice complete — black-box validation module, ground truth, integration tests).
+- Then read `devlog.md`: latest entries cover Stream C known-issue fixes, B-004 completion, and B-005 foundation slice.
+- Backlogs B-001–B-004 complete; Stream C (ENT-001–012) complete; `B-005` (Real External API Black-Box Validation) foundation slice complete — live external API run is the remaining step.
+- Quality gates at last verification: **1313** tests, ruff/mypy clean (see `devlog.md`).
 - The project has also been synced to the private GitHub repo `xingyug/service2mcp` on `main`; if a public open-source release happens later, treat it as a fresh export into a new public repo without carrying over this private/internal history.
 - Before every `git push`, run `make gitleaks` (mandatory policy; see `agent.md` Git Conventions and `scripts/git-hooks/pre-push.sample`).
 
@@ -36,6 +36,14 @@ Key implementation files for B-004 (P1 Live LLM Proof):
 - `apps/proof_runner/live_llm_e2e.py` — `ProofResult` now carries `tool_intent_counts` and `judge_evaluation`; `--enable-llm-judge` CLI flag; `_build_llm_judge_from_env()`
 - `scripts/smoke-gke-llm-e2e.sh` — `ENABLE_TOOL_GROUPING`, `ENABLE_LLM_JUDGE` env vars; LLM secret injection for proof runner
 - `tests/integration/test_large_surface_pilot.py` — P1 pilot tests with mock LLM
+
+Key implementation files for B-005 (Real External API Black-Box Validation):
+- `libs/validator/black_box.py` — `evaluate_black_box()`, `BlackBoxReport`, `EndpointMatch`, `FailurePattern` — core comparison engine
+- `tests/fixtures/ground_truth/jsonplaceholder.py` — 21-endpoint ground truth + mock HTTP transport for JSONPlaceholder REST API
+- `tests/fixtures/ground_truth/petstore_v3.py` — 19-endpoint ground truth + inline OpenAPI spec + mock transport for PetStore v3
+- `libs/validator/tests/test_black_box.py` — 14 unit tests for black-box evaluation module
+- `tests/integration/test_black_box_validation.py` — 14 integration tests (REST discovery + OpenAPI spec-first)
+- `scripts/smoke-black-box-external.sh` — Operator harness for live external API validation (not CI)
 
 ADRs:
 - `001-ir-as-first-class-artifact.md`: `./docs/adr/001-ir-as-first-class-artifact.md`

@@ -9,6 +9,7 @@ import pytest
 
 from libs.extractors.base import SourceConfig
 from libs.extractors.scim import SCIMExtractor
+from libs.ir.models import ServiceIR
 
 FIXTURES_DIR = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "scim_schemas"
 
@@ -52,14 +53,14 @@ class TestDetection:
 
 class TestUserGroupExtraction:
     @pytest.fixture
-    def ir(self, extractor: SCIMExtractor):  # noqa: ANN201
+    def ir(self, extractor: SCIMExtractor) -> ServiceIR:
         source = SourceConfig(file_path=str(FIXTURES_DIR / "user_group.json"))
         return extractor.extract(source)
 
-    def test_protocol(self, ir) -> None:  # noqa: ANN001
+    def test_protocol(self, ir: ServiceIR) -> None:
         assert ir.protocol == "scim"
 
-    def test_user_operations_exist(self, ir) -> None:  # noqa: ANN001
+    def test_user_operations_exist(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         expected_ops = (
             "list_users", "get_user", "create_user",
@@ -68,7 +69,7 @@ class TestUserGroupExtraction:
         for expected in expected_ops:
             assert expected in op_names, f"Missing operation: {expected}"
 
-    def test_group_operations_exist(self, ir) -> None:  # noqa: ANN001
+    def test_group_operations_exist(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         expected_ops = (
             "list_groups", "get_group", "create_group",
@@ -77,21 +78,21 @@ class TestUserGroupExtraction:
         for expected in expected_ops:
             assert expected in op_names, f"Missing operation: {expected}"
 
-    def test_change_password_exists(self, ir) -> None:  # noqa: ANN001
+    def test_change_password_exists(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         assert "change_password" in op_names
 
-    def test_bulk_operation_exists(self, ir) -> None:  # noqa: ANN001
+    def test_bulk_operation_exists(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         assert "bulk_operation" in op_names
 
-    def test_readonly_excluded_from_create_user(self, ir) -> None:  # noqa: ANN001
+    def test_readonly_excluded_from_create_user(self, ir: ServiceIR) -> None:
         create_op = next(op for op in ir.operations if op.name == "create_user")
         param_names = {p.name for p in create_op.params}
         assert "id" not in param_names
         assert "meta" not in param_names
 
-    def test_readonly_excluded_from_update_user(self, ir) -> None:  # noqa: ANN001
+    def test_readonly_excluded_from_update_user(self, ir: ServiceIR) -> None:
         update_op = next(
             op for op in ir.operations if op.name == "update_user"
         )
@@ -104,7 +105,7 @@ class TestUserGroupExtraction:
         }
         assert len(readonly_body_params) == 0
 
-    def test_username_in_create_and_required(self, ir) -> None:  # noqa: ANN001
+    def test_username_in_create_and_required(self, ir: ServiceIR) -> None:
         create_op = next(op for op in ir.operations if op.name == "create_user")
         username_param = next(p for p in create_op.params if p.name == "userName")
         assert username_param.required is True
@@ -115,11 +116,11 @@ class TestUserGroupExtraction:
 
 class TestCustomResourceExtraction:
     @pytest.fixture
-    def ir(self, extractor: SCIMExtractor):  # noqa: ANN201
+    def ir(self, extractor: SCIMExtractor) -> ServiceIR:
         source = SourceConfig(file_path=str(FIXTURES_DIR / "custom_resource.json"))
         return extractor.extract(source)
 
-    def test_device_operations_exist(self, ir) -> None:  # noqa: ANN001
+    def test_device_operations_exist(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         expected_ops = (
             "list_devices", "get_device", "create_device",
@@ -128,7 +129,7 @@ class TestCustomResourceExtraction:
         for expected in expected_ops:
             assert expected in op_names, f"Missing operation: {expected}"
 
-    def test_immutable_in_create_not_update(self, ir) -> None:  # noqa: ANN001
+    def test_immutable_in_create_not_update(self, ir: ServiceIR) -> None:
         create_op = next(op for op in ir.operations if op.name == "create_device")
         create_params = {p.name for p in create_op.params}
         assert "serialNumber" in create_params
@@ -139,7 +140,7 @@ class TestCustomResourceExtraction:
         }
         assert "serialNumber" not in update_body_params
 
-    def test_readonly_excluded_from_create_and_update(self, ir) -> None:  # noqa: ANN001
+    def test_readonly_excluded_from_create_and_update(self, ir: ServiceIR) -> None:
         create_op = next(op for op in ir.operations if op.name == "create_device")
         create_params = {p.name for p in create_op.params}
         assert "firmwareVersion" not in create_params
@@ -151,10 +152,10 @@ class TestCustomResourceExtraction:
         assert "firmwareVersion" not in update_body_params
         assert "lastSeen" not in update_body_params
 
-    def test_no_change_password(self, ir) -> None:  # noqa: ANN001
+    def test_no_change_password(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         assert "change_password" not in op_names
 
-    def test_no_bulk_operation(self, ir) -> None:  # noqa: ANN001
+    def test_no_bulk_operation(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         assert "bulk_operation" not in op_names

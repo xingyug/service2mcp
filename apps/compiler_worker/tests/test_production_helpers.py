@@ -457,9 +457,9 @@ class TestSourceConfigFromContext:
 
 
 class TestBuildExtractors:
-    def test_returns_six_extractors(self) -> None:
+    def test_returns_nine_extractors(self) -> None:
         extractors = _build_extractors()
-        assert len(extractors) == 6
+        assert len(extractors) == 9
         names = {e.protocol_name for e in extractors}
         assert "openapi" in names
         assert "graphql" in names
@@ -467,6 +467,9 @@ class TestBuildExtractors:
         assert "soap" in names
         assert "sql" in names
         assert "rest" in names
+        assert "odata" in names
+        assert "scim" in names
+        assert "jsonrpc" in names
 
 
 class TestResolveExtractor:
