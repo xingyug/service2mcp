@@ -220,7 +220,7 @@ def register_ir_resources(
             return read_resource
 
         fn_resource = FunctionResource(
-            uri=resource_def.uri,
+            uri=resource_def.uri,  # pyright: ignore[reportArgumentType]
             name=resource_def.name,
             description=resource_def.description or resource_def.name,
             mime_type=resource_def.mime_type,
@@ -289,7 +289,7 @@ def register_ir_prompts(
             for a in prompt_def.arguments
         ]
 
-        prompt = Prompt(
+        prompt = Prompt(  # pyright: ignore[reportCallIssue]
             name=prompt_def.name,
             description=prompt_def.description or prompt_def.name,
             arguments=mcp_args if mcp_args else None,

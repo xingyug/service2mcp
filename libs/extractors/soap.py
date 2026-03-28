@@ -8,7 +8,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -150,7 +150,7 @@ class SOAPWSDLExtractor:
                 complex_types=complex_types,
                 soap_actions=soap_actions,
                 target_namespace=target_namespace,
-                binding_style=binding_style,
+                binding_style=cast(Literal["document"], binding_style),
                 body_uses=body_uses,
                 endpoint_path=_endpoint_path(base_url),
             )
@@ -319,7 +319,7 @@ def _build_operation(
     complex_types: dict[str, list[XSDField]],
     soap_actions: dict[str, str],
     target_namespace: str,
-    binding_style: str,
+    binding_style: Literal["document"],
     body_uses: dict[str, str],
     endpoint_path: str,
 ) -> Operation:
@@ -369,7 +369,7 @@ def _build_operation(
             response_element=output_element_name or None,
             soap_action=soap_actions.get(operation_name),
             binding_style=binding_style,
-            body_use=body_uses.get(operation_name, "literal"),
+            body_use=cast(Literal["literal"], body_uses.get(operation_name, "literal")),
         ),
         tags=["soap", "wsdl", soap_actions.get(operation_name, "")],
         source=SourceType.extractor,

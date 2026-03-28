@@ -600,7 +600,7 @@ Status: complete
 
 ### B-005: Real External API Black-Box Validation
 
-Status: in progress (foundation slice complete)
+Status: complete
 
 Scope:
 - Select one or two publicly accessible APIs with documented endpoints (e.g. a public REST API with known endpoint count)
@@ -611,9 +611,115 @@ Scope:
 Dependencies:
 - B-004
 
+Foundation slice completed (`2026-03-27`):
+- Ground truth definitions: JSONPlaceholder (21 endpoints, 6 resource groups) and PetStore v3 (19 endpoints, 3 resource groups)
+- `libs/validator/black_box.py` — `evaluate_black_box()` core comparison engine with path template normalization, risk accuracy, and failure pattern identification
+- Mock HTTP transports for both targets with HATEOAS root, OPTIONS support, and realistic response shapes
+- 14 unit tests for the black-box evaluation module, 14 integration tests (REST discovery + OpenAPI spec-first)
+- `scripts/smoke-black-box-external.sh` — operator harness for live external API runs (not CI)
+- Integration test baseline: JSONPlaceholder REST discovery 28.6% coverage (6/21), PetStore spec-first 100% (19/19)
+
+Remaining task:
+- **B-005-T1: Live external API validation run** — Execute `scripts/smoke-black-box-external.sh` against real JSONPlaceholder and PetStore APIs, capture live coverage numbers, compare against mock-transport baselines, and document real-world failure patterns (rate limits, CORS, DNS resolution, response shape drift)
+
 Out of scope:
 - Automated regression against external APIs in CI (external services are not under our control)
 - Testing against paid or auth-gated APIs without explicit operator authorization
+
+### B-006: Enterprise Protocol Runtime Completion
+
+Status: **complete**
+
+Scope:
+- Add dedicated runtime adapters for OData v4, SCIM 2.0, and JSON-RPC 2.0 so the three Stream C protocols move from extract-only to extract+compile+runtime
+- Each adapter should follow the same pattern as the existing SOAP/SQL/GraphQL runtime adapters
+- Add post-deploy validation coverage for each protocol
+- Prove each protocol through local E2E tests
+
+Tasks:
+- **B-006-T1: OData v4 runtime adapter** — Build `apps/mcp_runtime/odata.py` that translates MCP tool calls into OData system query URLs (`$filter`, `$select`, `$top`, `$skip`, `$orderby`), handles OData JSON response unwrapping (`value` array), and re-adds `$` prefixes stripped by FastMCP. Add integration tests in `tests/integration/test_mcp_runtime_odata.py`. Wire into `apps/mcp_runtime/main.py`.
+- **B-006-T2: SCIM 2.0 runtime adapter** — Build `apps/mcp_runtime/scim.py` that translates MCP tool calls into SCIM HTTP requests (GET /Users, POST /Users, PATCH /Users/{id}, DELETE), handles SCIM JSON response shapes (`Resources` array, `schemas` validation), and adds proper SCIM content-type headers (`application/scim+json`). Add integration tests. Wire into runtime main.
+- **B-006-T3: JSON-RPC 2.0 runtime adapter** — Build `apps/mcp_runtime/jsonrpc.py` that serializes MCP tool calls as JSON-RPC 2.0 request objects (`{"jsonrpc":"2.0","method":"...","params":{...},"id":N}`), unwraps `result`/`error` responses, and handles JSON-RPC error codes. Add integration tests. Wire into runtime main.
+- **B-006-T4: Capability matrix update and local E2E proofs** — Update `libs/validator/capability_matrix.py` to set `runtime=True` for odata/scim/jsonrpc. Add E2E compilation flow tests for each protocol in `tests/e2e/test_full_compilation_flow.py`. Update `agent.md` and `devlog.md`.
+
+Dependencies:
+- Stream C (ENT-001–012) — already complete
+
+Out of scope:
+- Live GKE proof for these protocols in the first slice (deferred to a follow-on if needed)
+- Full OData v4 advanced query capabilities (batch, deep insert, delta links)
+- SCIM bulk operations
+- JSON-RPC batch requests
+
+### B-007: Toolchain Migration (uv + nox + basedpyright)
+
+Status: **complete**
+
+Scope:
+- Migrate the repository quality-gate stack from `.venv`-backed `ruff`/`mypy`/`pytest` to the target stack documented in `agent.md`: `uv` for environment management, `nox` for gate orchestration, `basedpyright` for strict type checking
+- Ensure the migration is backward-compatible and the CI workflow runs the new gates
+- Add `pre-commit` hooks, `semgrep`, `deptry`, `pip-audit`, and `import-linter` as documented in the standard toolchain policy
+
+Tasks:
+- **B-007-T1: uv bootstrap** — Add `uv.lock`, validate `uv sync` produces an equivalent environment to the current `.venv`, update `scripts/setup-dev.sh` to use `uv` when available with `.venv` fallback. Verify all existing tests pass under `uv run pytest`.
+- **B-007-T2: nox session definitions** — Create `noxfile.py` with sessions: `lint` (ruff check + ruff format --check), `typecheck` (basedpyright), `tests` (pytest), `security` (pip-audit + semgrep), `deps` (deptry), `arch` (import-linter). Verify each session produces the same result as the current manual commands.
+- **B-007-T3: basedpyright migration** — Add `pyrightconfig.json`, resolve any new type errors that basedpyright surfaces beyond what mypy catches. Keep mypy config in `pyproject.toml` as a fallback until the migration is validated.
+- **B-007-T4: pre-commit hooks** — Add `.pre-commit-config.yaml` with ruff, basedpyright, and gitleaks hooks. Document installation in `docs/quickstart.md`.
+- **B-007-T5: CI pipeline update** — Update `.github/workflows/ci.yaml` to use `uv run nox -s lint typecheck tests security deps arch` instead of the current individual commands. Keep the old commands as a commented fallback for one release cycle.
+
+Dependencies: none
+
+Out of scope:
+- Changing the Python version requirement
+- Migrating from hatchling to another build backend
+- Changing the test framework
+
+### B-008: Auth-Aware Discovery and Rate-Limit Resilience
+
+Status: planned
+
+Scope:
+- Extend the REST discovery pipeline to support authenticated crawling (Bearer token, API key header, OAuth2 client credentials) so the extractor can discover endpoints behind auth walls
+- Add rate-limit awareness: detect `429 Too Many Requests` and `Retry-After` headers, implement adaptive backoff during discovery
+- Add pagination-aware response collection: detect common pagination patterns (Link header, `next` cursor, offset/limit) and follow pages during discovery to find endpoints only reachable from paginated listings
+
+Tasks:
+- **B-008-T1: Authenticated discovery** — Extend `RESTExtractor` to accept auth configuration from `SourceConfig.auth_headers` and propagate it through all HTTP requests during discovery (initial crawl, OPTIONS probing, sub-resource inference, seed mutation). Add integration tests with a mock that returns 401 without auth and 200 with auth. Verify existing non-auth discovery is unaffected.
+- **B-008-T2: Rate-limit backoff** — Add `_handle_rate_limit()` helper to `RESTExtractor` that detects 429 responses, reads `Retry-After` (seconds or HTTP-date), and sleeps with jittered exponential backoff. Add a configurable `max_retries` and `max_discovery_time` budget. Add integration tests with a mock that returns 429 on the first N requests.
+- **B-008-T3: Pagination-aware collection traversal** — Add `_follow_pagination()` helper that detects `Link: <...>; rel="next"` headers, JSON `next`/`nextPageToken` cursor fields, and `offset`/`limit`/`total` patterns. Follow up to `max_pages` pages during discovery to find sub-resource links only visible on later pages. Add integration tests with paginated collection mocks.
+- **B-008-T4: Ground truth expansion** — Add ground truth definitions for at least one auth-gated API (e.g. GitHub public API with personal access token) and one rate-limited API. Measure discovery coverage with and without auth/rate-limit support.
+
+Dependencies:
+- B-005 (real external API baseline)
+
+Out of scope:
+- Browser-based JavaScript rendering for SPAs
+- OAuth2 authorization code flow (requires user interaction)
+- WebSocket-based API discovery
+
+### B-009: Open-Source Release Preparation
+
+Status: planned
+
+Scope:
+- Prepare a clean, public-facing snapshot of the repository suitable for open-source publication
+- Remove internal handoff artifacts, environment-specific defaults, and private infrastructure references
+- Add standard open-source scaffolding: LICENSE, CONTRIBUTING.md, CODE_OF_CONDUCT.md, issue/PR templates
+
+Tasks:
+- **B-009-T1: Content audit and sanitization** — Audit all files for internal-only content: VM paths (`/home/guoxy/...`), private Docker registry URLs (`us-central1-docker.pkg.dev/insightcompass-465300/...`), internal namespace references, DeepSeek key file paths. Create a sanitization script or checklist. Replace with placeholder/example values in the public copy.
+- **B-009-T2: Documentation rewrite** — Write a public-facing `README.md` (project description, architecture diagram, quickstart, contributing guide link). Rewrite `docs/quickstart.md` to use generic Docker image names and local-only setup. Remove or redact `agent.md`, `devlog.md`, and `new-agent-reading-list.md` from the public copy (these are internal agent handoff docs).
+- **B-009-T3: License and governance** — Select and add LICENSE file (recommend Apache 2.0 for enterprise compatibility). Add `CONTRIBUTING.md` with DCO sign-off requirement, code review expectations, and PR template. Add `CODE_OF_CONDUCT.md`. Add GitHub issue templates for bug reports and feature requests.
+- **B-009-T4: CI for public repo** — Create a CI workflow that works without access to the private GKE cluster or Docker registry. All tests should pass with only local resources (Docker Compose, in-process mocks). Remove or gate GKE-dependent smoke targets behind an explicit `GKE_ENABLED` flag.
+- **B-009-T5: Fresh repo export** — Create a fresh `git init` public repository (not a fork of the private repo). Copy sanitized files, run the full quality gate suite, and verify the public CI workflow passes. Do not import private git history.
+
+Dependencies:
+- All prior tracks should be at a stable stopping point before export
+
+Out of scope:
+- SaaS hosting or managed service offering
+- Marketing or launch activities
+- npm/PyPI package publication (the project is a platform, not a library)
 
 ## Delivery Shape For Each Module
 

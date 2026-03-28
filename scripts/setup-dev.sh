@@ -7,9 +7,15 @@ VENV_DIR="${ROOT_DIR}/.venv"
 
 cd "${ROOT_DIR}"
 
-python3 -m venv "${VENV_DIR}"
-"${VENV_DIR}/bin/pip" install --upgrade pip
-"${VENV_DIR}/bin/pip" install -e ".[all]"
+if command -v uv &>/dev/null; then
+    echo "Using uv for environment management."
+    uv sync --extra all
+else
+    echo "uv not found — falling back to pip + venv."
+    python3 -m venv "${VENV_DIR}"
+    "${VENV_DIR}/bin/pip" install --upgrade pip
+    "${VENV_DIR}/bin/pip" install -e ".[all]"
+fi
 
 docker compose -f deploy/docker-compose.yaml config >/dev/null
 

@@ -1,0 +1,23 @@
+{
+    "include": ["libs", "apps"],
+    "exclude": [
+        "**/tests/**",
+        "**/__pycache__",
+        ".nox",
+        ".venv",
+        "migrations",
+        "apps/proof_runner/grpc_mock.py",
+        "apps/mcp_runtime/grpc_stream.py",
+        "apps/mcp_runtime/grpc_unary.py"
+    ],
+    "pythonVersion": "3.11",
+    "pythonPlatform": "Linux",
+    "venvPath": ".",
+    "venv": ".venv",
+    "typeCheckingMode": "standard",
+    "reportMissingImports": "warning",
+    "reportMissingTypeStubs": false,
+    "reportUnusedImport": "warning",
+    "reportUnusedVariable": "warning",
+    "reportUnsupportedDunderAll": false
+}

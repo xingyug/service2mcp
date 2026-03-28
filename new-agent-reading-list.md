@@ -6,6 +6,13 @@ Current pause-point note:
 - The project has also been synced to the private GitHub repo `xingyug/service2mcp` on `main`; if a public open-source release happens later, treat it as a fresh export into a new public repo without carrying over this private/internal history.
 - Before every `git push`, run `make gitleaks` (mandatory policy; see `agent.md` Git Conventions and `scripts/git-hooks/pre-push.sample`).
 
+Next directions (spec tasks defined in `docs/post-sdd-modular-expansion-plan.md`):
+- **B-005-T1**: Run live external API validation against real JSONPlaceholder and PetStore APIs
+- **B-006** (4 tasks): Enterprise protocol runtime completion — OData/SCIM/JSON-RPC runtime adapters
+- **B-007** (5 tasks): Toolchain migration — uv + nox + basedpyright + pre-commit + security gates
+- **B-008** (4 tasks): Auth-aware discovery, rate-limit backoff, pagination-aware traversal
+- **B-009** (5 tasks): Open-source release preparation — content audit, docs rewrite, license, public CI, fresh export
+
 Core documentation:
 - `tool-compiler-v2-sdd.md`: `../tool-compiler-v2-sdd.md`
 - `agent.md`: `./agent.md`
