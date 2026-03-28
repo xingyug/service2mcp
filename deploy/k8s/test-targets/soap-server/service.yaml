@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: soap-server
+  namespace: tool-compiler-test-targets
+  labels:
+    app: soap-server
+    app.kubernetes.io/name: soap-server
+    app.kubernetes.io/part-of: tool-compiler-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: soap
+spec:
+  type: ClusterIP
+  selector:
+    app: soap-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http

@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sql-postgres
+  namespace: tool-compiler-test-targets
+  labels:
+    app: sql-postgres
+    app.kubernetes.io/name: sql-postgres
+    app.kubernetes.io/part-of: tool-compiler-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: sql
+spec:
+  type: ClusterIP
+  selector:
+    app: sql-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres

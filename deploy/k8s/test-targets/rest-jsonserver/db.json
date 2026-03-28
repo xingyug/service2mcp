@@ -1,0 +1,32 @@
+{
+  "posts": [
+    {"id": 1, "userId": 1, "title": "sunt aut facere repellat provident", "body": "quia et suscipit..."},
+    {"id": 2, "userId": 1, "title": "qui est esse", "body": "est rerum tempore..."},
+    {"id": 3, "userId": 2, "title": "ea molestias quasi exercitationem", "body": "et iusto sed quo..."}
+  ],
+  "comments": [
+    {"id": 1, "postId": 1, "name": "id labore ex et quam laborum", "email": "Eliseo@gardner.biz", "body": "laudantium enim quasi..."},
+    {"id": 2, "postId": 1, "name": "quo vero reiciendis velit similique", "email": "Jayne_Kuhic@sydney.com", "body": "est natus enim..."},
+    {"id": 3, "postId": 2, "name": "odio adipisci rerum aut animi", "email": "Nikita@garfield.biz", "body": "quia molestiae reprehenderit..."}
+  ],
+  "albums": [
+    {"id": 1, "userId": 1, "title": "quidem molestiae enim"},
+    {"id": 2, "userId": 1, "title": "sunt qui excepturi placeat culpa"},
+    {"id": 3, "userId": 2, "title": "omnis laborum odio"}
+  ],
+  "photos": [
+    {"id": 1, "albumId": 1, "title": "accusamus beatae ad facilis", "url": "https://via.placeholder.com/600/92c952", "thumbnailUrl": "https://via.placeholder.com/150/92c952"},
+    {"id": 2, "albumId": 1, "title": "reprehenderit est deserunt velit", "url": "https://via.placeholder.com/600/771796", "thumbnailUrl": "https://via.placeholder.com/150/771796"},
+    {"id": 3, "albumId": 2, "title": "officia porro iure quia iusto", "url": "https://via.placeholder.com/600/24f355", "thumbnailUrl": "https://via.placeholder.com/150/24f355"}
+  ],
+  "todos": [
+    {"id": 1, "userId": 1, "title": "delectus aut autem", "completed": false},
+    {"id": 2, "userId": 1, "title": "quis ut nam facilis et officia qui", "completed": false},
+    {"id": 3, "userId": 2, "title": "fugiat veniam minus", "completed": true}
+  ],
+  "users": [
+    {"id": 1, "name": "Leanne Graham", "username": "Bret", "email": "Sincere@april.biz", "phone": "1-770-736-8031 x56442", "website": "hildegard.org"},
+    {"id": 2, "name": "Ervin Howell", "username": "Antonette", "email": "Shanna@melissa.tv", "phone": "010-692-6593 x09125", "website": "anastasia.net"},
+    {"id": 3, "name": "Clementine Bauch", "username": "Samantha", "email": "Nathan@yesenia.net", "phone": "1-463-123-4447", "website": "ramiro.info"}
+  ]
+}

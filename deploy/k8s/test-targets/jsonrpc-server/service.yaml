@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: jsonrpc-server
+  namespace: tool-compiler-test-targets
+  labels:
+    app: jsonrpc-server
+    app.kubernetes.io/name: jsonrpc-server
+    app.kubernetes.io/part-of: tool-compiler-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: jsonrpc
+spec:
+  type: ClusterIP
+  selector:
+    app: jsonrpc-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http

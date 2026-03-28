@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jsonrpc-server
+  namespace: tool-compiler-test-targets
+  labels:
+    app: jsonrpc-server
+    app.kubernetes.io/name: jsonrpc-server
+    app.kubernetes.io/part-of: tool-compiler-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: jsonrpc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jsonrpc-server
+  template:
+    metadata:
+      labels:
+        app: jsonrpc-server
+        app.kubernetes.io/name: jsonrpc-server
+        app.kubernetes.io/component: test-target
+        tool-compiler.io/protocol: jsonrpc
+    spec:
+      containers:
+        - name: jsonrpc-server
+          image: us-central1-docker.pkg.dev/insightcompass-465300/tool-compiler/test-target-jsonrpc:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30

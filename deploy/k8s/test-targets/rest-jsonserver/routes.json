@@ -1,0 +1,7 @@
+{
+  "/posts/:postId/comments": "/comments?postId=:postId",
+  "/users/:userId/posts": "/posts?userId=:userId",
+  "/users/:userId/albums": "/albums?userId=:userId",
+  "/users/:userId/todos": "/todos?userId=:userId",
+  "/albums/:albumId/photos": "/photos?albumId=:albumId"
+}

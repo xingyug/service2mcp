@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scim-server
+  namespace: tool-compiler-test-targets
+  labels:
+    app: scim-server
+    app.kubernetes.io/name: scim-server
+    app.kubernetes.io/part-of: tool-compiler-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: scim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scim-server
+  template:
+    metadata:
+      labels:
+        app: scim-server
+        app.kubernetes.io/name: scim-server
+        app.kubernetes.io/component: test-target
+        tool-compiler.io/protocol: scim
+    spec:
+      containers:
+        - name: scim-server
+          image: us-central1-docker.pkg.dev/insightcompass-465300/tool-compiler/test-target-scim:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30

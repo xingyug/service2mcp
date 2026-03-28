@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: odata-server
+  namespace: tool-compiler-test-targets
+  labels:
+    app: odata-server
+    app.kubernetes.io/name: odata-server
+    app.kubernetes.io/part-of: tool-compiler-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: odata
+spec:
+  type: ClusterIP
+  selector:
+    app: odata-server
+  ports:
+    - port: 8000
+      targetPort: 8000
+      protocol: TCP
+      name: http

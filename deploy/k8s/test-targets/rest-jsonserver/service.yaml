@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rest-jsonserver
+  namespace: tool-compiler-test-targets
+  labels:
+    app: rest-jsonserver
+    app.kubernetes.io/name: rest-jsonserver
+    app.kubernetes.io/part-of: tool-compiler-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: rest
+spec:
+  type: ClusterIP
+  selector:
+    app: rest-jsonserver
+  ports:
+    - port: 3000
+      targetPort: 3000
+      protocol: TCP
+      name: http
