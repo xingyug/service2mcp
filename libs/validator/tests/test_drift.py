@@ -228,7 +228,7 @@ class TestDriftReportRoundTrip:
         data = report.model_dump_json()
         restored = DriftReport.model_validate_json(data)
 
-        assert restored.service_id == report.service_id
+        assert restored.service_name == report.service_name
         assert restored.has_drift == report.has_drift
         assert restored.schema_changes == report.schema_changes
         assert restored.checked_at == report.checked_at

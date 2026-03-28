@@ -90,6 +90,10 @@ class SCIMExtractor:
         for resource in resources:
             name: str = resource.get("name", "")
             if not name:
+                logger.warning(
+                    "SCIM resource without 'name' field skipped: %s",
+                    resource.get("id", "<unknown>"),
+                )
                 continue
             resource_names.append(name)
             plural = f"{name}s"

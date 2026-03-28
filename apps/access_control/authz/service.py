@@ -114,7 +114,9 @@ class AuthzService:
 
     async def evaluate(self, payload: PolicyEvaluationRequest) -> PolicyEvaluationResponse:
         result = await self._session.scalars(
-            select(Policy).where(Policy.subject_type == payload.subject_type)
+            select(Policy)
+            .where(Policy.subject_type == payload.subject_type)
+            .order_by(Policy.id)
         )
         candidates = [
             policy

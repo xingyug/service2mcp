@@ -385,7 +385,11 @@ def _parse_sse_events(payload: str) -> list[dict[str, Any]]:
             current_event["event"] = line.partition(":")[2].strip()
             continue
         if line.startswith("data:"):
-            current_event["data"] = json.loads(line.partition(":")[2].strip())
+            raw_data = line.partition(":")[2].strip()
+            try:
+                current_event["data"] = json.loads(raw_data)
+            except json.JSONDecodeError:
+                current_event["data"] = raw_data
 
     if current_event:
         events.append(current_event)

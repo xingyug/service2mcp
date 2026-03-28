@@ -21,7 +21,7 @@ class DriftDetail(BaseModel):
 class DriftReport(BaseModel):
     """Report of differences between deployed IR and live source."""
 
-    service_id: str
+    service_name: str
     checked_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     has_drift: bool
     added_operations: list[str] = Field(default_factory=list)
@@ -140,7 +140,7 @@ def detect_drift(deployed_ir: ServiceIR, live_ir: ServiceIR) -> DriftReport:
     has_drift = bool(added or removed or modified or schema_changes)
 
     return DriftReport(
-        service_id=deployed_ir.service_name,
+        service_name=deployed_ir.service_name,
         has_drift=has_drift,
         added_operations=added,
         removed_operations=removed,

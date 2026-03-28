@@ -224,9 +224,12 @@ class LLMJudge:
                 if op_id not in op_map:
                     continue
 
-                accuracy = _clamp(float(item.get("accuracy", 0.5)))
-                completeness = _clamp(float(item.get("completeness", 0.5)))
-                clarity = _clamp(float(item.get("clarity", 0.5)))
+                try:
+                    accuracy = _clamp(float(item.get("accuracy", 0.5)))
+                    completeness = _clamp(float(item.get("completeness", 0.5)))
+                    clarity = _clamp(float(item.get("clarity", 0.5)))
+                except (ValueError, TypeError):
+                    accuracy = completeness = clarity = 0.5
                 overall = (accuracy * 0.35 + completeness * 0.35 + clarity * 0.30)
                 feedback = item.get("feedback", "")
 

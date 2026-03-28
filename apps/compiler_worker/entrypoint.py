@@ -195,7 +195,7 @@ def main() -> int:
         for process in processes:
             if process.poll() is None:
                 process.wait(timeout=30)
-    celery_output_thread.join(timeout=1)
+        celery_output_thread.join(timeout=1)
 
 
 if __name__ == "__main__":

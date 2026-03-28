@@ -214,7 +214,14 @@ class AuthnService:
 def load_jwt_settings() -> JWTSettings:
     """Load JWT settings from environment variables."""
 
-    secret = os.getenv("ACCESS_CONTROL_JWT_SECRET", "dev-secret")
+    secret = os.getenv("ACCESS_CONTROL_JWT_SECRET")
+    if not secret:
+        env = os.getenv("ENV", "dev")
+        if env.lower() not in ("dev", "development", "test"):
+            raise RuntimeError(
+                "ACCESS_CONTROL_JWT_SECRET must be set in non-dev environments"
+            )
+        secret = "dev-secret"
     issuer = os.getenv("ACCESS_CONTROL_JWT_ISSUER")
     audience = os.getenv("ACCESS_CONTROL_JWT_AUDIENCE")
     return JWTSettings(secret=secret, issuer=issuer, audience=audience)

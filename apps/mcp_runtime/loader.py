@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import inspect
 import keyword
+import logging
+import os
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -53,10 +55,15 @@ def create_runtime_server(name: str = "generic-mcp-runtime") -> FastMCP:
 
     # The runtime is exposed behind Kubernetes service DNS names, not localhost.
     # FastMCP's localhost defaults reject those Host headers with 421 responses.
+    # Allow operators to re-enable rebinding protection via env var when the
+    # runtime is exposed directly to untrusted clients.
+    disable_rebinding_protection = os.getenv(
+        "MCP_DISABLE_DNS_REBINDING_PROTECTION", "true"
+    ).lower() in ("true", "1", "yes")
     return FastMCP(
         name=name,
         transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=False,
+            enable_dns_rebinding_protection=not disable_rebinding_protection,
         ),
     )
 
@@ -198,6 +205,11 @@ def register_ir_resources(
     registered: list[ResourceDefinition] = []
     for resource_def in service_ir.resource_definitions:
         if resource_def.content_type != "static":
+            logging.getLogger(__name__).info(
+                "Skipping non-static resource %r (content_type=%s)",
+                resource_def.name,
+                resource_def.content_type,
+            )
             continue
 
         static_content = resource_def.content or ""

@@ -165,8 +165,14 @@ class OpenAPIExtractor:
         self._resolve_refs(spec, spec)
         return spec
 
-    def _resolve_refs(self, node: Any, root: JSONDict) -> None:
-        """Recursively resolve $ref pointers in-place."""
+    def _resolve_refs(self, node: Any, root: JSONDict, _seen: set[int] | None = None) -> None:
+        """Recursively resolve $ref pointers in-place (with cycle detection)."""
+        if _seen is None:
+            _seen = set()
+        node_id = id(node)
+        if node_id in _seen:
+            return
+        _seen.add(node_id)
         if isinstance(node, dict):
             if "$ref" in node and len(node) == 1:
                 ref_path = node["$ref"]
@@ -174,10 +180,10 @@ class OpenAPIExtractor:
                 node.clear()
                 node.update(resolved)
             for v in node.values():
-                self._resolve_refs(v, root)
+                self._resolve_refs(v, root, _seen)
         elif isinstance(node, list):
             for item in node:
-                self._resolve_refs(item, root)
+                self._resolve_refs(item, root, _seen)
 
     def _follow_ref(self, ref: str, root: JSONDict) -> JSONDict:
         """Follow a JSON pointer like '#/components/schemas/Pet'."""

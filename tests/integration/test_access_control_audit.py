@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+import time
 from collections.abc import AsyncIterator, Iterator
 
 import httpx
@@ -17,6 +22,22 @@ from apps.access_control.main import create_app as create_access_control_app
 from apps.compiler_api.dispatcher import InMemoryCompilationDispatcher
 from apps.compiler_api.main import create_app as create_compiler_api_app
 from libs.db_models import Base
+
+_TEST_JWT_SECRET = "test-secret"
+
+
+def _make_test_jwt(subject: str = "test-user", secret: str = _TEST_JWT_SECRET) -> str:
+    """Create a minimal HS256 JWT for integration tests."""
+
+    def _b64(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    header = _b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    now = int(time.time())
+    payload = _b64(json.dumps({"sub": subject, "iat": now, "exp": now + 3600}).encode())
+    signing_input = f"{header}.{payload}".encode()
+    signature = _b64(hmac.new(secret.encode(), signing_input, hashlib.sha256).digest())
+    return f"{header}.{payload}.{signature}"
 
 
 def _to_asyncpg_url(connection_url: str) -> str:
@@ -102,7 +123,11 @@ async def test_policy_change_creates_audit_log_entry(
     )
     assert created.status_code == 201
 
-    logs = await access_control_client.get("/api/v1/audit/logs", params={"actor": "admin-user"})
+    logs = await access_control_client.get(
+        "/api/v1/audit/logs",
+        params={"actor": "admin-user"},
+        headers={"Authorization": f"Bearer {_make_test_jwt()}"},
+    )
     assert logs.status_code == 200
     assert logs.json()["items"][0]["action"] == "policy.created"
     assert logs.json()["items"][0]["resource"] == "billing-api"
@@ -123,7 +148,11 @@ async def test_compilation_submission_is_audited(
     )
     assert created.status_code == 202
 
-    logs = await access_control_client.get("/api/v1/audit/logs", params={"actor": "compiler-user"})
+    logs = await access_control_client.get(
+        "/api/v1/audit/logs",
+        params={"actor": "compiler-user"},
+        headers={"Authorization": f"Bearer {_make_test_jwt()}"},
+    )
     assert logs.status_code == 200
     assert logs.json()["items"][0]["action"] == "compilation.triggered"
     assert logs.json()["items"][0]["resource"] == "billing-api"

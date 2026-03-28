@@ -162,9 +162,9 @@ class AnthropicLLMClient:
             messages=[{"role": "user", "content": prompt}],
         )
         return LLMResponse(
-            content=response.content[0].text,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
+            content=response.content[0].text if response.content else "",
+            input_tokens=response.usage.input_tokens if response.usage else 0,
+            output_tokens=response.usage.output_tokens if response.usage else 0,
         )
 
 
@@ -193,7 +193,7 @@ class OpenAILLMClient:
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
         )
-        content = response.choices[0].message.content or ""
+        content = response.choices[0].message.content or "" if response.choices else ""
         usage = response.usage
         return LLMResponse(
             content=content,
@@ -494,7 +494,10 @@ class IREnhancer:
                 continue
 
             enh = enhancements[op.id]
-            op_confidence = float(enh.get("confidence", 0.7))
+            try:
+                op_confidence = float(enh.get("confidence", 0.7))
+            except (ValueError, TypeError):
+                op_confidence = 0.7
 
             # Build enhanced params
             param_enhancements = {p["name"]: p for p in enh.get("params", []) if "name" in p}
@@ -502,12 +505,16 @@ class IREnhancer:
             for p in op.params:
                 if p.name in param_enhancements:
                     pe = param_enhancements[p.name]
+                    try:
+                        param_confidence = float(pe.get("confidence", 0.7))
+                    except (ValueError, TypeError):
+                        param_confidence = 0.7
                     new_params.append(
                         p.model_copy(
                             update={
                                 "description": pe.get("description", p.description),
                                 "source": SourceType.llm,
-                                "confidence": float(pe.get("confidence", 0.7)),
+                                "confidence": param_confidence,
                             }
                         )
                     )

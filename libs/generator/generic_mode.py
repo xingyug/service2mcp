@@ -251,9 +251,15 @@ def _upstream_port(base_url: str) -> int:
     parsed = urlparse(base_url)
     if parsed.port is not None:
         return parsed.port
-    if parsed.scheme == "http":
-        return 80
-    return 443
+    scheme_default_ports: dict[str, int] = {
+        "http": 80,
+        "https": 443,
+        "grpc": 50051,
+        "grpcs": 443,
+        "ws": 80,
+        "wss": 443,
+    }
+    return scheme_default_ports.get(parsed.scheme, 443)
 
 
 def _route_base_name(service_ir: ServiceIR, config: GenericManifestConfig) -> str:

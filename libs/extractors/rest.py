@@ -301,7 +301,7 @@ class RESTExtractor:
             if not (leaf.startswith("{") and leaf.endswith("}")):
                 # Use resource-specific param name to avoid duplicate {id}
                 # when depth-2+ paths are inferred iteratively.
-                singular = leaf.rstrip("s") if leaf.endswith("s") and len(leaf) > 2 else leaf
+                singular = leaf[:-1] if leaf.endswith("s") and len(leaf) > 2 else leaf
                 param_name = f"{singular}_id"
                 candidate = f"{clean}/{{{param_name}}}"
                 candidate_url = urljoin(base_url, candidate)

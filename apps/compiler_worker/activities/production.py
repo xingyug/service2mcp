@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -49,6 +50,8 @@ from libs.ir.models import (
 )
 from libs.registry_client.models import ArtifactRecordPayload, ArtifactVersionCreate
 from libs.validator import PostDeployValidator, PreDeployValidator
+
+_logger = logging.getLogger(__name__)
 
 ToolInvoker = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 RuntimeHttpClientFactory = Callable[[str], httpx.AsyncClient]
@@ -764,6 +767,12 @@ def create_default_activity_registry(
         manifest_payload = rollback_payload.get("manifest_set")
         deployment_payload = rollback_payload.get("deployment")
         if not isinstance(manifest_payload, dict) or not isinstance(deployment_payload, dict):
+            _logger.warning(
+                "deploy_rollback skipped: invalid rollback payload types "
+                "(manifest_payload=%s, deployment_payload=%s)",
+                type(manifest_payload).__name__,
+                type(deployment_payload).__name__,
+            )
             return
         manifest_set = _deserialize_manifest_set(manifest_payload)
         deployment = DeploymentResult(
@@ -781,6 +790,10 @@ def create_default_activity_registry(
         rollback_payload = result.rollback_payload or {}
         route_config = rollback_payload.get("route_config")
         if not isinstance(route_config, dict):
+            _logger.warning(
+                "route_rollback skipped: route_config is %s, not dict",
+                type(route_config).__name__,
+            )
             return
         publication = cast(dict[str, Any] | None, rollback_payload.get("publication"))
         await resolved_route_publisher.rollback(route_config, publication)

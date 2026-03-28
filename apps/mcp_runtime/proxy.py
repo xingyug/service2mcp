@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import time
@@ -41,6 +42,8 @@ from libs.ir.models import (
     TruncationPolicy,
 )
 from libs.observability.tracing import trace_span
+
+logger = logging.getLogger(__name__)
 
 _PATH_PARAM_PATTERN = re.compile(r"{([^{}]+)}")
 _WRITE_METHODS = {"POST", "PUT", "PATCH"}
@@ -181,6 +184,7 @@ class RuntimeProxy:
                 )
                 raise ToolError(str(exc)) from exc
 
+            _failure_recorded = False
             try:
                 if operation.sql is not None:
                     sql_result = await self._perform_sql(operation, arguments)
@@ -247,6 +251,7 @@ class RuntimeProxy:
                 response = await self._perform_request(operation, arguments)
                 soap_fault = self._soap_fault_message(response, operation)
                 if soap_fault is not None:
+                    _failure_recorded = True
                     breaker.record_failure()
                     self._observability.record_tool_call(operation.id, "error")
                     self._observability.record_upstream_error(operation.id, "soap_fault")
@@ -260,6 +265,7 @@ class RuntimeProxy:
                     raise tool_error
 
                 if response.is_error:
+                    _failure_recorded = True
                     breaker.record_failure()
                     self._observability.record_tool_call(operation.id, "error")
                     self._observability.record_upstream_error(operation.id, "upstream_status")
@@ -283,6 +289,7 @@ class RuntimeProxy:
 
                 graphql_error = self._graphql_error_message(response, operation)
                 if graphql_error is not None:
+                    _failure_recorded = True
                     breaker.record_failure()
                     self._observability.record_tool_call(operation.id, "error")
                     self._observability.record_upstream_error(operation.id, "graphql_error")
@@ -297,6 +304,7 @@ class RuntimeProxy:
 
                 result, truncated = self._sanitize_response(response, operation)
             except httpx.TimeoutException as exc:
+                _failure_recorded = True
                 breaker.record_failure()
                 self._observability.record_tool_call(operation.id, "error")
                 self._observability.record_upstream_error(operation.id, "timeout")
@@ -308,6 +316,7 @@ class RuntimeProxy:
                 )
                 raise ToolError(f"Upstream timeout for operation {operation.id}.") from exc
             except httpx.HTTPError as exc:
+                _failure_recorded = True
                 breaker.record_failure()
                 self._observability.record_tool_call(operation.id, "error")
                 self._observability.record_upstream_error(operation.id, "http_error")
@@ -318,8 +327,13 @@ class RuntimeProxy:
                     extra={"extra_fields": {"operation_id": operation.id}},
                 )
                 raise ToolError(f"Upstream request failed for {operation.id}: {exc}") from exc
-            except ToolError as exc:
-                span.record_exception(exc)
+            except ToolError:
+                # ToolErrors from the HTTP response path (soap_fault, is_error,
+                # graphql_error, timeout, httpx.HTTPError) already call
+                # breaker.record_failure() before raising.
+                # ToolErrors from SQL/gRPC/stream paths need failure accounting.
+                if not _failure_recorded:
+                    breaker.record_failure()
                 raise
             else:
                 breaker.record_success()
@@ -867,7 +881,7 @@ class RuntimeProxy:
 
         expires_at = None
         expires_in = payload.get("expires_in")
-        if isinstance(expires_in, int | float) and expires_in > 0:
+        if isinstance(expires_in, int | float) and expires_in >= 0:
             expires_at = now + float(expires_in)
         self._oauth_token_cache[cache_key] = (access_token, expires_at)
         return access_token
@@ -1576,7 +1590,7 @@ def _coerce_xml_text(text: str | None) -> Any:
             return int(stripped)
         except ValueError:
             return stripped
-    if re.fullmatch(r"-?[0-9]+\\.[0-9]+", stripped):
+    if re.fullmatch(r"-?[0-9]+\.[0-9]+", stripped):
         try:
             return float(stripped)
         except ValueError:
@@ -1939,6 +1953,13 @@ def _normalize_form_value(value: Any) -> str:
     return str(value)
 
 
+def _is_same_origin(base_url: str, resolved_url: str) -> bool:
+    """Check that resolved_url shares the same scheme+host+port as base_url."""
+    base = urlsplit(base_url)
+    resolved = urlsplit(resolved_url)
+    return (base.scheme == resolved.scheme and base.netloc == resolved.netloc)
+
+
 def _extract_async_status_url(async_job: AsyncJobConfig, response: httpx.Response) -> str | None:
     if async_job.status_url_source == "location_header":
         location_value = response.headers.get("Location") or response.headers.get(
@@ -1947,7 +1968,16 @@ def _extract_async_status_url(async_job: AsyncJobConfig, response: httpx.Respons
         if not isinstance(location_value, str) or not location_value:
             return None
         request_url = str(response.request.url) if response.request is not None else ""
-        return urljoin(request_url, location_value)
+        resolved = urljoin(request_url, location_value)
+        if request_url and not _is_same_origin(request_url, resolved):
+            logger.warning(
+                "Async poll URL %r resolved to different origin than request %r; "
+                "blocking potential SSRF",
+                resolved,
+                request_url,
+            )
+            return None
+        return resolved
 
     payload = _maybe_parse_json_payload(response)
     if payload is None or async_job.status_url_field is None:
@@ -1956,7 +1986,16 @@ def _extract_async_status_url(async_job: AsyncJobConfig, response: httpx.Respons
     if not isinstance(url_value, str) or not url_value:
         return None
     request_url = str(response.request.url) if response.request is not None else ""
-    return urljoin(request_url, url_value)
+    resolved = urljoin(request_url, url_value)
+    if request_url and not _is_same_origin(request_url, resolved):
+        logger.warning(
+            "Async poll URL %r resolved to different origin than request %r; "
+            "blocking potential SSRF",
+            resolved,
+            request_url,
+        )
+        return None
+    return resolved
 
 
 def _extract_async_status_value(async_job: AsyncJobConfig, response: httpx.Response) -> str | None:

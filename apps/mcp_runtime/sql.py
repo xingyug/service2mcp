@@ -122,7 +122,7 @@ class SQLRuntimeExecutor:
                     inserted_primary_key = [_json_safe_value(value) for value in returned_row]
             row_count = (
                 result.rowcount
-                if result.rowcount is not None and result.rowcount > 0
+                if result.rowcount is not None and result.rowcount >= 0
                 else 1
             )
 

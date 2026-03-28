@@ -184,7 +184,7 @@ class PostDeployValidator:
                 )
                 continue
 
-            if not health_passed or self._tool_invoker is None:
+            if not health_passed or not tool_listing_passed or self._tool_invoker is None:
                 audit_results.append(
                     ToolAuditResult(
                         tool_name=operation.id,
@@ -507,10 +507,7 @@ def _supported_descriptor_for_operation(
     if not descriptors:
         return None
     if len(descriptors) > 1:
-        raise ValueError(
-            f"Post-deploy validation does not support multiple streaming descriptors for "
-            f"{operation_id}."
-        )
+        return descriptors[0]
     return descriptors[0]
 
 
