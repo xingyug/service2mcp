@@ -39,6 +39,29 @@ _HTML_FORM_PATTERN = re.compile(
 _PATH_PARAM_PATTERN = re.compile(r"{([^{}]+)}")
 _SUPPORTED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 _MAX_INFERENCE_PASSES = 3
+_STATIC_ASSET_EXTENSIONS = {
+    ".avif",
+    ".bmp",
+    ".css",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".js",
+    ".map",
+    ".mjs",
+    ".png",
+    ".svg",
+    ".ttf",
+    ".webp",
+    ".woff",
+    ".woff2",
+}
+_JSON_SERVER_MARKERS = (
+    "<title>json server</title>",
+    "you're successfully running json server",
+    "congrats!",
+)
 
 
 @dataclass(frozen=True)
@@ -210,6 +233,7 @@ class RESTExtractor:
 
     def _discover(self, base_url: str) -> list[DiscoveredEndpoint]:
         observed: dict[str, _ObservedEndpoint] = {}
+        json_server_relations: dict[str, set[str]] = {}
         queue = [(base_url, 0)]
         visited_pages: set[str] = set()
 
@@ -225,6 +249,14 @@ class RESTExtractor:
                 continue
             if response.status_code >= 400:
                 continue
+
+            discovered_relations = self._bootstrap_json_server(
+                current_url=current_url,
+                response=response,
+                observed=observed,
+            )
+            for parent_name, child_names in discovered_relations.items():
+                json_server_relations.setdefault(parent_name, set()).update(child_names)
 
             for path, source_name in self._extract_candidate_paths(base_url, response):
                 candidate_url = urljoin(base_url, path)
@@ -258,7 +290,11 @@ class RESTExtractor:
         # Running iteratively lets depth-2+ paths (e.g. /users/{id}/posts)
         # be discovered from inferred depth-1 endpoints.
         for _pass in range(_MAX_INFERENCE_PASSES):
-            inferred = self._infer_sub_resources(base_url, observed)
+            inferred = self._infer_sub_resources(
+                base_url,
+                observed,
+                json_server_relations=json_server_relations,
+            )
             if not inferred:
                 break
             observed.update(inferred)
@@ -275,10 +311,74 @@ class RESTExtractor:
             endpoint.freeze() for endpoint in sorted(observed.values(), key=lambda item: item.path)
         ]
 
+    def _bootstrap_json_server(
+        self,
+        *,
+        current_url: str,
+        response: httpx.Response,
+        observed: dict[str, _ObservedEndpoint],
+    ) -> dict[str, set[str]]:
+        content_type = response.headers.get("content-type", "").lower()
+        if "html" not in content_type:
+            return {}
+        if not _looks_like_json_server_html(response.text):
+            return {}
+
+        db_url = _join_relative_url(current_url, "db")
+        try:
+            db_response = self._client.get(db_url)
+        except httpx.HTTPError:
+            return {}
+        if db_response.status_code >= 400:
+            return {}
+
+        try:
+            payload = db_response.json()
+        except Exception:
+            return {}
+        if not _looks_like_json_server_db_payload(payload):
+            return {}
+
+        for resource_name, resource_value in payload.items():
+            if not _looks_like_json_server_resource(resource_name, resource_value):
+                continue
+
+            collection_url = _join_relative_url(current_url, resource_name)
+            collection_path = self._normalize_path(collection_url)
+            self._register_endpoint(
+                observed,
+                path=collection_path,
+                absolute_url=collection_url,
+                methods=_json_server_collection_methods(resource_value),
+                source="json_server_db",
+                confidence=0.98,
+            )
+
+            sample_id = _sample_resource_id(resource_value)
+            if sample_id is None:
+                continue
+
+            singular = resource_name[:-1] if resource_name.endswith("s") else resource_name
+            param_name = f"{_slugify(singular).replace('-', '_')}_id"
+            detail_path = f"{collection_path.rstrip('/')}/{{{param_name}}}"
+            detail_url = _join_relative_url(collection_url, str(sample_id))
+            self._register_endpoint(
+                observed,
+                path=detail_path,
+                absolute_url=detail_url,
+                methods={"GET", "PUT", "PATCH", "DELETE"},
+                source="json_server_db",
+                confidence=0.97,
+            )
+
+        return _infer_json_server_relations(payload)
+
     def _infer_sub_resources(
         self,
         base_url: str,
         observed: dict[str, _ObservedEndpoint],
+        *,
+        json_server_relations: dict[str, set[str]] | None = None,
     ) -> dict[str, _ObservedEndpoint]:
         """Synthesize and probe sub-resource paths from discovered endpoints.
 
@@ -290,8 +390,10 @@ class RESTExtractor:
         """
         inferred: dict[str, _ObservedEndpoint] = {}
         probed: set[str] = set()
+        relation_hints = json_server_relations or {}
 
         for path in list(observed.keys()):
+            endpoint = observed[path]
             clean = path.split("?", 1)[0].rstrip("/")
             if not clean:
                 continue
@@ -318,10 +420,18 @@ class RESTExtractor:
             # If this looks like a detail endpoint (has {param} leaf),
             # probe common sub-resource names.
             if leaf.startswith("{") and leaf.endswith("}"):
+                segments = [segment for segment in clean.split("/") if segment]
                 parent = clean.rsplit("/", 1)[0] if "/" in clean else ""
                 # Infer common sub-resource names from the parent.
                 parent_leaf = parent.rsplit("/", 1)[-1] if parent else ""
-                sub_candidates = _common_sub_resources(parent_leaf)
+                if "json_server_db" in endpoint.sources:
+                    sub_candidates = (
+                        sorted(relation_hints.get(parent_leaf, ()))
+                        if len(segments) == 2
+                        else []
+                    )
+                else:
+                    sub_candidates = _common_sub_resources(parent_leaf)
                 for sub_name in sub_candidates:
                     candidate = f"{clean}/{sub_name}"
                     candidate_url = urljoin(base_url, candidate)
@@ -433,6 +543,25 @@ class RESTExtractor:
             )
             target[path] = endpoint
 
+    def _register_endpoint(
+        self,
+        target: dict[str, _ObservedEndpoint],
+        *,
+        path: str,
+        absolute_url: str,
+        methods: set[str],
+        source: str,
+        confidence: float,
+    ) -> None:
+        endpoint = target.setdefault(
+            path,
+            _ObservedEndpoint(path=path, absolute_url=absolute_url),
+        )
+        endpoint.absolute_url = absolute_url
+        endpoint.methods.update(methods)
+        endpoint.sources.add(source)
+        endpoint.confidence = max(endpoint.confidence, confidence)
+
     def _extract_candidate_paths(
         self,
         base_url: str,
@@ -475,7 +604,10 @@ class RESTExtractor:
         if not candidate:
             return None
         absolute = urljoin(base_url, candidate)
-        if urlparse(absolute).netloc != urlparse(base_url).netloc:
+        parsed_absolute = urlparse(absolute)
+        if parsed_absolute.netloc != urlparse(base_url).netloc:
+            return None
+        if _is_static_asset_path(parsed_absolute.path):
             return None
         return absolute
 
@@ -978,6 +1110,137 @@ def _is_link_like_json_key(parent_key: str | None) -> bool:
     if normalized in _LINK_LIKE_JSON_KEYS:
         return True
     return normalized.endswith(("_endpoint", "_href", "_link", "_links", "_path", "_uri", "_url"))
+
+
+def _is_static_asset_path(path: str) -> bool:
+    candidate = path.rsplit("/", 1)[-1].lower()
+    if "." not in candidate:
+        return False
+    extension = f".{candidate.rsplit('.', 1)[-1]}"
+    return extension in _STATIC_ASSET_EXTENSIONS
+
+
+def _looks_like_json_server_html(body: str) -> bool:
+    lowered = body.lower()
+    return all(marker in lowered for marker in _JSON_SERVER_MARKERS)
+
+
+def _looks_like_json_server_db_payload(payload: Any) -> bool:
+    if not isinstance(payload, dict) or not payload:
+        return False
+    return any(isinstance(value, (list, dict)) for value in payload.values())
+
+
+def _looks_like_json_server_resource(name: Any, value: Any) -> bool:
+    if not isinstance(name, str) or not name.strip():
+        return False
+    if name.startswith("__"):
+        return False
+    return isinstance(value, (list, dict))
+
+
+def _json_server_collection_methods(resource_value: Any) -> set[str]:
+    if isinstance(resource_value, list):
+        return {"GET", "POST"}
+    if isinstance(resource_value, dict):
+        return {"GET", "PUT", "PATCH"}
+    return {"GET"}
+
+
+def _sample_resource_id(resource_value: Any) -> str | int | None:
+    if not isinstance(resource_value, list):
+        return None
+    for item in resource_value:
+        if not isinstance(item, dict):
+            continue
+        sample_id = item.get("id")
+        if isinstance(sample_id, (str, int)):
+            return sample_id
+    return None
+
+
+def _join_relative_url(base_url: str, relative_path: str) -> str:
+    normalized_base = base_url if base_url.endswith("/") else f"{base_url}/"
+    normalized_relative = relative_path.lstrip("/")
+    return urljoin(normalized_base, normalized_relative)
+
+
+def _infer_json_server_relations(payload: Any) -> dict[str, set[str]]:
+    if not isinstance(payload, dict):
+        return {}
+
+    resources = {
+        name: value
+        for name, value in payload.items()
+        if _looks_like_json_server_resource(name, value)
+    }
+    resource_names = set(resources)
+    relations: dict[str, set[str]] = {}
+
+    for child_name, child_value in resources.items():
+        if not isinstance(child_value, list):
+            continue
+        for foreign_key in _json_server_foreign_keys(child_value):
+            for parent_name in _json_server_parent_candidates(foreign_key, resource_names):
+                if parent_name == child_name:
+                    continue
+                relations.setdefault(parent_name, set()).add(child_name)
+
+    return relations
+
+
+def _json_server_foreign_keys(resource_items: list[Any]) -> set[str]:
+    foreign_keys: set[str] = set()
+    for item in resource_items:
+        if not isinstance(item, dict):
+            continue
+        for key, value in item.items():
+            if key == "id":
+                continue
+            if _looks_like_foreign_key_field(key) and isinstance(value, (str, int)):
+                foreign_keys.add(key)
+    return foreign_keys
+
+
+def _looks_like_foreign_key_field(field_name: str) -> bool:
+    normalized = field_name.strip()
+    lowered = normalized.lower()
+    return lowered.endswith("_id") or (lowered.endswith("id") and lowered != "id")
+
+
+def _json_server_parent_candidates(
+    field_name: str,
+    resource_names: set[str],
+) -> list[str]:
+    base_name = field_name.strip()
+    lowered = base_name.lower()
+    if lowered.endswith("_id"):
+        base_name = base_name[:-3]
+    elif lowered.endswith("id") and lowered != "id":
+        base_name = base_name[:-2]
+    else:
+        return []
+
+    normalized = _slugify(re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", base_name))
+    if not normalized:
+        return []
+
+    candidates = [normalized]
+    plural = _pluralize_resource_name(normalized)
+    if plural != normalized:
+        candidates.append(plural)
+
+    return [candidate for candidate in candidates if candidate in resource_names]
+
+
+def _pluralize_resource_name(name: str) -> str:
+    if not name:
+        return name
+    if name.endswith("y") and len(name) > 1 and name[-2] not in "aeiou":
+        return f"{name[:-1]}ies"
+    if name.endswith(("s", "x", "z", "ch", "sh")):
+        return f"{name}es"
+    return f"{name}s"
 
 
 def _shared_query_suffix(paths: list[str]) -> str:
