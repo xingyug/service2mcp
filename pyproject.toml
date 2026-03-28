@@ -44,11 +44,11 @@ dev = [
 extractors = [
     "openapi-spec-validator>=0.7,<1",
     "jsonschema>=4.26.0,<5",
-    "gql[httpx]>=3.5,<4",
+    "gql[httpx]>=4.0,<5",
 ]
 enhancer = [
     "anthropic>=0.40,<1",
-    "openai>=1.30,<2",
+    "openai>=2.30,<3",
     "google-cloud-aiplatform>=1.50,<2",
     "tiktoken>=0.6,<1",
 ]
