@@ -23,6 +23,11 @@ target_metadata = Base.metadata
 
 def to_migration_database_url(database_url: str) -> str:
     """Translate the app's async URL into a sync driver URL for Alembic."""
+    # Only replace the driver portion — match scheme://... pattern boundary
+    if "://" in database_url:
+        scheme, rest = database_url.split("://", 1)
+        scheme = scheme.replace("+asyncpg", "+psycopg")
+        return f"{scheme}://{rest}"
     return database_url.replace("+asyncpg", "+psycopg")
 
 

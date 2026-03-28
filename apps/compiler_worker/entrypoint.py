@@ -133,9 +133,11 @@ def _terminate_processes(processes: list[subprocess.Popen[Any]]) -> None:
 
 
 def main() -> int:
-    _wait_for_broker_socket(
-        timeout_seconds=float(os.getenv("WORKER_BROKER_READY_TIMEOUT_SECONDS", "60"))
-    )
+    try:
+        broker_timeout = float(os.getenv("WORKER_BROKER_READY_TIMEOUT_SECONDS", "60"))
+    except ValueError:
+        broker_timeout = 60.0
+    _wait_for_broker_socket(timeout_seconds=broker_timeout)
 
     celery_process = subprocess.Popen(
         _build_celery_command(),

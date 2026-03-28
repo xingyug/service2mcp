@@ -152,11 +152,13 @@ def create_app(
     app.mount("/mcp", mcp_http_app)
 
     @app.get("/healthz")
-    async def healthz(response: Response) -> dict[str, Any]:
-        return await _runtime_status(runtime_state, response)
+    async def healthz() -> dict[str, str]:
+        """Liveness probe — indicates process is alive."""
+        return {"status": "ok"}
 
     @app.get("/readyz")
     async def readyz(response: Response) -> dict[str, Any]:
+        """Readiness probe — indicates runtime is loaded and ready."""
         return await _runtime_status(runtime_state, response)
 
     @app.get("/tools")

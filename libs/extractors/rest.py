@@ -441,7 +441,10 @@ class RESTExtractor:
         if "html" in content_type:
             return self._extract_from_html(base_url, response.text)
         if "json" in content_type:
-            return self._extract_from_json(base_url, response.json())
+            try:
+                return self._extract_from_json(base_url, response.json())
+            except Exception:
+                return self._extract_from_html(base_url, response.text)
         return self._extract_from_html(base_url, response.text)
 
     def _extract_from_html(self, base_url: str, body: str) -> list[tuple[str, str]]:

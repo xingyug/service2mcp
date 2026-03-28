@@ -406,7 +406,7 @@ class IREnhancer:
 
     def _batch_operations(self, operations: list[Operation]) -> list[list[Operation]]:
         """Split operations into batches."""
-        batch_size = self.config.batch_size
+        batch_size = max(self.config.batch_size, 1)
         return [operations[i : i + batch_size] for i in range(0, len(operations), batch_size)]
 
     def _enhance_batch(
@@ -455,13 +455,15 @@ class IREnhancer:
         try:
             # Strip markdown code fences if present
             text = content.strip()
-            if text.startswith("```"):
+            if text.startswith("```") or text.startswith("~~~"):
+                fence_char = text[0]
                 lines = text.split("\n")
-                if lines[-1].strip() == "```":
-                    text = "\n".join(lines[1:-1])
-                else:
-                    text = "\n".join(lines[1:])
-                text = text.strip()
+                # Remove opening fence line
+                lines = lines[1:]
+                # Remove closing fence if present (may be ``` or ~~~)
+                if lines and lines[-1].strip().startswith(fence_char):
+                    lines = lines[:-1]
+                text = "\n".join(lines).strip()
 
             data = json.loads(text)
             if not isinstance(data, list):
@@ -494,6 +496,9 @@ class IREnhancer:
                 continue
 
             enh = enhancements[op.id]
+            if not isinstance(enh, dict):
+                new_operations.append(op)
+                continue
             try:
                 op_confidence = float(enh.get("confidence", 0.7))
             except (ValueError, TypeError):

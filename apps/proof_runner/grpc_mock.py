@@ -291,7 +291,10 @@ def _service_method(
 
 
 def main() -> None:
-    port = int(os.getenv("GRPC_PORT", "50051"))
+    try:
+        port = int(os.getenv("GRPC_PORT", "50051"))
+    except ValueError:
+        port = 50051
     serve(port=port)
 
 

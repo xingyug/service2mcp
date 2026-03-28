@@ -48,6 +48,16 @@ async def create_compilation(
     audit_log = AuditLogService(session)
 
     try:
+        await audit_log.append_entry(
+            actor=payload.created_by or "system",
+            action="compilation.triggered",
+            resource=job.service_name or str(job.id),
+            detail={
+                "job_id": str(job.id),
+                "source_url": payload.source_url,
+                "service_name": payload.service_name,
+            },
+        )
         await dispatcher.enqueue(workflow_request)
     except Exception as exc:
         await repository.delete_job(job.id)
@@ -55,17 +65,6 @@ async def create_compilation(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Compilation worker dispatch failed.",
         ) from exc
-
-    await audit_log.append_entry(
-        actor=payload.created_by or "system",
-        action="compilation.triggered",
-        resource=job.service_name or str(job.id),
-        detail={
-            "job_id": str(job.id),
-            "source_url": payload.source_url,
-            "service_name": payload.service_name,
-        },
-    )
 
     return job
 

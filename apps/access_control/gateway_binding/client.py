@@ -234,9 +234,13 @@ def load_gateway_admin_client_from_env() -> GatewayAdminClient:
 
     base_url = os.getenv("GATEWAY_ADMIN_URL", "").strip()
     if base_url:
+        try:
+            timeout = float(os.getenv("GATEWAY_ADMIN_TIMEOUT_SECONDS", "10.0"))
+        except ValueError:
+            timeout = 10.0
         return HTTPGatewayAdminClient(
             base_url=base_url,
-            timeout=float(os.getenv("GATEWAY_ADMIN_TIMEOUT_SECONDS", "10.0")),
+            timeout=timeout,
             admin_token=os.getenv("GATEWAY_ADMIN_TOKEN"),
         )
     return InMemoryAPISIXAdminClient()

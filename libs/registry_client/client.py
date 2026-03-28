@@ -147,4 +147,10 @@ class RegistryClient:
     @classmethod
     def _parse_model(cls, response: httpx.Response, model_type: type[ModelT]) -> ModelT:
         cls._ensure_success(response)
-        return model_type.model_validate(response.json())
+        try:
+            data = response.json()
+        except Exception as exc:
+            raise RegistryClientError(
+                f"Non-JSON response from registry: {response.status_code}"
+            ) from exc
+        return model_type.model_validate(data)

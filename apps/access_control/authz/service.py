@@ -105,14 +105,15 @@ class AuthzService:
         await self._session.refresh(policy)
         return self._to_response(policy)
 
-    async def delete_policy(self, policy_id: UUID) -> bool:
+    async def delete_policy(self, policy_id: UUID) -> Policy | None:
+        """Delete a policy by ID, returning the deleted record or None."""
         policy = await self._session.get(Policy, policy_id)
         if policy is None:
-            return False
+            return None
 
         await self._session.delete(policy)
         await self._session.commit()
-        return True
+        return policy
 
     async def evaluate(self, payload: PolicyEvaluationRequest) -> PolicyEvaluationResponse:
         result = await self._session.scalars(

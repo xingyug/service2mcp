@@ -128,7 +128,7 @@ def create_app() -> FastAPI:
         try:
             return await _forward_request(
                 request=request,
-                route_document=cast(dict[str, Any], route["document"]),
+                route_document=cast(dict[str, Any], route.get("document", {})),
                 upstream_overrides=cast(dict[str, dict[str, Any]], app.state.upstream_overrides),
                 upstream_path=upstream_path,
             )

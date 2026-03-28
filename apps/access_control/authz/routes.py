@@ -115,9 +115,8 @@ async def delete_policy(
     gateway_binding: GatewayBindingService = Depends(get_gateway_binding_service),
     audit_log: AuditLogService = Depends(get_audit_log_service),
 ) -> None:
-    policy = await service.get_policy(policy_id)
     deleted = await service.delete_policy(policy_id)
-    if not deleted:
+    if deleted is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found.")
     try:
         await gateway_binding.delete_policy(policy_id)
@@ -126,7 +125,7 @@ async def delete_policy(
     await audit_log.append_entry(
         actor="system",
         action="policy.deleted",
-        resource=policy.resource_id if policy is not None else None,
+        resource=deleted.resource_id,
         detail={"policy_id": str(policy_id)},
     )
 

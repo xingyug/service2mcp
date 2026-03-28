@@ -66,6 +66,17 @@ _DEFAULT_RUNTIME_STARTUP_TIMEOUT_SECONDS = 10.0
 _DEFAULT_RUNTIME_STARTUP_POLL_SECONDS = 1.0
 
 
+def _float_env(key: str, default: float) -> float:
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        _logger.warning("Non-numeric env var %s=%r, using default %s", key, raw, default)
+        return default
+
+
 @dataclass(frozen=True)
 class DeploymentResult:
     """Resolved deployment details returned by the manifest deployer."""
@@ -132,26 +143,20 @@ class ProductionActivitySettings:
             ),
             route_publish_mode=os.getenv("ROUTE_PUBLISH_MODE", _DEFAULT_ROUTE_PUBLISH_MODE),
             access_control_url=os.getenv("ACCESS_CONTROL_URL"),
-            proxy_timeout_seconds=float(
-                os.getenv("COMPILER_PROXY_TIMEOUT_SECONDS", str(_DEFAULT_PROXY_TIMEOUT_SECONDS))
+            proxy_timeout_seconds=_float_env(
+                "COMPILER_PROXY_TIMEOUT_SECONDS", _DEFAULT_PROXY_TIMEOUT_SECONDS
             ),
-            route_publish_timeout_seconds=float(
-                os.getenv(
-                    "COMPILER_ROUTE_PUBLISH_TIMEOUT_SECONDS",
-                    str(_DEFAULT_ROUTE_PUBLISH_TIMEOUT_SECONDS),
-                )
+            route_publish_timeout_seconds=_float_env(
+                "COMPILER_ROUTE_PUBLISH_TIMEOUT_SECONDS",
+                _DEFAULT_ROUTE_PUBLISH_TIMEOUT_SECONDS,
             ),
-            runtime_startup_timeout_seconds=float(
-                os.getenv(
-                    "COMPILER_RUNTIME_STARTUP_TIMEOUT_SECONDS",
-                    str(_DEFAULT_RUNTIME_STARTUP_TIMEOUT_SECONDS),
-                )
+            runtime_startup_timeout_seconds=_float_env(
+                "COMPILER_RUNTIME_STARTUP_TIMEOUT_SECONDS",
+                _DEFAULT_RUNTIME_STARTUP_TIMEOUT_SECONDS,
             ),
-            runtime_startup_poll_seconds=float(
-                os.getenv(
-                    "COMPILER_RUNTIME_STARTUP_POLL_SECONDS",
-                    str(_DEFAULT_RUNTIME_STARTUP_POLL_SECONDS),
-                )
+            runtime_startup_poll_seconds=_float_env(
+                "COMPILER_RUNTIME_STARTUP_POLL_SECONDS",
+                _DEFAULT_RUNTIME_STARTUP_POLL_SECONDS,
             ),
         )
 
@@ -232,7 +237,12 @@ class AccessControlRoutePublisher:
                 },
             )
             response.raise_for_status()
-            payload = response.json()
+            try:
+                payload = response.json()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Access control route publisher returned non-JSON response: {exc}"
+                ) from exc
             if not isinstance(payload, dict):
                 raise RuntimeError("Access control route publisher returned a non-object response.")
             return cast(dict[str, Any], payload)
@@ -388,7 +398,10 @@ class KubernetesManifestDeployer:
         if response.status_code == 404:
             response = await self.api.client.post(collection_path, json=manifest)
         response.raise_for_status()
-        return cast(dict[str, Any], response.json())
+        try:
+            return cast(dict[str, Any], response.json())
+        except Exception as exc:
+            raise RuntimeError(f"K8s API returned non-JSON response: {exc}") from exc
 
     async def _delete_manifest(self, plural: str, api_version: str, name: str) -> None:
         named_path, _ = self._resource_paths(plural, api_version, name)
@@ -404,12 +417,18 @@ class KubernetesManifestDeployer:
         while elapsed < timeout_seconds:
             response = await self.api.client.get(named_path)
             response.raise_for_status()
-            deployment = cast(dict[str, Any], response.json())
+            try:
+                deployment = cast(dict[str, Any], response.json())
+            except Exception as exc:
+                raise RuntimeError(f"K8s API returned non-JSON response: {exc}") from exc
             metadata = cast(dict[str, Any], deployment.get("metadata", {}))
             status = cast(dict[str, Any], deployment.get("status", {}))
-            observed_generation = int(status.get("observedGeneration", 0) or 0)
-            generation = int(metadata.get("generation", 0) or 0)
-            available_replicas = int(status.get("availableReplicas", 0) or 0)
+            try:
+                observed_generation = int(status.get("observedGeneration", 0) or 0)
+                generation = int(metadata.get("generation", 0) or 0)
+                available_replicas = int(status.get("availableReplicas", 0) or 0)
+            except (ValueError, TypeError):
+                observed_generation = generation = available_replicas = 0
             if observed_generation >= generation and available_replicas >= expected_replicas:
                 return observed_generation
             await _sleep_seconds(poll_seconds)
@@ -697,7 +716,7 @@ def create_default_activity_registry(
         return _stage_result(
             context_updates={"route_publication": publication},
             event_detail={
-                "route_id": route_config["default_route"]["route_id"],
+                "route_id": route_config.get("default_route", {}).get("route_id"),
                 "publication_mode": resolved_settings.route_publish_mode,
             },
             rollback_payload={

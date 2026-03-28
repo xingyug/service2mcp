@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import AsyncIterator
 from typing import cast
@@ -13,6 +14,8 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+
+_logger = logging.getLogger(__name__)
 
 _ENGINE_STATE_KEY = "database_engine"
 _SESSION_FACTORY_STATE_KEY = "database_session_factory"
@@ -47,7 +50,11 @@ def configure_database(
 
 
 def resolve_session_factory(app: FastAPI) -> async_sessionmaker[AsyncSession]:
-    """Resolve the session factory from app state or environment."""
+    """Resolve the session factory from app state or environment.
+
+    Logs a warning when the factory is lazily created on first request — prefer
+    calling ``configure_database()`` at startup so misconfigurations surface early.
+    """
 
     existing_factory = getattr(app.state, _SESSION_FACTORY_STATE_KEY, None)
     if existing_factory is not None:
@@ -57,6 +64,10 @@ def resolve_session_factory(app: FastAPI) -> async_sessionmaker[AsyncSession]:
     if not database_url:
         raise RuntimeError("DATABASE_URL must be configured for compiler_api database access.")
 
+    _logger.warning(
+        "Database session factory lazily initialised from DATABASE_URL; "
+        "call configure_database() at startup for earlier error detection."
+    )
     engine, created_session_factory = build_engine_and_session_factory(database_url)
     setattr(app.state, _ENGINE_STATE_KEY, engine)
     setattr(app.state, _SESSION_FACTORY_STATE_KEY, created_session_factory)

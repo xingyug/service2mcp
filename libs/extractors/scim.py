@@ -136,7 +136,7 @@ class SCIMExtractor:
         if source.file_content:
             return source.file_content
         if source.file_path:
-            return Path(source.file_path).read_text()
+            return Path(source.file_path).read_text(encoding="utf-8")
         if source.url:
             headers: dict[str, str] = {}
             if source.auth_header:

@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 JSONDict = dict[str, Any]
 
 # HTTP method → risk level mapping
+_logger = logging.getLogger(__name__)
+
 _METHOD_RISK: dict[str, RiskLevel] = {
     "GET": RiskLevel.safe,
     "HEAD": RiskLevel.safe,
@@ -72,7 +74,10 @@ class OpenAPIExtractor:
 
         try:
             spec = self._parse_spec_string(content)
+        except (ValueError, KeyError, json.JSONDecodeError):
+            return 0.0
         except Exception:
+            _logger.debug("Unexpected error during OpenAPI detection", exc_info=True)
             return 0.0
 
         if "openapi" in spec:
@@ -136,7 +141,7 @@ class OpenAPIExtractor:
         if source.file_content:
             return source.file_content
         if source.file_path:
-            return Path(source.file_path).read_text()
+            return Path(source.file_path).read_text(encoding="utf-8")
         if source.url:
             try:
                 resp = httpx.get(source.url, timeout=30, headers=self._auth_headers(source))
@@ -188,6 +193,7 @@ class OpenAPIExtractor:
     def _follow_ref(self, ref: str, root: JSONDict) -> JSONDict:
         """Follow a JSON pointer like '#/components/schemas/Pet'."""
         if not ref.startswith("#/"):
+            logger.debug("Skipping external $ref: %s", ref)
             return {}
         parts = ref[2:].split("/")
         current: Any = root

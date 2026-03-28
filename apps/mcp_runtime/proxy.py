@@ -141,6 +141,7 @@ class RuntimeProxy:
         self._failure_threshold = failure_threshold
         self.breakers: dict[str, CircuitBreaker] = {}
         self._oauth_token_cache: dict[str, tuple[str, float | None]] = {}
+        self._oauth_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         if self._owns_client and self._client is not None:
@@ -620,9 +621,10 @@ class RuntimeProxy:
         }
         json_body: dict[str, Any] = {
             "query": operation.graphql.document,
-            "operationName": operation.graphql.operation_name,
             "variables": variables,
         }
+        if operation.graphql.operation_name is not None:
+            json_body["operationName"] = operation.graphql.operation_name
         return PreparedRequestPayload(
             query_params={},
             json_body=json_body,
@@ -830,7 +832,7 @@ class RuntimeProxy:
             [
                 oauth2.token_url,
                 oauth2.client_id_ref,
-                ",".join(oauth2.scopes),
+                ",".join(sorted(oauth2.scopes)),
                 oauth2.audience or "",
             ]
         )
@@ -841,59 +843,68 @@ class RuntimeProxy:
             if expires_at is None or expires_at > now + 30:
                 return token
 
-        client_id = self._resolve_secret_ref(
-            oauth2.client_id_ref,
-            operation_id,
-            purpose="oauth2 client id",
-        )
-        client_secret = self._resolve_secret_ref(
-            oauth2.client_secret_ref,
-            operation_id,
-            purpose="oauth2 client secret",
-        )
-        form_payload: dict[str, str] = {"grant_type": "client_credentials"}
-        if oauth2.scopes:
-            form_payload["scope"] = " ".join(oauth2.scopes)
-        if oauth2.audience:
-            form_payload["audience"] = oauth2.audience
+        async with self._oauth_lock:
+            # Re-check after acquiring lock (another coroutine may have refreshed)
+            cached = self._oauth_token_cache.get(cache_key)
+            now = time.time()
+            if cached is not None:
+                token, expires_at = cached
+                if expires_at is None or expires_at > now + 30:
+                    return token
 
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        if oauth2.client_auth_method == "client_secret_basic":
-            encoded = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode("ascii")
-            headers["Authorization"] = f"Basic {encoded}"
-        else:
-            form_payload["client_id"] = client_id
-            form_payload["client_secret"] = client_secret
-
-        response = await self._get_client().post(
-            oauth2.token_url,
-            content=urlencode(form_payload),
-            headers=headers,
-            timeout=self._timeout,
-        )
-        response.raise_for_status()
-        try:
-            payload = response.json()
-        except Exception as exc:
-            raise ToolError(
-                f"OAuth2 token endpoint returned non-JSON response for {operation_id}."
-            ) from exc
-        if not isinstance(payload, dict):
-            raise ToolError(
-                f"OAuth2 token endpoint returned non-object JSON for {operation_id}."
+            client_id = self._resolve_secret_ref(
+                oauth2.client_id_ref,
+                operation_id,
+                purpose="oauth2 client id",
             )
-        access_token = payload.get("access_token")
-        if not isinstance(access_token, str) or not access_token:
-            raise ToolError(
-                f"OAuth2 token endpoint did not return an access_token for {operation_id}."
+            client_secret = self._resolve_secret_ref(
+                oauth2.client_secret_ref,
+                operation_id,
+                purpose="oauth2 client secret",
             )
+            form_payload: dict[str, str] = {"grant_type": "client_credentials"}
+            if oauth2.scopes:
+                form_payload["scope"] = " ".join(oauth2.scopes)
+            if oauth2.audience:
+                form_payload["audience"] = oauth2.audience
 
-        expires_at = None
-        expires_in = payload.get("expires_in")
-        if isinstance(expires_in, int | float) and expires_in >= 0:
-            expires_at = now + float(expires_in)
-        self._oauth_token_cache[cache_key] = (access_token, expires_at)
-        return access_token
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+            if oauth2.client_auth_method == "client_secret_basic":
+                encoded = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode("ascii")
+                headers["Authorization"] = f"Basic {encoded}"
+            else:
+                form_payload["client_id"] = client_id
+                form_payload["client_secret"] = client_secret
+
+            response = await self._get_client().post(
+                oauth2.token_url,
+                content=urlencode(form_payload),
+                headers=headers,
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            try:
+                payload = response.json()
+            except Exception as exc:
+                raise ToolError(
+                    f"OAuth2 token endpoint returned non-JSON response for {operation_id}."
+                ) from exc
+            if not isinstance(payload, dict):
+                raise ToolError(
+                    f"OAuth2 token endpoint returned non-object JSON for {operation_id}."
+                )
+            access_token = payload.get("access_token")
+            if not isinstance(access_token, str) or not access_token:
+                raise ToolError(
+                    f"OAuth2 token endpoint did not return an access_token for {operation_id}."
+                )
+
+            expires_at = None
+            expires_in = payload.get("expires_in")
+            if isinstance(expires_in, int | float) and expires_in >= 0:
+                expires_at = now + float(expires_in)
+            self._oauth_token_cache[cache_key] = (access_token, expires_at)
+            return access_token
 
     async def _poll_async_job(
         self,
@@ -1633,6 +1644,9 @@ def _apply_field_filter(payload: Any, field_filter: list[str] | None) -> Any:
             root, rest = path.split("[].", 1)
             array_paths.setdefault(root, []).append(rest)
         elif "." in path:
+            # Note: dot-split means field names containing literal dots (e.g. OData
+            # "Address.City") are misinterpreted as nested paths.  A future escaping
+            # convention (e.g. backslash-dot) could solve this.
             root, rest = path.split(".", 1)
             nested_paths.append((root, rest.split(".")))
         else:

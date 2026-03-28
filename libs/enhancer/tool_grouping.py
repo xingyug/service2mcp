@@ -135,13 +135,13 @@ class ToolGrouper:
 
         try:
             text = content.strip()
-            if text.startswith("```"):
+            if text.startswith("```") or text.startswith("~~~"):
+                fence_char = text[0]
                 lines = text.split("\n")
-                if lines[-1].strip() == "```":
-                    text = "\n".join(lines[1:-1])
-                else:
-                    text = "\n".join(lines[1:])
-                text = text.strip()
+                lines = lines[1:]
+                if lines and lines[-1].strip().startswith(fence_char):
+                    lines = lines[:-1]
+                text = "\n".join(lines).strip()
 
             data = json.loads(text)
             if not isinstance(data, list):

@@ -137,7 +137,9 @@ class ServiceCatalogRepository:
         if environment is not None:
             query = query.where(ServiceVersion.environment == environment)
 
-        result = await self._session.scalars(query.order_by(ServiceVersion.service_id))
+        result = await self._session.scalars(
+            query.order_by(ServiceVersion.service_id).limit(1000)
+        )
         versions = result.all()
         return ServiceListResponse(
             services=[self._to_service_summary(version) for version in versions]
@@ -226,7 +228,7 @@ class ArtifactRegistryRepository:
     ) -> ArtifactVersionListResponse:
         query = self._version_query(service_id, tenant=tenant, environment=environment).order_by(
             desc(ServiceVersion.version_number)
-        )
+        ).limit(1000)
         result = await self._session.scalars(query)
         versions = [self._to_response(record) for record in result.all()]
         return ArtifactVersionListResponse(service_id=service_id, versions=versions)
@@ -282,7 +284,8 @@ class ArtifactRegistryRepository:
             await self._replace_artifacts(record.id, payload.artifacts)
 
         await self._session.commit()
-        return await self.get_version(service_id, version_number)
+        await self._session.refresh(record)
+        return self._to_response(record)
 
     async def activate_version(
         self,
@@ -296,7 +299,8 @@ class ArtifactRegistryRepository:
         await self._deactivate_service_versions(service_id)
         record.is_active = True
         await self._session.commit()
-        return await self.get_version(service_id, version_number)
+        await self._session.refresh(record)
+        return self._to_response(record)
 
     async def delete_version(self, service_id: str, version_number: int) -> bool:
         record = await self._get_version_record(service_id, version_number)

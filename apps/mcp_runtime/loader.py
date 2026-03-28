@@ -129,7 +129,7 @@ def build_tool_function(
     tool_impl.__doc__ = operation.description or operation.name
     tool_impl.__annotations__ = {
         name: parameter.annotation
-        for name, parameter in zip(param_name_map, signature_params, strict=False)
+        for name, parameter in zip(param_name_map, signature_params, strict=True)
     }
     tool_impl.__annotations__["return"] = dict[str, Any]
     setattr(

@@ -73,7 +73,15 @@ def create_celery_app(
 
     def execute_compilation(payload: dict[str, Any]) -> dict[str, str | None]:
         request = CompilationRequest.from_payload(payload)
-        _run_coro(_execute_compilation(request))
+        try:
+            _run_coro(_execute_compilation(request))
+        except Exception as exc:
+            _logger.error("Compilation task failed: %s", exc, exc_info=True)
+            return {
+                "job_id": str(request.job_id) if request.job_id is not None else None,
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
         return {"job_id": str(request.job_id) if request.job_id is not None else None}
 
     app.task(name=COMPILATION_TASK_NAME)(execute_compilation)

@@ -141,11 +141,13 @@ def generate_generic_manifests(
     parsed_documents = [_parse_manifest(document) for document in rendered_documents]
     yaml_bundle = "\n---\n".join(rendered_documents) + "\n"
 
+    _manifest_map = dict(zip(_TEMPLATE_ORDER, parsed_documents, strict=True))
+
     return GeneratedManifestSet(
-        config_map=parsed_documents[0],
-        deployment=parsed_documents[1],
-        service=parsed_documents[2],
-        network_policy=parsed_documents[3],
+        config_map=_manifest_map["configmap.yaml.j2"],
+        deployment=_manifest_map["deployment.yaml.j2"],
+        service=_manifest_map["service.yaml.j2"],
+        network_policy=_manifest_map["networkpolicy.yaml.j2"],
         route_config=route_config,
         yaml=yaml_bundle,
     )

@@ -258,7 +258,7 @@ async def test_reflection_grpc_stream_executor_resolves_descriptors_and_collects
 
             return invoke
 
-        def close(self) -> None:
+        def close(self, grace: float | None = None) -> None:
             captured["closed"] = True
 
     monkeypatch.setattr(
@@ -328,7 +328,7 @@ async def test_reflection_grpc_stream_executor_primes_service_descriptor_before_
 
             return invoke
 
-        def close(self) -> None:
+        def close(self, grace: float | None = None) -> None:
             return None
 
     monkeypatch.setattr(

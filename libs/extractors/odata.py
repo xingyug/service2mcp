@@ -113,7 +113,10 @@ class ODataExtractor:
         if content is None:
             raise ValueError("Could not read source content")
 
-        root = ET.fromstring(content)
+        try:
+            root = ET.fromstring(content)
+        except ET.ParseError as exc:
+            raise ValueError(f"Malformed XML in OData metadata document: {exc}") from exc
         if _local_name(root.tag) != "Edmx":
             raise ValueError("OData extractor requires an EDMX metadata document.")
 
