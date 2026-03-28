@@ -9,7 +9,7 @@ import os
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -18,8 +18,8 @@ from pydantic import ValidationError
 from libs.ir import ServiceIR, deserialize_ir
 from libs.ir.models import Operation, Param, PromptDefinition, ResourceDefinition
 
-ToolResult: TypeAlias = dict[str, Any]
-ToolHandler: TypeAlias = Callable[[Operation, dict[str, Any]], ToolResult | Awaitable[ToolResult]]
+type ToolResult = dict[str, Any]
+type ToolHandler = Callable[[Operation, dict[str, Any]], ToolResult | Awaitable[ToolResult]]
 
 _IR_TYPE_TO_PYTHON: dict[str, Any] = {
     "string": str,

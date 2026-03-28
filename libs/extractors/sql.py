@@ -8,7 +8,7 @@ import json
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from threading import Thread
-from typing import Any, TypeVar
+from typing import Any
 from urllib.parse import urlparse
 
 from sqlalchemy import inspect
@@ -47,7 +47,6 @@ from libs.ir.models import (
     SqlRelationKind,
 )
 
-T = TypeVar("T")
 _DATABASE_SCHEMES = {"postgres", "postgresql", "mysql", "mariadb", "sqlite"}
 
 
@@ -462,7 +461,7 @@ class SQLExtractor:
         raise ValueError(f"Unsupported SQL database URL: {database_url}")
 
 
-def _run_coroutine(coroutine: Coroutine[Any, Any, T]) -> T:
+def _run_coroutine[T](coroutine: Coroutine[Any, Any, T]) -> T:
     try:
         asyncio.get_running_loop()
     except RuntimeError:

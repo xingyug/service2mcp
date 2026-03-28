@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Hashable, Mapping
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
@@ -43,5 +44,5 @@ def test_service_openapi_documents_are_valid(
     app = app_factory()
     schema = app.openapi()
 
-    validate_spec(schema)
+    validate_spec(cast(Mapping[Hashable, Any], schema))
     assert required_paths.issubset(schema["paths"])

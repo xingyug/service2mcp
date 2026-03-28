@@ -7,7 +7,7 @@ import logging
 import os
 from collections.abc import Coroutine
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, TypeVar
+from typing import Any
 
 from celery import Celery
 
@@ -16,8 +16,6 @@ from apps.compiler_worker.models import CompilationRequest
 
 COMPILATION_TASK_NAME = "compiler_worker.execute_compilation"
 DEFAULT_COMPILATION_QUEUE = "compiler.jobs"
-_T = TypeVar("_T")
-
 _logger = logging.getLogger(__name__)
 
 
@@ -88,7 +86,7 @@ async def _execute_compilation(request: CompilationRequest) -> None:
     await executor.execute(request)
 
 
-def _run_coro(coro: Coroutine[Any, Any, _T]) -> _T:
+def _run_coro[T](coro: Coroutine[Any, Any, T]) -> T:
     try:
         asyncio.get_running_loop()
     except RuntimeError:

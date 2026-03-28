@@ -33,17 +33,17 @@ dev = [
     "pytest-asyncio>=0.23,<1",
     "pytest-cov>=4.1,<6",
     "hypothesis>=6.98,<7",
-    "testcontainers[postgres,redis]>=4.0,<5",
+    "testcontainers[postgres,redis]>=4.13.3,<5",
     "ruff>=0.3,<1",
     "mypy>=1.8,<2",
-    "nox>=2024.4.15,<2026",
+    "nox>=2026.2.9,<2027",
     "basedpyright>=1.18,<2",
     "pre-commit>=3.7,<5",
     "respx>=0.21,<1",
 ]
 extractors = [
     "openapi-spec-validator>=0.7,<1",
-    "jsonschema>=4.21,<5",
+    "jsonschema>=4.26.0,<5",
     "gql[httpx]>=3.5,<4",
 ]
 enhancer = [
@@ -71,7 +71,7 @@ asyncio_mode = "auto"
 addopts = "-v --tb=short"
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
