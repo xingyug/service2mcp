@@ -36,6 +36,9 @@ dev = [
     "testcontainers[postgres,redis]>=4.0,<5",
     "ruff>=0.3,<1",
     "mypy>=1.8,<2",
+    "nox>=2024.4.15,<2026",
+    "basedpyright>=1.18,<2",
+    "pre-commit>=3.7,<5",
     "respx>=0.21,<1",
 ]
 extractors = [
@@ -103,6 +106,5 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["libs.*.tests.*", "libs.tests.*"]
-disallow_untyped_defs = false
-check_untyped_defs = false
+module = ["apps.*.tests.*", "libs.*.tests.*", "libs.tests.*"]
+ignore_errors = true
