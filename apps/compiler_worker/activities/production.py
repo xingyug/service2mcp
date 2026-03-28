@@ -1030,10 +1030,26 @@ def _manifest_set_from_context(context: CompilationContext) -> GeneratedManifest
     return _deserialize_manifest_set(serialized)
 
 
-def _sample_value(param: Param) -> Any:
+def _sample_value(
+    param: Param,
+    *,
+    service_ir: ServiceIR | None = None,
+    operation: Operation | None = None,
+) -> Any:
     if param.default is not None:
         return param.default
     lowered_name = param.name.lower()
+    if (
+        service_ir is not None
+        and service_ir.protocol == "scim"
+        and lowered_name == "id"
+        and operation is not None
+    ):
+        path = operation.path or ""
+        if "/Groups/" in path:
+            return "g1"
+        if "/Users/" in path:
+            return "u1"
     if lowered_name == "status":
         return "available"
     if param.type == "integer":
@@ -1073,12 +1089,15 @@ def _sample_arguments_for_operation(
         return _sample_graphql_arguments(operation)
     if service_ir.protocol == "grpc":
         return _sample_grpc_arguments(operation)
-    return {param.name: _sample_value(param) for param in operation.params}
+    return {
+        param.name: _sample_value(param, service_ir=service_ir, operation=operation)
+        for param in operation.params
+    }
 
 
 def _sample_grpc_arguments(operation: Operation) -> dict[str, Any]:
     arguments = {
-        param.name: _sample_value(param)
+        param.name: _sample_value(param, operation=operation)
         for param in operation.params
         if param.required or param.default is not None
     }
@@ -1088,7 +1107,7 @@ def _sample_grpc_arguments(operation: Operation) -> dict[str, Any]:
         if param.type in {"array", "object"}:
             continue
         if _is_safe_optional_grpc_sample_param(param):
-            arguments[param.name] = _sample_value(param)
+            arguments[param.name] = _sample_value(param, operation=operation)
     return arguments
 
 
@@ -1115,12 +1134,14 @@ def _is_safe_optional_grpc_sample_param(param: Param) -> bool:
 
 def _sample_graphql_arguments(operation: Operation) -> dict[str, Any]:
     if operation.graphql is None:
-        return {param.name: _sample_value(param) for param in operation.params}
+        return {
+            param.name: _sample_value(param, operation=operation) for param in operation.params
+        }
 
     arguments: dict[str, Any] = {}
     for param in operation.params:
         if param.required or param.default is not None:
-            arguments[param.name] = _sample_value(param)
+            arguments[param.name] = _sample_value(param, operation=operation)
 
     if arguments:
         return arguments
@@ -1128,12 +1149,17 @@ def _sample_graphql_arguments(operation: Operation) -> dict[str, Any]:
     if operation.graphql.operation_type is GraphQLOperationType.query:
         return {}
 
-    return {param.name: _sample_value(param) for param in operation.params}
+    return {
+        param.name: _sample_value(param, operation=operation) for param in operation.params
+    }
 
 
 def _sample_sql_arguments(operation: Operation) -> dict[str, Any]:
     if operation.sql is None:
-        return {param.name: _sample_value(param) for param in operation.params}
+        return {
+            param.name: _sample_value(param, operation=operation)
+            for param in operation.params
+        }
 
     if operation.sql.action is SqlOperationType.query:
         arguments: dict[str, Any] = {}
@@ -1142,10 +1168,14 @@ def _sample_sql_arguments(operation: Operation) -> dict[str, Any]:
                 arguments[param.name] = param.default if param.default is not None else 1
                 continue
             if param.required:
-                arguments[param.name] = _sample_value(param)
+                arguments[param.name] = _sample_value(param, operation=operation)
         return arguments
 
-    return {param.name: _sample_value(param) for param in operation.params if param.required}
+    return {
+        param.name: _sample_value(param, operation=operation)
+        for param in operation.params
+        if param.required
+    }
 
 
 def _validation_failure_message(prefix: str, report: Any) -> str:

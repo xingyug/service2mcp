@@ -7,6 +7,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 import yaml
@@ -218,8 +219,22 @@ class OpenAPIExtractor:
             return f"{scheme}://{host}{base_path}"
         servers = spec.get("servers", [])
         if isinstance(servers, list) and servers and isinstance(servers[0], dict):
-            return str(servers[0].get("url", source.url or "http://localhost"))
+            return self._resolve_server_url(
+                str(servers[0].get("url", source.url or "http://localhost")),
+                source,
+            )
         return source.url or "http://localhost"
+
+    def _resolve_server_url(self, server_url: str, source: SourceConfig) -> str:
+        parsed = urlsplit(server_url)
+        if parsed.scheme and parsed.netloc:
+            return server_url
+        if not source.url:
+            return server_url
+        if server_url.startswith("/"):
+            source_parts = urlsplit(source.url)
+            return f"{source_parts.scheme}://{source_parts.netloc}{server_url}"
+        return urljoin(source.url, server_url)
 
     def _extract_auth(self, spec: JSONDict, is_swagger: bool) -> AuthConfig:
         if is_swagger:
@@ -231,14 +246,29 @@ class OpenAPIExtractor:
         if not sec_defs:
             return AuthConfig(type=AuthType.none)
 
-        # Take the first security scheme
-        scheme = next(iter(sec_defs.values()))
-        if not isinstance(scheme, dict):
+        parsed_schemes: list[tuple[str, AuthConfig]] = []
+        for name, raw_scheme in sec_defs.items():
+            if not isinstance(name, str) or not isinstance(raw_scheme, dict):
+                continue
+            parsed = (
+                self._parse_swagger_auth(raw_scheme)
+                if is_swagger
+                else self._parse_openapi_auth(raw_scheme)
+            )
+            if parsed.type is not AuthType.none:
+                parsed_schemes.append((name, parsed))
+
+        if not parsed_schemes:
             return AuthConfig(type=AuthType.none)
 
-        if is_swagger:
-            return self._parse_swagger_auth(scheme)
-        return self._parse_openapi_auth(scheme)
+        if len(parsed_schemes) > 1:
+            logger.info(
+                "OpenAPI auth inference skipped because multiple security schemes were declared: %s",
+                [name for name, _ in parsed_schemes],
+            )
+            return AuthConfig(type=AuthType.none)
+
+        return parsed_schemes[0][1]
 
     def _parse_swagger_auth(self, scheme: JSONDict) -> AuthConfig:
         auth_type = scheme.get("type", "")
@@ -250,7 +280,16 @@ class OpenAPIExtractor:
                 api_key_location=location if location in ("header", "query") else "header",
             )
         if auth_type == "oauth2":
-            return AuthConfig(type=AuthType.oauth2)
+            token_url = scheme.get("tokenUrl")
+            scopes = scheme.get("scopes", {})
+            scope_names = list(scopes.keys()) if isinstance(scopes, dict) else None
+            if isinstance(token_url, str) and token_url:
+                return AuthConfig(
+                    type=AuthType.oauth2,
+                    oauth2_token_url=token_url,
+                    oauth2_scopes=scope_names,
+                )
+            return AuthConfig(type=AuthType.oauth2, oauth2_scopes=scope_names)
         if auth_type == "basic":
             return AuthConfig(type=AuthType.basic)
         return AuthConfig(type=AuthType.none)
@@ -275,7 +314,29 @@ class OpenAPIExtractor:
                 api_key_location=location if location in ("header", "query") else "header",
             )
         if auth_type == "oauth2":
-            return AuthConfig(type=AuthType.oauth2)
+            flows = scheme.get("flows", {})
+            if not isinstance(flows, dict):
+                return AuthConfig(type=AuthType.oauth2)
+
+            for flow_name in (
+                "clientCredentials",
+                "password",
+                "authorizationCode",
+                "implicit",
+            ):
+                flow = flows.get(flow_name)
+                if not isinstance(flow, dict):
+                    continue
+                scopes = flow.get("scopes", {})
+                scope_names = list(scopes.keys()) if isinstance(scopes, dict) else None
+                token_url = flow.get("tokenUrl")
+                if isinstance(token_url, str) and token_url:
+                    return AuthConfig(
+                        type=AuthType.oauth2,
+                        oauth2_token_url=token_url,
+                        oauth2_scopes=scope_names,
+                    )
+                return AuthConfig(type=AuthType.oauth2, oauth2_scopes=scope_names)
         return AuthConfig(type=AuthType.none)
 
     def _extract_operations(

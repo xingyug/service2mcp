@@ -254,9 +254,26 @@ class JsonRpcExtractor:
                 return str(endpoint)
 
         if source.url:
+            if is_openrpc:
+                return JsonRpcExtractor._default_openrpc_endpoint(source.url)
             return source.url
 
         return "http://localhost:8080/rpc"
+
+    @staticmethod
+    def _default_openrpc_endpoint(source_url: str) -> str:
+        parsed = urlparse(source_url)
+        path = parsed.path or ""
+        for suffix in ("/openrpc.json", "/openrpc.yaml", "/openrpc.yml"):
+            if path.endswith(suffix):
+                endpoint_path = f"{path[: -len(suffix)]}/rpc" or "/rpc"
+                return parsed._replace(
+                    path=endpoint_path,
+                    params="",
+                    query="",
+                    fragment="",
+                ).geturl()
+        return source_url
 
     def _get_content(self, source: SourceConfig) -> str | None:
         if source.file_content:

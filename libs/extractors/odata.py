@@ -481,7 +481,7 @@ def _build_function_import_operation(
         name=_humanize_identifier(name),
         description=f"OData function: {name}.",
         method="GET",
-        path=f"/{name}",
+        path=_build_function_import_path(name, params),
         params=ir_params,
         risk=_risk_safe(),
         tags=["odata", "function"],
@@ -490,6 +490,14 @@ def _build_function_import_operation(
         enabled=True,
         error_schema=ErrorSchema(default_error_schema=ODATA_ERROR_SCHEMA),
     )
+
+
+def _build_function_import_path(name: str, params: list[dict[str, str]]) -> str:
+    """Build the callable path for an unbound OData FunctionImport."""
+    if not params:
+        return f"/{name}()"
+    assignments = ",".join(f"{param['name']}={{{param['name']}}}" for param in params)
+    return f"/{name}({assignments})"
 
 
 def _build_action_import_operation(

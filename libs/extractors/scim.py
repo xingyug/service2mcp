@@ -80,9 +80,8 @@ class SCIMExtractor:
         data = json.loads(raw)
         source_hash = hashlib.sha256(raw.encode()).hexdigest()
 
-        schemas_section = data.get("schemas", {})
-        resources: list[dict[str, Any]] = schemas_section.get("Resources", [])
-        spc: dict[str, Any] = data.get("service_provider_config", {})
+        resources = self._extract_resources(data)
+        spc = self._extract_service_provider_config(data)
 
         operations: list[Operation] = []
         resource_names: list[str] = []
@@ -110,7 +109,7 @@ class SCIMExtractor:
         if spc.get("bulk", {}).get("supported"):
             operations.append(self._bulk_op())
 
-        base_url = source.url or "https://scim.example.com"
+        base_url = self._normalize_base_url(source.url)
 
         return ServiceIR(
             source_url=source.url,
@@ -129,6 +128,33 @@ class SCIMExtractor:
                 },
             },
         )
+
+    def _extract_resources(self, data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Support both standard SCIM ListResponse and older wrapped fixtures."""
+        resources = data.get("Resources")
+        if isinstance(resources, list):
+            return [item for item in resources if isinstance(item, dict)]
+
+        schemas_section = data.get("schemas", {})
+        if isinstance(schemas_section, dict):
+            wrapped_resources = schemas_section.get("Resources", [])
+            if isinstance(wrapped_resources, list):
+                return [item for item in wrapped_resources if isinstance(item, dict)]
+
+        return []
+
+    def _extract_service_provider_config(self, data: dict[str, Any]) -> dict[str, Any]:
+        raw = data.get("service_provider_config", {})
+        return raw if isinstance(raw, dict) else {}
+
+    @staticmethod
+    def _normalize_base_url(source_url: str | None) -> str:
+        if not source_url:
+            return "https://scim.example.com"
+        for suffix in ("/Schemas", "/ServiceProviderConfig", "/ResourceTypes"):
+            if source_url.endswith(suffix):
+                return source_url[: -len(suffix)]
+        return source_url
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
