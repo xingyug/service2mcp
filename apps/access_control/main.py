@@ -2,24 +2,28 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apps.access_control.audit.routes import router as audit_router
 from apps.access_control.authn.routes import router as authn_router
 from apps.access_control.authn.service import JWTSettings, load_jwt_settings
 from apps.access_control.authz.routes import router as authz_router
-from apps.access_control.db import configure_database, dispose_database
+from apps.access_control.db import configure_database, dispose_database, get_db_session
 from apps.access_control.gateway_binding.client import GatewayAdminClient
 from apps.access_control.gateway_binding.routes import router as gateway_binding_router
 from apps.access_control.gateway_binding.service import (
     configure_gateway_binding_service,
     dispose_gateway_binding_service,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -50,6 +54,17 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz(
+        session: AsyncSession = Depends(get_db_session),
+    ) -> dict[str, str]:
+        try:
+            await session.execute(sa_text("SELECT 1"))
+            return {"status": "ok"}
+        except Exception:
+            _logger.warning("Readiness check failed: database unreachable", exc_info=True)
+            return {"status": "not_ready"}
 
     return app
 

@@ -58,7 +58,9 @@ class AuditLogService:
         if end_at is not None:
             query = query.where(AuditLog.timestamp <= end_at)
 
-        result = await self._session.scalars(query.order_by(AuditLog.timestamp.desc()))
+        result = await self._session.scalars(
+            query.order_by(AuditLog.timestamp.desc()).limit(1000)
+        )
         return [self._to_response(entry) for entry in result.all()]
 
     @staticmethod

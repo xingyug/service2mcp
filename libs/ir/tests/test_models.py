@@ -163,8 +163,8 @@ class TestOperation:
         assert op.enabled is True
 
     def test_unknown_risk_enabled_rejected(self):
-        with pytest.raises(ValueError, match="unknown.*disabled"):
-            make_operation(risk=RiskMetadata(risk_level=RiskLevel.unknown), enabled=True)
+        op = make_operation(risk=RiskMetadata(risk_level=RiskLevel.unknown), enabled=True)
+        assert op.enabled is False, "unknown risk should auto-disable"
 
     def test_unknown_risk_disabled_allowed(self):
         op = make_operation(

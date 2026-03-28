@@ -36,8 +36,7 @@ def create_app(
 
     @app.get("/readyz")
     async def readyz() -> dict[str, Any]:
-        return {
-            "status": "ok",
+        checks: dict[str, Any] = {
             "workflow_engine": app.state.workflow_engine,
             "compilation_queue": app.state.compilation_queue,
             "task_name": COMPILATION_TASK_NAME,
@@ -46,6 +45,12 @@ def create_app(
             "route_publish_mode": app.state.route_publish_mode,
             "access_control_url": app.state.access_control_url,
         }
+        missing = [k for k, v in checks.items() if v is None]
+        ready = not missing
+        checks["status"] = "ok" if ready else "not_ready"
+        if missing:
+            checks["missing"] = missing
+        return checks
 
     @app.get("/metrics")
     async def metrics() -> Response:

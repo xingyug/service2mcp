@@ -314,13 +314,18 @@ class KubernetesManifestDeployer:
                 "networking.k8s.io/v1",
                 manifest_set.network_policy,
             )
+            deploy_meta = manifest_set.deployment.get("metadata", {})
+            deploy_spec = manifest_set.deployment.get("spec", {})
+            svc_meta = manifest_set.service.get("metadata", {})
+            svc_ports = manifest_set.service.get("spec", {}).get("ports", [])
+
             observed_generation = await self._wait_for_rollout(
-                manifest_set.deployment["metadata"]["name"],
-                expected_replicas=int(manifest_set.deployment["spec"]["replicas"]),
+                deploy_meta.get("name", "unknown"),
+                expected_replicas=int(deploy_spec.get("replicas", 1)),
             )
-            deployment_name = str(manifest_set.deployment["metadata"]["name"])
-            service_name = str(manifest_set.service["metadata"]["name"])
-            service_port = int(manifest_set.service["spec"]["ports"][0]["port"])
+            deployment_name = str(deploy_meta.get("name", "unknown"))
+            service_name = str(svc_meta.get("name", "unknown"))
+            service_port = int(svc_ports[0]["port"]) if svc_ports else 8080
             resource_version = str(
                 deployment_response.get("metadata", {}).get("resourceVersion", "unknown")
             )

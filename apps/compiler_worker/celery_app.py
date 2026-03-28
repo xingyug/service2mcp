@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import Coroutine
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +17,8 @@ from apps.compiler_worker.models import CompilationRequest
 COMPILATION_TASK_NAME = "compiler_worker.execute_compilation"
 DEFAULT_COMPILATION_QUEUE = "compiler.jobs"
 _T = TypeVar("_T")
+
+_logger = logging.getLogger(__name__)
 
 
 def create_celery_app(
@@ -38,6 +41,16 @@ def create_celery_app(
         or os.getenv("REDIS_URL")
         or "cache+memory://"
     )
+    if resolved_broker_url == "memory://":
+        _logger.warning(
+            "Celery broker falling back to memory:// — tasks will be lost on restart. "
+            "Set CELERY_BROKER_URL or REDIS_URL for production."
+        )
+    if resolved_result_backend == "cache+memory://":
+        _logger.warning(
+            "Celery result backend falling back to cache+memory:// — results are ephemeral. "
+            "Set CELERY_RESULT_BACKEND or REDIS_URL for production."
+        )
     resolved_queue_name = (
         queue_name
         or os.getenv("COMPILATION_TASK_QUEUE")

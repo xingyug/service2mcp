@@ -872,7 +872,16 @@ class RuntimeProxy:
             timeout=self._timeout,
         )
         response.raise_for_status()
-        payload = response.json()
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise ToolError(
+                f"OAuth2 token endpoint returned non-JSON response for {operation_id}."
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ToolError(
+                f"OAuth2 token endpoint returned non-object JSON for {operation_id}."
+            )
         access_token = payload.get("access_token")
         if not isinstance(access_token, str) or not access_token:
             raise ToolError(
@@ -1470,6 +1479,8 @@ def _build_signing_payload(
 
 
 def _normalize_query_value(value: Any) -> str:
+    if value is None:
+        return ""
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
@@ -1478,7 +1489,10 @@ def _normalize_query_value(value: Any) -> str:
 def _parse_response_payload(response: httpx.Response) -> Any:
     content_type = response.headers.get("content-type", "")
     if "json" in content_type:
-        return response.json()
+        try:
+            return response.json()
+        except Exception:
+            return response.text
     normalized_content_type = content_type.lower()
     if any(
         normalized_content_type.startswith(textual)

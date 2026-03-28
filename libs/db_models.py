@@ -24,6 +24,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -115,6 +116,12 @@ class ServiceVersion(Base):
     __table_args__ = (
         Index("ix_service_versions_service_id", "service_id"),
         Index("ix_service_versions_active", "service_id", "is_active"),
+        Index(
+            "uq_service_versions_one_active",
+            "service_id",
+            unique=True,
+            postgresql_where=text("is_active = true"),
+        ),
         UniqueConstraint("service_id", "version_number", name="uq_service_version"),
         {"schema": "registry"},
     )

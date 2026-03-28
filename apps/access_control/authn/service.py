@@ -84,6 +84,7 @@ class AuthnService:
             .join(User, PersonalAccessToken.user_id == User.id)
             .where(User.username == username)
             .order_by(PersonalAccessToken.created_at.desc())
+            .limit(1000)
         )
         return [
             PATResponse(
@@ -151,9 +152,12 @@ class AuthnService:
             raise AuthenticationError("JWT must contain three segments.")
 
         header_segment, payload_segment, signature_segment = parts
-        header = json.loads(_b64decode_json(header_segment))
+        try:
+            header = json.loads(_b64decode_json(header_segment))
+        except (json.JSONDecodeError, UnicodeDecodeError, Exception):
+            raise AuthenticationError("Malformed JWT header.")
         if header.get("alg") != "HS256":
-            raise AuthenticationError("Only HS256 JWTs are supported.")
+            raise AuthenticationError("Unsupported JWT algorithm.")
 
         signing_input = f"{header_segment}.{payload_segment}".encode()
         expected_signature = hmac.new(
@@ -161,11 +165,17 @@ class AuthnService:
             signing_input,
             hashlib.sha256,
         ).digest()
-        provided_signature = _b64decode_bytes(signature_segment)
+        try:
+            provided_signature = _b64decode_bytes(signature_segment)
+        except Exception:
+            raise AuthenticationError("Malformed JWT signature encoding.")
         if not hmac.compare_digest(expected_signature, provided_signature):
             raise AuthenticationError("JWT signature is invalid.")
 
-        claims = json.loads(_b64decode_json(payload_segment))
+        try:
+            claims = json.loads(_b64decode_json(payload_segment))
+        except (json.JSONDecodeError, UnicodeDecodeError, Exception):
+            raise AuthenticationError("Malformed JWT payload.")
         now_ts = int(datetime.now(UTC).timestamp())
         exp = claims.get("exp")
         if not isinstance(exp, int) or exp <= now_ts:

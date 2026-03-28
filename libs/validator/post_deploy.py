@@ -306,7 +306,18 @@ class PostDeployValidator:
                 {},
             )
 
-        payload = response.json()
+        try:
+            payload = response.json()
+        except Exception:
+            return (
+                ValidationResult(
+                    stage="tool_listing",
+                    passed=False,
+                    details="Runtime tool listing returned non-JSON response.",
+                    duration_ms=self._duration_ms(started_at),
+                ),
+                {},
+            )
         listed_tools = {
             tool["name"]: tool
             for tool in payload.get("tools", [])
@@ -421,6 +432,14 @@ class PostDeployValidator:
                 stage="invocation_smoke",
                 passed=False,
                 details=f"Invocation smoke test failed for {operation.id}: {exc}",
+                duration_ms=self._duration_ms(started_at),
+            )
+
+        if not isinstance(result, dict):
+            return ValidationResult(
+                stage="invocation_smoke",
+                passed=False,
+                details=f"Invocation smoke test for {operation.id} returned non-dict result.",
                 duration_ms=self._duration_ms(started_at),
             )
 

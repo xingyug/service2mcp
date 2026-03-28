@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from apps.mcp_runtime import RuntimeLoadError, create_app, load_service_ir
+from apps.mcp_runtime import create_app, load_service_ir
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "ir"
 VALID_IR_PATH = FIXTURES_DIR / "service_ir_valid.json"
@@ -24,9 +24,11 @@ def test_load_service_ir_fixture() -> None:
     assert enabled_operation_ids == ["listAccounts"]
 
 
-def test_load_invalid_ir_fixture_raises() -> None:
-    with pytest.raises(RuntimeLoadError):
-        load_service_ir(INVALID_IR_PATH)
+def test_load_invalid_ir_fixture_auto_disables() -> None:
+    service_ir = load_service_ir(INVALID_IR_PATH)
+    assert service_ir.service_name == "invalid-runtime"
+    # unknown risk with enabled=True should be auto-corrected to disabled
+    assert all(not op.enabled for op in service_ir.operations)
 
 
 @pytest.mark.asyncio
@@ -51,7 +53,7 @@ async def test_runtime_loads_ir_registers_tools_and_reports_healthy() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_reports_not_ready_for_invalid_ir() -> None:
+async def test_runtime_loads_ir_with_all_ops_disabled() -> None:
     app = create_app(service_ir_path=INVALID_IR_PATH)
     transport = httpx.ASGITransport(app=app)
 
@@ -60,8 +62,7 @@ async def test_runtime_reports_not_ready_for_invalid_ir() -> None:
         ready_response = await client.get("/readyz")
         tools_response = await client.get("/tools")
 
-    assert health_response.status_code == 503
-    assert ready_response.status_code == 503
-    assert tools_response.status_code == 503
+    assert health_response.status_code == 200
+    assert ready_response.status_code == 200
+    assert tools_response.status_code == 200
     assert tools_response.json()["tool_count"] == 0
-    assert "Invalid ServiceIR" in health_response.json()["error"]

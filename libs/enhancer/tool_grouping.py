@@ -150,6 +150,8 @@ class ToolGrouper:
 
             groups: list[ToolGroup] = []
             for item in data:
+                if not isinstance(item, dict):
+                    continue
                 group_id = item.get("id", "")
                 label = item.get("label", "")
                 if not group_id or not label:

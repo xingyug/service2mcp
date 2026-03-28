@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -23,6 +24,8 @@ from apps.access_control.gateway_binding.service import (
 )
 
 router = APIRouter(prefix="/api/v1/authn", tags=["authn"])
+
+_logger = logging.getLogger(__name__)
 
 
 def get_jwt_settings(request: Request) -> JWTSettings:
@@ -65,7 +68,10 @@ async def create_pat(
         name=payload.name,
         email=payload.email,
     )
-    await gateway_binding.sync_pat_creation(created, created.token)
+    try:
+        await gateway_binding.sync_pat_creation(created, created.token)
+    except Exception:
+        _logger.warning("Gateway sync failed after PAT creation %s", created.id, exc_info=True)
     return created
 
 
@@ -96,5 +102,8 @@ async def revoke_pat(
     revoked = await service.revoke_pat(parsed_pat_id)
     if revoked is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PAT not found.")
-    await gateway_binding.sync_pat_revocation(revoked.id)
+    try:
+        await gateway_binding.sync_pat_revocation(revoked.id)
+    except Exception:
+        _logger.warning("Gateway sync failed after PAT revocation %s", revoked.id, exc_info=True)
     return revoked

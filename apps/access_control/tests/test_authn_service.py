@@ -225,7 +225,7 @@ class TestValidateJwtErrors:
     def test_unsupported_algorithm(self) -> None:
         svc = _make_service()
         token = _make_jwt(_valid_claims(), alg="RS256")
-        with pytest.raises(AuthenticationError, match="HS256"):
+        with pytest.raises(AuthenticationError, match="Unsupported JWT algorithm"):
             svc._validate_jwt(token)
 
     def test_invalid_signature(self) -> None:

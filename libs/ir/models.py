@@ -387,10 +387,7 @@ class Operation(BaseModel):
     @model_validator(mode="after")
     def unknown_risk_must_be_disabled(self) -> Operation:
         if self.risk.risk_level == RiskLevel.unknown and self.enabled:
-            raise ValueError(
-                f"Operation '{self.id}' has risk_level='unknown' but enabled=True. "
-                f"Operations with unknown risk must be disabled."
-            )
+            self.enabled = False
         return self
 
     @model_validator(mode="after")

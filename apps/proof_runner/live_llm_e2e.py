@@ -551,9 +551,8 @@ async def _audit_generated_tools(
 async def _fetch_runtime_tool_names(runtime_base_url: str) -> set[str]:
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         response = await client.get(f"{runtime_base_url.rstrip('/')}/tools")
-
-    response.raise_for_status()
-    payload = response.json()
+        response.raise_for_status()
+        payload = response.json()
     return {
         tool["name"]
         for tool in payload.get("tools", [])

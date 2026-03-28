@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -24,6 +25,8 @@ from apps.access_control.gateway_binding.service import (
     get_gateway_binding_service,
 )
 
+_logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/authz", tags=["authz"])
 
 
@@ -41,7 +44,10 @@ async def create_policy(
     audit_log: AuditLogService = Depends(get_audit_log_service),
 ) -> PolicyResponse:
     created = await service.create_policy(payload)
-    await gateway_binding.sync_policy(created)
+    try:
+        await gateway_binding.sync_policy(created)
+    except Exception:
+        _logger.warning("Gateway sync failed after policy creation %s", created.id, exc_info=True)
     await audit_log.append_entry(
         actor=payload.created_by or "system",
         action="policy.created",
@@ -89,7 +95,10 @@ async def update_policy(
     updated = await service.update_policy(policy_id, payload)
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found.")
-    await gateway_binding.sync_policy(updated)
+    try:
+        await gateway_binding.sync_policy(updated)
+    except Exception:
+        _logger.warning("Gateway sync failed after policy update %s", policy_id, exc_info=True)
     await audit_log.append_entry(
         actor=payload.created_by or "system",
         action="policy.updated",
@@ -110,7 +119,10 @@ async def delete_policy(
     deleted = await service.delete_policy(policy_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found.")
-    await gateway_binding.delete_policy(policy_id)
+    try:
+        await gateway_binding.delete_policy(policy_id)
+    except Exception:
+        _logger.warning("Gateway delete failed after policy deletion %s", policy_id, exc_info=True)
     await audit_log.append_entry(
         actor="system",
         action="policy.deleted",

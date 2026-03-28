@@ -59,7 +59,8 @@ def setup_tracer(
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
             from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-            exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+            insecure = os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "false").lower() in ("1", "true")
+            exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
             provider.add_span_processor(BatchSpanProcessor(exporter))
 
         trace.set_tracer_provider(provider)

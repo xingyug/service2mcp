@@ -70,7 +70,9 @@ class AuthzService:
         if resource_id is not None:
             query = query.where(Policy.resource_id == resource_id)
 
-        result = await self._session.scalars(query.order_by(Policy.created_at.desc()))
+        result = await self._session.scalars(
+            query.order_by(Policy.created_at.desc()).limit(1000)
+        )
         return [self._to_response(policy) for policy in result.all()]
 
     async def get_policy(self, policy_id: UUID) -> PolicyResponse | None:
@@ -162,8 +164,11 @@ class AuthzService:
         if not fnmatchcase(payload.action, policy.action_pattern):
             return False
 
-        threshold = RiskLevel(policy.risk_threshold)
-        return _RISK_ORDER[payload.risk_level] <= _RISK_ORDER[threshold]
+        try:
+            threshold = RiskLevel(policy.risk_threshold)
+        except ValueError:
+            return False
+        return _RISK_ORDER.get(payload.risk_level, 999) <= _RISK_ORDER.get(threshold, 999)
 
     def _specificity(self, policy: Policy, payload: PolicyEvaluationRequest) -> int:
         score = 0

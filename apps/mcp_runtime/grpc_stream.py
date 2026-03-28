@@ -81,9 +81,13 @@ class ReflectionGrpcStreamExecutor:
                 response_deserializer=response_class.FromString,
             )
 
+            # gRPC timeout is a hard RPC deadline, not an idle timeout.
+            # Scale the deadline to allow for max_messages at the idle rate.
+            rpc_deadline = config.idle_timeout_seconds * config.max_messages
+
             responses = stream(
                 request_message,
-                timeout=config.idle_timeout_seconds,
+                timeout=rpc_deadline,
             )
             events: list[dict[str, Any]] = []
             termination_reason = "completed"

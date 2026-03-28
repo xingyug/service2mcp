@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import field as dataclass_field
+from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -47,18 +48,24 @@ class DatabaseWorkflowCompilationExecutor:
 
     database_url: str
 
-    async def execute(self, request: CompilationRequest) -> None:
-        engine = create_async_engine(self.database_url, pool_pre_ping=True)
-        session_factory = async_sessionmaker[AsyncSession](engine, expire_on_commit=False)
-        try:
-            store = SQLAlchemyCompilationJobStore(session_factory)
-            workflow = CompilationWorkflow(
-                store=store,
-                activities=create_default_activity_registry(session_factory=session_factory),
+    _engine_cache: dict[str, Any] = dataclass_field(default_factory=dict, repr=False)
+
+    def _get_engine(self) -> Any:
+        if "engine" not in self._engine_cache:
+            self._engine_cache["engine"] = create_async_engine(
+                self.database_url, pool_pre_ping=True
             )
-            await workflow.run(request)
-        finally:
-            await engine.dispose()
+        return self._engine_cache["engine"]
+
+    async def execute(self, request: CompilationRequest) -> None:
+        engine = self._get_engine()
+        session_factory = async_sessionmaker[AsyncSession](engine, expire_on_commit=False)
+        store = SQLAlchemyCompilationJobStore(session_factory)
+        workflow = CompilationWorkflow(
+            store=store,
+            activities=create_default_activity_registry(session_factory=session_factory),
+        )
+        await workflow.run(request)
 
 
 _configured_executor: CompilationExecutor | None = None

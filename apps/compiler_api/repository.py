@@ -369,6 +369,13 @@ class ArtifactRegistryRepository:
         )
 
     async def _deactivate_service_versions(self, service_id: str) -> None:
+        # Lock active versions first to prevent concurrent activation race
+        await self._session.scalars(
+            select(ServiceVersion.id)
+            .where(ServiceVersion.service_id == service_id)
+            .where(ServiceVersion.is_active.is_(True))
+            .with_for_update()
+        )
         await self._session.execute(
             update(ServiceVersion)
             .where(ServiceVersion.service_id == service_id)
