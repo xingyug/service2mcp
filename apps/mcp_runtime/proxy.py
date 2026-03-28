@@ -1339,13 +1339,17 @@ async def _collect_sse_events(
         if line.startswith(":"):
             continue
         if line.startswith("event:"):
-            event_type = line.partition(":")[2].lstrip() or "message"
+            raw = line.partition(":")[2]
+            event_type = raw[1:] if raw.startswith(" ") else raw
+            event_type = event_type or "message"
             continue
         if line.startswith("data:"):
-            data_lines.append(line.partition(":")[2].lstrip())
+            raw = line.partition(":")[2]
+            data_lines.append(raw[1:] if raw.startswith(" ") else raw)
             continue
         if line.startswith("id:"):
-            event_id = line.partition(":")[2].lstrip()
+            raw = line.partition(":")[2]
+            event_id = raw[1:] if raw.startswith(" ") else raw
 
     trailing_event = _build_sse_event(event_type, data_lines, event_id)
     if trailing_event is not None and len(events) < max_events:
@@ -1722,6 +1726,8 @@ def _set_nested(
     source: Any,
 ) -> None:
     """Copy a nested value from *source* into *target[root]* following *segments*."""
+    if not segments:
+        return
     node = source
     for seg in segments:
         if isinstance(node, dict) and seg in node:
