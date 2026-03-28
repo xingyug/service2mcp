@@ -25,6 +25,7 @@ from libs.ir.models import (
     GrpcStreamMode,
     GrpcStreamRuntimeConfig,
     GrpcUnaryRuntimeConfig,
+    JsonRpcOperationConfig,
     MTLSConfig,
     OAuth2ClientCredentialsConfig,
     Operation,
@@ -919,3 +920,209 @@ class TestOperationErrorSchemaAndExamples:
         assert len(restored_op.response_examples) == 2
         assert restored_op.response_examples[0].name == "success"
         assert restored_op.response_examples[1].body == "bad input"
+
+
+# ── Cross-Contract Coherence Validators ────────────────────────────────────
+
+def _sql_config(**overrides: Any) -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "schema_name": "public",
+        "relation_name": "users",
+        "relation_kind": SqlRelationKind.table,
+        "action": SqlOperationType.query,
+        "filterable_columns": ["id"],
+    }
+    return defaults | overrides
+
+
+def _grpc_unary_config(**overrides: Any) -> dict[str, Any]:
+    return {"rpc_path": "/svc/Method", "timeout_seconds": 5.0} | overrides
+
+
+def _soap_config(**overrides: Any) -> dict[str, Any]:
+    return {"target_namespace": "urn:example", "request_element": "GetUser"} | overrides
+
+
+def _graphql_config(**overrides: Any) -> dict[str, Any]:
+    return {"operation_type": "query", "operation_name": "GetUser", "document": "{ user { id } }"} | overrides
+
+
+def _jsonrpc_config(**overrides: Any) -> dict[str, Any]:
+    return {"method_name": "user.get"} | overrides
+
+
+class TestSqlOperationConfigValidator:
+    """Covers SqlOperationConfig.sql_contract_must_be_coherent (lines 291-299)."""
+
+    def test_default_limit_exceeds_max_limit(self):
+        with pytest.raises(ValidationError, match="default_limit must be <= max_limit"):
+            SqlOperationConfig(**_sql_config(default_limit=300, max_limit=100))
+
+    def test_query_without_filterable_columns(self):
+        with pytest.raises(ValidationError, match="filterable_columns"):
+            SqlOperationConfig(**_sql_config(action=SqlOperationType.query, filterable_columns=[]))
+
+    def test_insert_with_non_table_relation(self):
+        with pytest.raises(ValidationError, match="relation_kind='table'"):
+            SqlOperationConfig(**_sql_config(
+                action=SqlOperationType.insert,
+                relation_kind=SqlRelationKind.view,
+                insertable_columns=["name"],
+            ))
+
+    def test_insert_without_insertable_columns(self):
+        with pytest.raises(ValidationError, match="insertable_columns"):
+            SqlOperationConfig(**_sql_config(
+                action=SqlOperationType.insert,
+                relation_kind=SqlRelationKind.table,
+                insertable_columns=[],
+            ))
+
+
+class TestEventDescriptorGrpcStreamValidator:
+    """Covers EventDescriptor.grpc_stream_config_must_match_transport (line 323)."""
+
+    def test_grpc_stream_channel_mismatch(self):
+        with pytest.raises(ValidationError, match="channel must match"):
+            EventDescriptor(
+                id="evt1",
+                name="stream",
+                transport=EventTransport.grpc_stream,
+                grpc_stream=GrpcStreamRuntimeConfig(rpc_path="/svc/Stream", mode=GrpcStreamMode.server),
+                channel="/different/path",
+            )
+
+
+class TestCrossContractCoherenceValidators:
+    """Covers Operation cross-contract validators (lines 398-467)."""
+
+    # ── grpc_unary conflicts ───────────────────────────────────────────
+
+    def test_grpc_unary_with_graphql(self):
+        with pytest.raises(ValidationError, match="grpc_unary.*cannot.*graphql"):
+            make_operation(
+                grpc_unary=GrpcUnaryRuntimeConfig(**_grpc_unary_config()),
+                graphql=GraphQLOperationConfig(**_graphql_config()),
+                method="POST",
+            )
+
+    def test_grpc_unary_with_sql(self):
+        with pytest.raises(ValidationError, match="grpc_unary.*cannot.*sql"):
+            make_operation(
+                grpc_unary=GrpcUnaryRuntimeConfig(**_grpc_unary_config()),
+                sql=SqlOperationConfig(**_sql_config()),
+                method="POST",
+            )
+
+    def test_grpc_unary_with_soap(self):
+        with pytest.raises(ValidationError, match="grpc_unary.*cannot.*soap"):
+            make_operation(
+                grpc_unary=GrpcUnaryRuntimeConfig(**_grpc_unary_config()),
+                soap=SoapOperationConfig(**_soap_config()),
+                method="POST",
+            )
+
+    def test_grpc_unary_with_jsonrpc(self):
+        with pytest.raises(ValidationError, match="grpc_unary.*cannot.*jsonrpc"):
+            make_operation(
+                grpc_unary=GrpcUnaryRuntimeConfig(**_grpc_unary_config()),
+                jsonrpc=JsonRpcOperationConfig(**_jsonrpc_config()),
+                method="POST",
+            )
+
+    # ── soap conflicts ─────────────────────────────────────────────────
+
+    def test_soap_with_graphql(self):
+        with pytest.raises(ValidationError, match="soap.*cannot.*graphql"):
+            make_operation(
+                soap=SoapOperationConfig(**_soap_config()),
+                graphql=GraphQLOperationConfig(**_graphql_config()),
+                method="POST",
+            )
+
+    def test_soap_with_sql(self):
+        with pytest.raises(ValidationError, match="soap.*cannot.*sql"):
+            make_operation(
+                soap=SoapOperationConfig(**_soap_config()),
+                sql=SqlOperationConfig(**_sql_config()),
+                method="POST",
+            )
+
+    def test_soap_with_grpc_unary(self):
+        # grpc_unary validator fires first in normal construction; use model_construct
+        # to bypass it and exercise the soap validator's grpc_unary check (line 422).
+        op = Operation.model_construct(
+            soap=SoapOperationConfig(**_soap_config()),
+            grpc_unary=GrpcUnaryRuntimeConfig(**_grpc_unary_config()),
+        )
+        with pytest.raises(ValueError, match="soap.*cannot.*grpc_unary"):
+            op.soap_contract_must_be_coherent()
+
+    def test_soap_with_jsonrpc(self):
+        with pytest.raises(ValidationError, match="soap.*cannot.*jsonrpc"):
+            make_operation(
+                soap=SoapOperationConfig(**_soap_config()),
+                jsonrpc=JsonRpcOperationConfig(**_jsonrpc_config()),
+                method="POST",
+            )
+
+    # ── sql conflicts ──────────────────────────────────────────────────
+
+    def test_sql_with_graphql(self):
+        with pytest.raises(ValidationError, match="sql.*cannot.*graphql"):
+            make_operation(
+                sql=SqlOperationConfig(**_sql_config()),
+                graphql=GraphQLOperationConfig(**_graphql_config()),
+                method="GET",
+            )
+
+    def test_sql_with_grpc_unary(self):
+        # grpc_unary validator fires first; use model_construct to reach line 437.
+        op = Operation.model_construct(
+            sql=SqlOperationConfig(**_sql_config()),
+            grpc_unary=GrpcUnaryRuntimeConfig(**_grpc_unary_config()),
+        )
+        with pytest.raises(ValueError, match="sql.*cannot.*grpc_unary"):
+            op.sql_contract_must_match_operation_shape()
+
+    def test_sql_with_soap(self):
+        # soap validator fires first; use model_construct to reach line 439.
+        op = Operation.model_construct(
+            sql=SqlOperationConfig(**_sql_config()),
+            soap=SoapOperationConfig(**_soap_config()),
+        )
+        with pytest.raises(ValueError, match="sql.*cannot.*soap"):
+            op.sql_contract_must_match_operation_shape()
+
+    def test_sql_with_jsonrpc(self):
+        with pytest.raises(ValidationError, match="sql.*cannot.*jsonrpc"):
+            make_operation(
+                sql=SqlOperationConfig(**_sql_config()),
+                jsonrpc=JsonRpcOperationConfig(**_jsonrpc_config()),
+                method="GET",
+            )
+
+    # ── jsonrpc conflicts ──────────────────────────────────────────────
+
+    def test_jsonrpc_with_graphql(self):
+        with pytest.raises(ValidationError, match="jsonrpc.*cannot.*graphql"):
+            make_operation(
+                jsonrpc=JsonRpcOperationConfig(**_jsonrpc_config()),
+                graphql=GraphQLOperationConfig(**_graphql_config()),
+                method="POST",
+            )
+
+    def test_jsonrpc_non_post_method(self):
+        with pytest.raises(ValidationError, match="jsonrpc.*method.*POST"):
+            make_operation(
+                jsonrpc=JsonRpcOperationConfig(**_jsonrpc_config()),
+                method="GET",
+            )
+
+
+class TestAuthConfigValidator:
+    """Covers AuthConfig.nested_auth_configuration_must_be_coherent (line 490)."""
+
+    def test_custom_header_without_header_name(self):
+        with pytest.raises(ValidationError, match="custom_header.*header_name"):
+            AuthConfig(type=AuthType.custom_header)

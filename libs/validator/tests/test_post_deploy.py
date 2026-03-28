@@ -1021,3 +1021,586 @@ async def test_validate_with_audit_threshold_violations_detected(
     # Zero-tolerance threshold should pass since we have no failures
     clean_thresholds = AuditThresholds(max_failed=0)
     assert check_thresholds(audit_summary, clean_thresholds) == []
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_validator_owns_client_when_none_provided() -> None:
+    """PostDeployValidator closes its own client when no external client is given."""
+    validator = PostDeployValidator(timeout=1.0)
+    assert validator._owns_client is True
+    await validator.aclose()
+    assert validator._client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_validator_does_not_close_external_client() -> None:
+    """PostDeployValidator does not close an externally provided client."""
+    external = httpx.AsyncClient()
+    validator = PostDeployValidator(client=external)
+    assert validator._owns_client is False
+    await validator.aclose()
+    assert not external.is_closed
+    await external.aclose()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_validator_context_manager() -> None:
+    """PostDeployValidator async context manager enters and exits cleanly."""
+    async with PostDeployValidator(timeout=1.0) as validator:
+        assert validator._owns_client is True
+    assert validator._client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_health_check_unreachable_returns_failure() -> None:
+    """Health check reports failure when runtime is unreachable."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused")
+
+    transport = httpx.MockTransport(handler)
+    service_ir = load_service_ir(VALID_IR_PATH)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", service_ir)
+
+    assert report.overall_passed is False
+    assert report.get_result("health").passed is False
+    assert "failed" in report.get_result("health").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_health_check_non_200_returns_failure() -> None:
+    """Health check reports failure when endpoint returns non-200."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={}, request=request)
+
+    transport = httpx.MockTransport(handler)
+    service_ir = load_service_ir(VALID_IR_PATH)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", service_ir)
+
+    assert report.overall_passed is False
+    assert report.get_result("health").passed is False
+    assert "unexpected status" in report.get_result("health").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_tool_listing_non_200_returns_failure() -> None:
+    """Tool listing reports failure when endpoint returns non-200."""
+    call_count = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(500, request=request)
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+    service_ir = load_service_ir(VALID_IR_PATH)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", service_ir)
+
+    assert report.get_result("tool_listing").passed is False
+    assert "500" in report.get_result("tool_listing").details
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_tool_listing_non_json_returns_failure() -> None:
+    """Tool listing reports failure when endpoint returns non-JSON."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(
+                200,
+                content=b"not json",
+                headers={"content-type": "text/plain"},
+                request=request,
+            )
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+    service_ir = load_service_ir(VALID_IR_PATH)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", service_ir)
+
+    assert report.get_result("tool_listing").passed is False
+    assert "non-json" in report.get_result("tool_listing").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_tool_listing_unreachable_returns_failure() -> None:
+    """Tool listing reports failure when endpoint is unreachable."""
+    call_count = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        raise httpx.ConnectError("Connection refused")
+
+    transport = httpx.MockTransport(handler)
+    service_ir = load_service_ir(VALID_IR_PATH)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", service_ir)
+
+    assert report.get_result("tool_listing").passed is False
+    assert "failed" in report.get_result("tool_listing").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_no_invoker() -> None:
+    """Invocation smoke fails when no tool_invoker is configured."""
+    app = create_app(service_ir_path=VALID_IR_PATH)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=None)
+        report = await validator.validate(
+            "http://testserver",
+            load_service_ir(VALID_IR_PATH),
+            sample_invocations={"getAccount": {"account_id": "acct-1"}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "no tool invoker" in report.get_result("invocation_smoke").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_no_enabled_operations(
+    tmp_path: Path,
+) -> None:
+    """Invocation smoke fails when no operations are enabled."""
+    service_ir = ServiceIR(
+        source_hash="z" * 64,
+        protocol="openapi",
+        service_name="empty-runtime",
+        service_description="No enabled operations",
+        base_url="https://api.example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="disabledOp",
+                name="Disabled Op",
+                description="A disabled operation.",
+                method="GET",
+                path="/disabled",
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.safe,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                ),
+                enabled=False,
+            ),
+        ],
+    )
+    service_ir_path = _write_service_ir(tmp_path, "empty_ops_ir.json", service_ir)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"status": "ok"}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(
+                200,
+                json={"tools": []},
+                request=request,
+            )
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate("http://testserver", service_ir)
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "no enabled operations" in report.get_result("invocation_smoke").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_no_available_tool(
+    tmp_path: Path,
+) -> None:
+    """Invocation smoke fails when no enabled tool is in runtime listing."""
+    service_ir = _build_graphql_ir()
+    service_ir_path = _write_service_ir(tmp_path, "no_available_tool_ir.json", service_ir)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"status": "ok"}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(
+                200,
+                json={"tools": [{"name": "otherTool"}]},
+                request=request,
+            )
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"searchProducts": {"term": "test"}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_no_sample_invocation_for_available_tool(
+    tmp_path: Path,
+) -> None:
+    """Invocation smoke fails when no sample invocation is provided for available tools."""
+    service_ir = _build_graphql_ir()
+    service_ir_path = _write_service_ir(tmp_path, "no_sample_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"status": "ok"}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "no sample invocation" in report.get_result("invocation_smoke").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_invoker_raises_exception(
+    tmp_path: Path,
+) -> None:
+    """Invocation smoke fails when tool invoker raises an exception."""
+    service_ir = _build_graphql_ir()
+    service_ir_path = _write_service_ir(tmp_path, "invoker_error_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError("Connection lost")
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"searchProducts": {"term": "test"}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "connection lost" in report.get_result("invocation_smoke").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_invoker_returns_non_dict(
+    tmp_path: Path,
+) -> None:
+    """Invocation smoke fails when tool invoker returns a non-dict result."""
+    service_ir = _build_graphql_ir()
+    service_ir_path = _write_service_ir(tmp_path, "non_dict_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return "not a dict"  # type: ignore[return-value]
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"searchProducts": {"term": "test"}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "non-dict" in report.get_result("invocation_smoke").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_non_ok_status(
+    tmp_path: Path,
+) -> None:
+    """Invocation smoke fails when tool invoker returns non-ok status."""
+    service_ir = _build_graphql_ir()
+    service_ir_path = _write_service_ir(tmp_path, "non_ok_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"status": "error", "detail": "something went wrong"}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"searchProducts": {"term": "test"}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "unexpected status" in report.get_result("invocation_smoke").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_stream_non_dict_payload(
+    tmp_path: Path,
+) -> None:
+    """Invocation smoke fails when stream payload is not a dict."""
+    service_ir = _build_grpc_stream_ir()
+    service_ir_path = _write_service_ir(tmp_path, "stream_non_dict_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {
+            "status": "ok",
+            "transport": "grpc_stream",
+            "result": "not a dict",
+        }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"watchInventory": {"payload": {"sku": "sku-1"}}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "non-object" in report.get_result("invocation_smoke").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_stream_missing_lifecycle(
+    tmp_path: Path,
+) -> None:
+    """Invocation smoke fails when stream result lacks events/lifecycle structure."""
+    service_ir = _build_grpc_stream_ir()
+    service_ir_path = _write_service_ir(tmp_path, "stream_no_lifecycle_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {
+            "status": "ok",
+            "transport": "grpc_stream",
+            "result": {"other": "data"},
+        }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"watchInventory": {"payload": {"sku": "sku-1"}}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "lifecycle" in report.get_result("invocation_smoke").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_audit_tool_not_in_runtime_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audit marks tool as failed when not found in runtime /tools listing."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(
+                200, json={"tools": []}, request=request,
+            )
+        return httpx.Response(200, json={}, request=request)
+
+    service_ir = ServiceIR(
+        source_hash="a" * 64,
+        protocol="openapi",
+        service_name="audit-missing-tool",
+        service_description="Audit test",
+        base_url="https://api.example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="missingTool",
+                name="Missing Tool",
+                description="This tool is not in runtime.",
+                method="GET",
+                path="/missing",
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.safe,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                ),
+                enabled=True,
+            ),
+        ],
+    )
+    transport = httpx.MockTransport(handler)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"status": "ok"}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        _, audit_summary = await validator.validate_with_audit(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"missingTool": {"id": "1"}},
+        )
+
+    assert audit_summary.failed > 0
+    assert any(
+        "does not expose" in r.reason for r in audit_summary.results if r.outcome == "failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_audit_tool_invoker_raises_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Audit marks tool as failed when invoker raises an exception."""
+    monkeypatch.setenv("BILLING_SECRET", "runtime-token")
+
+    async def upstream_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "acct-1"}, request=request)
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
+
+    try:
+        app = create_app(service_ir_path=PROXY_IR_PATH, upstream_client=upstream_client)
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            async def tool_invoker(
+                name: str, args: dict[str, object],
+            ) -> dict[str, object]:
+                raise RuntimeError("simulated failure")
+
+            validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+            _, audit_summary = await validator.validate_with_audit(
+                "http://testserver",
+                load_service_ir(PROXY_IR_PATH),
+                sample_invocations={
+                    "getAccount": {"account_id": "acct-1"},
+                    "createNote": {"account_id": "acct-1", "payload": {"title": "t"}},
+                },
+            )
+    finally:
+        await upstream_client.aclose()
+
+    assert any(
+        "invocation raised" in r.reason.lower()
+        for r in audit_summary.results
+        if r.outcome == "failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_audit_invocation_non_ok_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audit marks tool as failed when invocation returns non-ok status."""
+    monkeypatch.setenv("BILLING_SECRET", "runtime-token")
+
+    async def upstream_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "acct-1"}, request=request)
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(upstream_handler))
+
+    try:
+        app = create_app(service_ir_path=PROXY_IR_PATH, upstream_client=upstream_client)
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            async def tool_invoker(
+                name: str, args: dict[str, object],
+            ) -> dict[str, object]:
+                return {"status": "error", "detail": "bad"}
+
+            validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+            _, audit_summary = await validator.validate_with_audit(
+                "http://testserver",
+                load_service_ir(PROXY_IR_PATH),
+                sample_invocations={
+                    "getAccount": {"account_id": "acct-1"},
+                    "createNote": {"account_id": "acct-1", "payload": {"title": "t"}},
+                },
+            )
+    finally:
+        await upstream_client.aclose()
+
+    assert any(
+        "unexpected status" in r.reason.lower()
+        for r in audit_summary.results
+        if r.outcome == "failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_audit_health_failed_skips_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Audit marks tools as failed when health check fails."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={}, request=request)
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        async def tool_invoker(
+            name: str, args: dict[str, object],
+        ) -> dict[str, object]:
+            return {"status": "ok"}
+
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        _, audit_summary = await validator.validate_with_audit(
+            "http://testserver",
+            load_service_ir(PROXY_IR_PATH),
+            sample_invocations={"getAccount": {"account_id": "acct-1"}},
+        )
+
+    assert audit_summary.failed > 0
+    assert any(
+        r.outcome == "failed"
+        for r in audit_summary.results
+    )

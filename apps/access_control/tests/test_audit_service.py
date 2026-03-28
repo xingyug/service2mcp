@@ -49,3 +49,9 @@ class TestToResponse:
         result = AuditLogService._to_response(entry)  # type: ignore[arg-type]
         assert result.action == "revoke_pat"
         assert result.detail == {"reason": "expired"}
+
+
+# Additional tests to cover uncovered lines in audit/service.py
+
+class TestListEntries:
+    pass

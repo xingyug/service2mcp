@@ -117,3 +117,159 @@ class TestBuildChannel:
         executor = self._make_executor("")
         with pytest.raises(ToolError, match="not a valid grpc target"):
             executor._build_channel()
+
+
+# Additional test coverage for uncovered lines
+from unittest.mock import AsyncMock, patch
+import grpc
+from libs.ir.models import GrpcUnaryRuntimeConfig, Operation
+
+
+class TestInvokeSyncErrorHandling:
+    def _make_executor(self, base_url: str = "grpc://localhost:50051") -> ReflectionGrpcUnaryExecutor:
+        ir = ServiceIR(
+            service_id="test-svc",
+            service_name="Test",
+            base_url=base_url,
+            source_hash="sha256:test",
+            protocol="grpc",
+            operations=[],
+        )
+        return ReflectionGrpcUnaryExecutor(ir)
+
+    def test_non_dict_response_raises_tool_error(self) -> None:
+        executor = self._make_executor()
+        op = Operation(
+            id="op1",
+            name="test",
+            method="grpc",
+            path="/pkg.Svc/Method",
+            description="Test operation",
+            enabled=True,
+        )
+        config = GrpcUnaryRuntimeConfig(
+            rpc_path="/pkg.Svc/Method",
+            timeout_seconds=30,
+        )
+        
+        # Mock the channel and response to return a non-dict
+        with patch.object(executor, '_build_channel') as mock_build_channel:
+            mock_channel = MagicMock()
+            mock_build_channel.return_value = mock_channel
+            
+            # Mock the reflection and protobuf setup
+            with patch('apps.mcp_runtime.grpc_unary.ProtoReflectionDescriptorDatabase') as mock_reflection_db, \
+                 patch('apps.mcp_runtime.grpc_unary.DescriptorPool') as mock_pool_cls, \
+                 patch('apps.mcp_runtime.grpc_unary._method_full_name') as mock_method_name, \
+                 patch('apps.mcp_runtime.grpc_unary._prime_service_descriptor'), \
+                 patch('apps.mcp_runtime.grpc_unary.GetMessageClass') as mock_get_class, \
+                 patch('apps.mcp_runtime.grpc_unary._request_payload') as mock_payload, \
+                 patch('apps.mcp_runtime.grpc_unary.json_format') as mock_json:
+                
+                mock_method_name.return_value = "pkg.Svc.Method"
+                mock_payload.return_value = {}
+                
+                # Setup mock classes and descriptors
+                mock_pool = MagicMock()
+                mock_pool_cls.return_value = mock_pool
+                mock_method_desc = MagicMock()
+                mock_pool.FindMethodByName.return_value = mock_method_desc
+                
+                mock_request_class = MagicMock()
+                mock_response_class = MagicMock()
+                mock_get_class.side_effect = [mock_request_class, mock_response_class]
+                
+                # Mock the actual unary call
+                mock_invoke = MagicMock()
+                mock_response = MagicMock()
+                mock_invoke.return_value = mock_response
+                mock_channel.unary_unary.return_value = mock_invoke
+                
+                # Make MessageToDict return a non-dict (like a string)
+                mock_json.MessageToDict.return_value = "not_a_dict"
+                
+                with pytest.raises(ToolError, match="returned a non-object protobuf message"):
+                    executor._invoke_sync(op, {}, config)
+
+    def test_grpc_rpc_error_handling(self) -> None:
+        """Test general exception handling - covers line 87-90."""
+        executor = self._make_executor()
+        op = Operation(
+            id="op1",
+            name="test",
+            method="grpc",
+            path="/pkg.Svc/Method",
+            description="Test operation",
+            enabled=True,
+        )
+        config = GrpcUnaryRuntimeConfig(
+            rpc_path="/pkg.Svc/Method",
+            timeout_seconds=30,
+        )
+        
+        with patch.object(executor, '_build_channel') as mock_build_channel:
+            mock_channel = MagicMock()
+            mock_build_channel.return_value = mock_channel
+            
+            # Mock a general exception 
+            general_error = ValueError("Test exception")
+            with patch('apps.mcp_runtime.grpc_unary.ProtoReflectionDescriptorDatabase') as mock_reflection_db:
+                mock_reflection_db.side_effect = general_error
+                
+                with pytest.raises(ToolError, match="Native grpc unary invocation failed"):
+                    executor._invoke_sync(op, {}, config)
+
+    def test_tool_error_passthrough(self) -> None:
+        executor = self._make_executor()
+        op = Operation(
+            id="op1", 
+            name="test",
+            method="grpc",
+            path="/pkg.Svc/Method", 
+            description="Test operation",
+            enabled=True,
+        )
+        config = GrpcUnaryRuntimeConfig(
+            rpc_path="/pkg.Svc/Method",
+            timeout_seconds=30,
+        )
+        
+        with patch.object(executor, '_build_channel') as mock_build_channel:
+            mock_channel = MagicMock()
+            mock_build_channel.return_value = mock_channel
+            
+            # Mock a ToolError being raised
+            tool_error = ToolError("Custom tool error")
+            with patch('apps.mcp_runtime.grpc_unary.ProtoReflectionDescriptorDatabase') as mock_reflection_db:
+                mock_reflection_db.side_effect = tool_error
+                
+                # ToolError should be re-raised as-is
+                with pytest.raises(ToolError, match="Custom tool error"):
+                    executor._invoke_sync(op, {}, config)
+
+    def test_general_exception_handling(self) -> None:
+        executor = self._make_executor()
+        op = Operation(
+            id="op1",
+            name="test", 
+            method="grpc",
+            path="/pkg.Svc/Method",
+            description="Test operation", 
+            enabled=True,
+        )
+        config = GrpcUnaryRuntimeConfig(
+            rpc_path="/pkg.Svc/Method",
+            timeout_seconds=30,
+        )
+        
+        with patch.object(executor, '_build_channel') as mock_build_channel:
+            mock_channel = MagicMock()
+            mock_build_channel.return_value = mock_channel
+            
+            # Mock a general exception
+            general_error = ValueError("Some unexpected error")
+            with patch('apps.mcp_runtime.grpc_unary.ProtoReflectionDescriptorDatabase') as mock_reflection_db:
+                mock_reflection_db.side_effect = general_error
+                
+                with pytest.raises(ToolError, match="Native grpc unary invocation failed.*Some unexpected error"):
+                    executor._invoke_sync(op, {}, config)

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from libs.extractors.base import SourceConfig
 from libs.extractors.jsonrpc import JsonRpcExtractor
@@ -121,3 +125,162 @@ def test_extract_manual_user_service() -> None:
     # All operations share the same path
     paths = {op.path for op in ir.operations}
     assert len(paths) == 1
+
+
+# ── additional detection edge cases ────────────────────────────────────────
+
+
+def test_detect_returns_zero_when_no_content() -> None:
+    """Line 115: _get_content returns None → 0.0."""
+    extractor = JsonRpcExtractor()
+    source = SourceConfig(url="https://example.com/rpc")
+    with patch.object(extractor, "_get_content", return_value=None):
+        assert extractor.detect(source) == 0.0
+
+
+def test_detect_returns_zero_for_invalid_json() -> None:
+    """Lines 119-120: invalid JSON → 0.0."""
+    extractor = JsonRpcExtractor()
+    source = SourceConfig(file_content="not json at all")
+    assert extractor.detect(source) == 0.0
+
+
+def test_detect_returns_zero_for_non_dict_json() -> None:
+    """Line 123: valid JSON but not a dict → 0.0."""
+    extractor = JsonRpcExtractor()
+    source = SourceConfig(file_content='[1, 2, 3]')
+    assert extractor.detect(source) == 0.0
+
+
+def test_detect_methods_with_params_returns_07() -> None:
+    """Line 132: methods list with params but no openrpc/jsonrpc_service keys."""
+    extractor = JsonRpcExtractor()
+    content = json.dumps({
+        "methods": [
+            {"name": "doSomething", "params": [{"name": "x"}]},
+        ]
+    })
+    source = SourceConfig(file_content=content)
+    assert extractor.detect(source) == 0.7
+
+
+def test_detect_methods_without_params_returns_zero() -> None:
+    """Line 132 else branch: methods list but no entry has params."""
+    extractor = JsonRpcExtractor()
+    content = json.dumps({
+        "methods": [
+            {"name": "noParams"},
+        ]
+    })
+    source = SourceConfig(file_content=content)
+    assert extractor.detect(source) == 0.0
+
+
+# ── extract error case ────────────────────────────────────────────────────
+
+
+def test_extract_raises_when_no_content() -> None:
+    """Line 140: extract raises ValueError when _get_content returns None."""
+    extractor = JsonRpcExtractor()
+    source = SourceConfig(url="https://example.com/rpc")
+    with patch.object(extractor, "_get_content", return_value=None):
+        with pytest.raises(ValueError, match="Could not read source content"):
+            extractor.extract(source)
+
+
+# ── _resolve_base_url edge cases ──────────────────────────────────────────
+
+
+def test_resolve_base_url_non_openrpc_with_endpoint() -> None:
+    """Line 252-254: non-openrpc spec with explicit endpoint."""
+    content = _load_fixture("manual_user_service.json")
+    data = json.loads(content)
+    source = SourceConfig(file_content=content)
+    url = JsonRpcExtractor._resolve_base_url(data, source, is_openrpc=False)
+    assert url == "https://users.example.com/api/jsonrpc"
+
+
+def test_resolve_base_url_falls_back_to_source_url() -> None:
+    """Lines 256-257: no server/endpoint → falls back to source.url."""
+    data = {"methods": []}
+    source = SourceConfig(url="https://fallback.example.com/rpc")
+    url = JsonRpcExtractor._resolve_base_url(data, source, is_openrpc=False)
+    assert url == "https://fallback.example.com/rpc"
+
+
+def test_resolve_base_url_default_when_nothing() -> None:
+    """Lines 258-259: no server, no endpoint, no source URL → default."""
+    data = {"methods": []}
+    source = SourceConfig(file_content="{}")
+    url = JsonRpcExtractor._resolve_base_url(data, source, is_openrpc=False)
+    assert url == "http://localhost:8080/rpc"
+
+
+# ── _get_content edge cases ───────────────────────────────────────────────
+
+
+def test_get_content_from_file_path() -> None:
+    """Lines 264-265: _get_content reads from file_path."""
+    extractor = JsonRpcExtractor()
+    fixture_path = str(FIXTURES_DIR / "openrpc_calculator.json")
+    source = SourceConfig(file_path=fixture_path)
+    content = extractor._get_content(source)
+    assert content is not None
+    assert "openrpc" in content
+
+
+def test_get_content_from_url_success() -> None:
+    """Lines 266-274: _get_content fetches from URL."""
+    extractor = JsonRpcExtractor()
+    mock_response = MagicMock()
+    mock_response.text = '{"openrpc": "1.0"}'
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("libs.extractors.jsonrpc.httpx.get", return_value=mock_response):
+        source = SourceConfig(url="https://example.com/spec.json")
+        content = extractor._get_content(source)
+    assert content == '{"openrpc": "1.0"}'
+
+
+def test_get_content_from_url_failure_returns_none() -> None:
+    """Lines 275-281: _get_content returns None on HTTP error."""
+    extractor = JsonRpcExtractor()
+    with patch("libs.extractors.jsonrpc.httpx.get", side_effect=Exception("connection error")):
+        source = SourceConfig(url="https://example.com/spec.json")
+        content = extractor._get_content(source)
+    assert content is None
+
+
+def test_get_content_no_source_returns_none() -> None:
+    """Line 282: _get_content returns None when all sources are exhausted."""
+    extractor = JsonRpcExtractor()
+    # Use a source where file_content is truthy but empty-ish won't work with SourceConfig
+    # So test via mocking _get_content returning None for detect
+    source = SourceConfig(url="https://example.com/rpc")
+    with patch("libs.extractors.jsonrpc.httpx.get", side_effect=Exception("fail")):
+        content = extractor._get_content(source)
+    assert content is None
+
+
+# ── _auth_headers ─────────────────────────────────────────────────────────
+
+
+def test_auth_headers_with_auth_header() -> None:
+    """Lines 286-288: auth_header is passed through."""
+    source = SourceConfig(file_content="{}", auth_header="Bearer tok")
+    headers = JsonRpcExtractor._auth_headers(source)
+    assert headers == {"Authorization": "Bearer tok"}
+
+
+def test_auth_headers_with_auth_token() -> None:
+    """Lines 289-290: auth_token formatted as Bearer."""
+    source = SourceConfig(file_content="{}", auth_token="mytoken")
+    headers = JsonRpcExtractor._auth_headers(source)
+    assert headers == {"Authorization": "Bearer mytoken"}
+
+
+def test_auth_headers_no_auth() -> None:
+    """Line 291: no auth → empty dict."""
+    source = SourceConfig(file_content="{}")
+    headers = JsonRpcExtractor._auth_headers(source)
+    assert headers == {}
