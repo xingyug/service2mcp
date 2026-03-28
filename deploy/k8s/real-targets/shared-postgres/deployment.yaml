@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: real-postgres
+  namespace: tc-real-targets
+  labels:
+    app.kubernetes.io/name: real-postgres
+    app.kubernetes.io/part-of: tool-compiler
+    tool-compiler.io/protocol: sql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: real-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: real-postgres
+        app.kubernetes.io/part-of: tool-compiler
+        tool-compiler.io/protocol: sql
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              value: postgres
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          volumeMounts:
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            failureThreshold: 30
+            periodSeconds: 5
+      volumes:
+        - name: init-sql
+          configMap:
+            name: real-postgres-init
+        - name: pgdata
+          emptyDir: {}

@@ -1,0 +1,320 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: real-postgres-init
+  namespace: tc-real-targets
+  labels:
+    app.kubernetes.io/name: real-postgres
+    app.kubernetes.io/part-of: tool-compiler
+data:
+  01-databases.sql: |
+    -- Create databases for Directus, Jackson, and SQL protocol testing
+    CREATE DATABASE directus;
+    CREATE USER directus_user WITH PASSWORD 'directus_pass';
+    GRANT ALL PRIVILEGES ON DATABASE directus TO directus_user;
+    ALTER DATABASE directus OWNER TO directus_user;
+
+    CREATE DATABASE jackson;
+    CREATE USER jackson_user WITH PASSWORD 'jackson_pass';
+    GRANT ALL PRIVILEGES ON DATABASE jackson TO jackson_user;
+    ALTER DATABASE jackson OWNER TO jackson_user;
+
+    -- Catalog v2 is the rich SQL test target
+    CREATE DATABASE catalog_v2;
+    CREATE USER catalog WITH PASSWORD 'catalog';
+    GRANT ALL PRIVILEGES ON DATABASE catalog_v2 TO catalog;
+    ALTER DATABASE catalog_v2 OWNER TO catalog;
+
+  02-catalog-schema.sql: |
+    -- Rich enterprise schema for SQL protocol testing
+    -- Connect to catalog_v2 database
+    \c catalog_v2
+
+    -- Grant schema privileges
+    GRANT ALL ON SCHEMA public TO catalog;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO catalog;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO catalog;
+
+    -- Lookup / dimension tables
+    CREATE TABLE regions (
+        id          SERIAL PRIMARY KEY,
+        name        TEXT NOT NULL UNIQUE,
+        timezone    TEXT NOT NULL DEFAULT 'UTC'
+    );
+
+    CREATE TABLE categories (
+        id          SERIAL PRIMARY KEY,
+        name        TEXT NOT NULL UNIQUE,
+        slug        TEXT NOT NULL UNIQUE,
+        description TEXT,
+        parent_id   INTEGER REFERENCES categories(id),
+        created_at  TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE tags (
+        id   SERIAL PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE
+    );
+
+    -- Core business tables
+    CREATE TABLE customers (
+        id              BIGSERIAL PRIMARY KEY,
+        email           TEXT NOT NULL UNIQUE,
+        full_name       TEXT NOT NULL,
+        tier            TEXT NOT NULL DEFAULT 'standard' CHECK (tier IN ('standard','gold','platinum','enterprise')),
+        region_id       INTEGER REFERENCES regions(id),
+        phone           TEXT,
+        metadata        JSONB DEFAULT '{}',
+        active          BOOLEAN DEFAULT true,
+        created_at      TIMESTAMPTZ DEFAULT now(),
+        updated_at      TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE products (
+        id              BIGSERIAL PRIMARY KEY,
+        sku             TEXT NOT NULL UNIQUE,
+        name            TEXT NOT NULL,
+        description     TEXT,
+        price_cents     INTEGER NOT NULL CHECK (price_cents >= 0),
+        currency        TEXT NOT NULL DEFAULT 'USD',
+        category_id     INTEGER REFERENCES categories(id),
+        stock_quantity  INTEGER NOT NULL DEFAULT 0,
+        weight_grams    INTEGER,
+        is_active       BOOLEAN DEFAULT true,
+        attributes      JSONB DEFAULT '{}',
+        created_at      TIMESTAMPTZ DEFAULT now(),
+        updated_at      TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE product_tags (
+        product_id BIGINT REFERENCES products(id) ON DELETE CASCADE,
+        tag_id     INTEGER REFERENCES tags(id) ON DELETE CASCADE,
+        PRIMARY KEY (product_id, tag_id)
+    );
+
+    CREATE TYPE order_status AS ENUM ('pending','confirmed','processing','shipped','delivered','cancelled','refunded');
+
+    CREATE TABLE orders (
+        id              BIGSERIAL PRIMARY KEY,
+        order_number    TEXT NOT NULL UNIQUE,
+        customer_id     BIGINT NOT NULL REFERENCES customers(id),
+        status          order_status NOT NULL DEFAULT 'pending',
+        total_cents     INTEGER NOT NULL DEFAULT 0,
+        currency        TEXT NOT NULL DEFAULT 'USD',
+        shipping_address JSONB,
+        notes           TEXT,
+        placed_at       TIMESTAMPTZ DEFAULT now(),
+        shipped_at      TIMESTAMPTZ,
+        delivered_at    TIMESTAMPTZ,
+        created_at      TIMESTAMPTZ DEFAULT now(),
+        updated_at      TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE order_items (
+        id          BIGSERIAL PRIMARY KEY,
+        order_id    BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        product_id  BIGINT NOT NULL REFERENCES products(id),
+        quantity    INTEGER NOT NULL CHECK (quantity > 0),
+        unit_price_cents INTEGER NOT NULL,
+        UNIQUE (order_id, product_id)
+    );
+
+    CREATE TABLE reviews (
+        id          BIGSERIAL PRIMARY KEY,
+        product_id  BIGINT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        customer_id BIGINT NOT NULL REFERENCES customers(id),
+        rating      SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+        title       TEXT,
+        body        TEXT,
+        verified    BOOLEAN DEFAULT false,
+        created_at  TIMESTAMPTZ DEFAULT now(),
+        UNIQUE (product_id, customer_id)
+    );
+
+    CREATE TABLE inventory_log (
+        id          BIGSERIAL PRIMARY KEY,
+        product_id  BIGINT NOT NULL REFERENCES products(id),
+        delta       INTEGER NOT NULL,
+        reason      TEXT NOT NULL,
+        performed_by TEXT,
+        created_at  TIMESTAMPTZ DEFAULT now()
+    );
+
+    -- Indexes
+    CREATE INDEX idx_customers_email ON customers(email);
+    CREATE INDEX idx_customers_tier ON customers(tier);
+    CREATE INDEX idx_products_category ON products(category_id);
+    CREATE INDEX idx_products_sku ON products(sku);
+    CREATE INDEX idx_orders_customer ON orders(customer_id);
+    CREATE INDEX idx_orders_status ON orders(status);
+    CREATE INDEX idx_order_items_order ON order_items(order_id);
+    CREATE INDEX idx_reviews_product ON reviews(product_id);
+
+    -- Views
+    CREATE VIEW order_summaries AS
+    SELECT
+        o.id AS order_id,
+        o.order_number,
+        c.email AS customer_email,
+        c.full_name AS customer_name,
+        c.tier AS customer_tier,
+        o.status,
+        o.total_cents,
+        o.currency,
+        o.placed_at,
+        COUNT(oi.id) AS item_count
+    FROM orders o
+    JOIN customers c ON c.id = o.customer_id
+    LEFT JOIN order_items oi ON oi.order_id = o.id
+    GROUP BY o.id, o.order_number, c.email, c.full_name, c.tier, o.status, o.total_cents, o.currency, o.placed_at;
+
+    CREATE VIEW product_catalog AS
+    SELECT
+        p.id,
+        p.sku,
+        p.name,
+        p.description,
+        p.price_cents,
+        p.currency,
+        p.stock_quantity,
+        p.is_active,
+        cat.name AS category_name,
+        cat.slug AS category_slug,
+        COALESCE(AVG(r.rating), 0) AS avg_rating,
+        COUNT(DISTINCT r.id) AS review_count
+    FROM products p
+    LEFT JOIN categories cat ON cat.id = p.category_id
+    LEFT JOIN reviews r ON r.product_id = p.id
+    GROUP BY p.id, p.sku, p.name, p.description, p.price_cents, p.currency, p.stock_quantity, p.is_active, cat.name, cat.slug;
+
+    -- Functions
+    CREATE OR REPLACE FUNCTION get_customer_order_total(p_customer_id BIGINT)
+    RETURNS TABLE(total_orders BIGINT, total_spent_cents BIGINT) AS $$
+    BEGIN
+        RETURN QUERY
+        SELECT COUNT(*)::BIGINT, COALESCE(SUM(total_cents), 0)::BIGINT
+        FROM orders
+        WHERE customer_id = p_customer_id AND status NOT IN ('cancelled', 'refunded');
+    END;
+    $$ LANGUAGE plpgsql;
+
+  03-catalog-seed.sql: |
+    \c catalog_v2
+
+    -- Regions
+    INSERT INTO regions (name, timezone) VALUES
+        ('North America', 'America/New_York'),
+        ('Europe', 'Europe/London'),
+        ('Asia Pacific', 'Asia/Tokyo'),
+        ('Latin America', 'America/Sao_Paulo');
+
+    -- Categories (hierarchical)
+    INSERT INTO categories (name, slug, description) VALUES
+        ('Electronics', 'electronics', 'Electronic devices and accessories'),
+        ('Books', 'books', 'Physical and digital books'),
+        ('Clothing', 'clothing', 'Apparel and accessories'),
+        ('Home & Garden', 'home-garden', 'Home improvement and garden supplies'),
+        ('Sports', 'sports', 'Sports equipment and gear');
+    INSERT INTO categories (name, slug, description, parent_id) VALUES
+        ('Smartphones', 'smartphones', 'Mobile phones and tablets', 1),
+        ('Laptops', 'laptops', 'Portable computers', 1),
+        ('Fiction', 'fiction', 'Fiction literature', 2),
+        ('Non-Fiction', 'non-fiction', 'Non-fiction books', 2),
+        ('Running', 'running', 'Running shoes and gear', 5);
+
+    -- Tags
+    INSERT INTO tags (name) VALUES
+        ('bestseller'), ('new-arrival'), ('sale'), ('premium'),
+        ('eco-friendly'), ('limited-edition'), ('refurbished');
+
+    -- Customers
+    INSERT INTO customers (email, full_name, tier, region_id, phone, metadata) VALUES
+        ('alice@example.com',   'Alice Johnson',   'platinum',   1, '+1-555-0101', '{"loyalty_points": 15200, "preferred_contact": "email"}'),
+        ('bob@example.com',     'Bob Smith',       'gold',       1, '+1-555-0102', '{"loyalty_points": 8400}'),
+        ('carol@example.com',   'Carol Williams',  'standard',   2, '+44-20-7946-0958', '{}'),
+        ('dave@example.com',    'Dave Brown',      'enterprise', 3, '+81-3-1234-5678', '{"company": "Acme Corp", "department": "IT"}'),
+        ('eve@example.com',     'Eve Davis',       'gold',       2, '+44-20-7946-0959', '{"loyalty_points": 5600}'),
+        ('frank@example.com',   'Frank Miller',    'standard',   4, '+55-11-91234-5678', '{}'),
+        ('grace@example.com',   'Grace Lee',       'platinum',   3, '+81-3-9876-5432', '{"loyalty_points": 22000, "vip": true}'),
+        ('henry@example.com',   'Henry Wilson',    'standard',   1, '+1-555-0108', '{}');
+
+    -- Products
+    INSERT INTO products (sku, name, description, price_cents, category_id, stock_quantity, weight_grams, attributes) VALUES
+        ('PHONE-001', 'Galaxy Pro Max',       'Flagship smartphone with 6.7" AMOLED display', 99900, 6, 150, 195, '{"color": "midnight", "storage_gb": 256, "ram_gb": 12}'),
+        ('PHONE-002', 'Pixel Ultra',          'AI-powered smartphone with best-in-class camera', 89900, 6, 200, 187, '{"color": "coral", "storage_gb": 128, "ram_gb": 8}'),
+        ('LAPTOP-001', 'ThinkPad X1 Carbon',  'Ultra-light business laptop, 14" 2.8K OLED', 169900, 7, 45, 1120, '{"cpu": "i7-1365U", "ram_gb": 32, "ssd_gb": 1024}'),
+        ('LAPTOP-002', 'MacBook Air M3',      'Thin and light with M3 chip, 15.3" Liquid Retina', 129900, 7, 80, 1510, '{"cpu": "M3", "ram_gb": 16, "ssd_gb": 512}'),
+        ('BOOK-001', 'The Pragmatic Programmer', 'Classic software development book, 20th Anniversary', 4999, 9, 500, 680, '{"isbn": "978-0135957059", "pages": 352, "format": "hardcover"}'),
+        ('BOOK-002', 'Designing Data-Intensive Applications', 'Guide to distributed systems design', 4499, 9, 300, 720, '{"isbn": "978-1449373320", "pages": 616, "format": "paperback"}'),
+        ('BOOK-003', 'Project Hail Mary',     'Sci-fi adventure by Andy Weir', 1699, 8, 600, 350, '{"isbn": "978-0593135204", "pages": 496, "format": "paperback"}'),
+        ('SHIRT-001', 'Merino Wool Tee',      'Premium merino wool crew-neck t-shirt', 7900, 3, 250, 180, '{"sizes": ["S","M","L","XL"], "colors": ["black","navy","grey"]}'),
+        ('SHOE-001', 'UltraBoost Running',    'Responsive running shoes with Boost midsole', 18000, 10, 120, 310, '{"sizes": [7,8,9,10,11,12], "color": "core black"}'),
+        ('HOME-001', 'Smart LED Bulb Kit',    'WiFi-enabled color LED bulbs, 4-pack', 3999, 4, 400, 320, '{"wattage": 9, "lumens": 800, "protocol": "wifi"}'),
+        ('HOME-002', 'Robot Vacuum Pro',      'LiDAR navigation robot vacuum with mop', 49900, 4, 60, 3800, '{"suction_pa": 5000, "battery_min": 180, "dustbin_ml": 400}'),
+        ('SPORT-001', 'Carbon Fiber Racket',  'Professional tennis racket, 300g unstrung', 22900, 5, 35, 300, '{"head_size_sq_in": 100, "string_pattern": "16x19"}');
+
+    -- Product tags
+    INSERT INTO product_tags (product_id, tag_id) VALUES
+        (1, 1), (1, 4),   -- Galaxy Pro Max: bestseller, premium
+        (2, 2),            -- Pixel Ultra: new-arrival
+        (3, 4),            -- ThinkPad: premium
+        (4, 1), (4, 4),   -- MacBook: bestseller, premium
+        (5, 1),            -- Pragmatic Programmer: bestseller
+        (7, 1), (7, 2),   -- Hail Mary: bestseller, new-arrival
+        (8, 5),            -- Merino Tee: eco-friendly
+        (9, 2),            -- UltraBoost: new-arrival
+        (10, 3),           -- LED Bulb: sale
+        (11, 4), (11, 2), -- Robot Vacuum: premium, new-arrival
+        (12, 6);           -- Racket: limited-edition
+
+    -- Orders
+    INSERT INTO orders (order_number, customer_id, status, total_cents, shipping_address, notes, placed_at, shipped_at, delivered_at) VALUES
+        ('ORD-2024-001', 1, 'delivered',  104899, '{"street": "123 Main St", "city": "New York", "state": "NY", "zip": "10001", "country": "US"}', 'Gift wrapped', '2024-01-15 10:30:00+00', '2024-01-16 14:00:00+00', '2024-01-19 09:00:00+00'),
+        ('ORD-2024-002', 1, 'delivered',  169900, '{"street": "123 Main St", "city": "New York", "state": "NY", "zip": "10001", "country": "US"}', NULL, '2024-02-01 08:15:00+00', '2024-02-02 10:00:00+00', '2024-02-05 11:30:00+00'),
+        ('ORD-2024-003', 2, 'shipped',     22998, '{"street": "456 Oak Ave", "city": "Chicago", "state": "IL", "zip": "60601", "country": "US"}', 'Leave at door', '2024-03-10 16:45:00+00', '2024-03-11 09:00:00+00', NULL),
+        ('ORD-2024-004', 3, 'processing',  89900, '{"street": "10 Downing St", "city": "London", "postcode": "SW1A 2AA", "country": "GB"}', NULL, '2024-03-20 12:00:00+00', NULL, NULL),
+        ('ORD-2024-005', 4, 'confirmed',  299800, '{"street": "1-1-1 Chiyoda", "city": "Tokyo", "zip": "100-0001", "country": "JP"}', 'Corporate PO #AC-2024-789', '2024-03-25 03:00:00+00', NULL, NULL),
+        ('ORD-2024-006', 5, 'pending',      7900, '{"street": "221B Baker St", "city": "London", "postcode": "NW1 6XE", "country": "GB"}', NULL, '2024-03-27 18:00:00+00', NULL, NULL),
+        ('ORD-2024-007', 6, 'cancelled',   18000, '{"street": "Av Paulista 1000", "city": "São Paulo", "state": "SP", "zip": "01310-100", "country": "BR"}', 'Customer requested cancellation', '2024-03-15 20:00:00+00', NULL, NULL),
+        ('ORD-2024-008', 7, 'delivered',   53898, '{"street": "2-2-2 Shibuya", "city": "Tokyo", "zip": "150-0002", "country": "JP"}', 'VIP express delivery', '2024-02-14 06:00:00+00', '2024-02-14 12:00:00+00', '2024-02-15 10:00:00+00'),
+        ('ORD-2024-009', 1, 'processing',  49900, '{"street": "123 Main St", "city": "New York", "state": "NY", "zip": "10001", "country": "US"}', NULL, '2024-03-26 14:30:00+00', NULL, NULL),
+        ('ORD-2024-010', 8, 'confirmed',    9498, '{"street": "789 Pine Rd", "city": "Austin", "state": "TX", "zip": "73301", "country": "US"}', NULL, '2024-03-27 22:00:00+00', NULL, NULL);
+
+    -- Order items
+    INSERT INTO order_items (order_id, product_id, quantity, unit_price_cents) VALUES
+        (1, 1, 1, 99900), (1, 5, 1, 4999),                   -- ORD-001: Galaxy + Pragmatic Programmer
+        (2, 3, 1, 169900),                                      -- ORD-002: ThinkPad
+        (3, 5, 1, 4999), (3, 9, 1, 18000),                    -- ORD-003: 2 books
+        (4, 2, 1, 89900),                                       -- ORD-004: Pixel Ultra
+        (5, 3, 1, 169900), (5, 4, 1, 129900),                 -- ORD-005: ThinkPad + MacBook (corporate)
+        (6, 8, 1, 7900),                                        -- ORD-006: Merino Tee
+        (7, 9, 1, 18000),                                       -- ORD-007: UltraBoost (cancelled)
+        (8, 10, 1, 3999), (8, 11, 1, 49900),                  -- ORD-008: LED Kit + Robot Vacuum
+        (9, 11, 1, 49900),                                      -- ORD-009: Robot Vacuum
+        (10, 5, 1, 4999), (10, 6, 1, 4499);                   -- ORD-010: 2 books
+
+    -- Reviews
+    INSERT INTO reviews (product_id, customer_id, rating, title, body, verified) VALUES
+        (1, 1, 5, 'Best phone ever',           'Amazing camera and battery life. Highly recommended!', true),
+        (1, 2, 4, 'Great but pricey',          'Excellent phone, wish it was a bit cheaper.', true),
+        (3, 1, 5, 'Perfect work laptop',       'Ultra-light, great keyboard, fantastic OLED screen.', true),
+        (4, 7, 5, 'Love the M3 chip',          'Incredibly fast, silent, all-day battery.', true),
+        (5, 1, 5, 'Must-read for developers',  'Timeless advice. Every developer should own this.', true),
+        (5, 2, 4, 'Solid programming book',    'Good content, some chapters feel dated.', true),
+        (5, 8, 5, 'Changed how I code',        'Practical and insightful.', false),
+        (7, 3, 5, 'Couldn''t put it down',     'Andy Weir delivers again. Pure fun.', true),
+        (7, 5, 4, 'Fun sci-fi read',           'Entertaining but the ending felt rushed.', false),
+        (9, 6, 3, 'Decent running shoes',      'Comfortable but sizing runs small.', true),
+        (10, 7, 4, 'Great smart bulbs',        'Easy setup, good color range. App could be better.', true),
+        (11, 7, 5, 'Best robot vacuum',        'LiDAR navigation is impressively accurate. Love it.', true);
+
+    -- Inventory log
+    INSERT INTO inventory_log (product_id, delta, reason, performed_by) VALUES
+        (1,  200, 'initial_stock',   'system'),
+        (1,  -50, 'order_fulfillment', 'warehouse-bot'),
+        (2,  200, 'initial_stock',   'system'),
+        (3,   50, 'initial_stock',   'system'),
+        (3,   -5, 'order_fulfillment', 'warehouse-bot'),
+        (11, 100, 'initial_stock',   'system'),
+        (11, -40, 'order_fulfillment', 'warehouse-bot');
+
