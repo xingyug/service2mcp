@@ -11,12 +11,13 @@ import pytest
 from apps.mcp_runtime import create_app
 from libs.extractors.base import SourceConfig
 from libs.extractors.scim import SCIMExtractor
+from libs.ir.models import ServiceIR
 from libs.ir.schema import serialize_ir
 
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "scim_schemas"
 
 
-def _extract_scim_ir(fixture_name: str):
+def _extract_scim_ir(fixture_name: str) -> ServiceIR:
     """Extract ServiceIR from a SCIM fixture."""
     fixture_path = FIXTURES_DIR / fixture_name
     source = SourceConfig(file_content=fixture_path.read_text(encoding="utf-8"))
@@ -63,8 +64,9 @@ async def test_scim_list_users_passes_filter_param(tmp_path: Path) -> None:
         await upstream_client.aclose()
 
     assert captured["method"] == "GET"
-    assert captured["params"].get("filter") == 'userName eq "jdoe"'
-    assert captured["params"].get("count") == "10"
+    params: dict[str, str] = captured["params"]  # type: ignore[assignment]
+    assert params.get("filter") == 'userName eq "jdoe"'
+    assert params.get("count") == "10"
     assert structured["status"] == "ok"
 
 
@@ -103,7 +105,8 @@ async def test_scim_create_user_sends_post(tmp_path: Path) -> None:
         await upstream_client.aclose()
 
     assert captured["method"] == "POST"
-    assert captured["body"]["userName"] == "asmith"
+    body: dict[str, object] = captured["body"]  # type: ignore[assignment]
+    assert body["userName"] == "asmith"
     assert structured["status"] == "ok"
 
 
@@ -140,5 +143,81 @@ async def test_scim_get_user_by_id(tmp_path: Path) -> None:
         await upstream_client.aclose()
 
     assert captured["method"] == "GET"
-    assert "u-001" in captured["url"]
+    assert "u-001" in str(captured["url"])
     assert structured["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_scim_list_response_unwrapped(tmp_path: Path) -> None:
+    """Verify SCIM list response ``Resources`` array is unwrapped."""
+    ir = _extract_scim_ir("user_group.json")
+    ir_path = tmp_path / "scim_ir.json"
+    ir_path.write_text(serialize_ir(ir), encoding="utf-8")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
+                "totalResults": 50,
+                "startIndex": 1,
+                "itemsPerPage": 2,
+                "Resources": [
+                    {"id": "u-001", "userName": "jdoe"},
+                    {"id": "u-002", "userName": "asmith"},
+                ],
+            },
+            request=request,
+        )
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        app = create_app(service_ir_path=str(ir_path), upstream_client=upstream_client)
+        _, structured = await app.state.runtime_state.mcp_server.call_tool(
+            "list_users",
+            {"count": 2},
+        )
+    finally:
+        await upstream_client.aclose()
+
+    assert structured["status"] == "ok"
+    result = structured["result"]
+    assert isinstance(result, dict)
+    assert result["items"] == [
+        {"id": "u-001", "userName": "jdoe"},
+        {"id": "u-002", "userName": "asmith"},
+    ]
+    assert result["total_count"] == 50
+    assert result["start_index"] == 1
+    assert result["items_per_page"] == 2
+
+
+@pytest.mark.asyncio
+async def test_scim_error_response_raises_tool_error(tmp_path: Path) -> None:
+    """Verify SCIM error responses are detected and raised as ToolError."""
+    ir = _extract_scim_ir("user_group.json")
+    ir_path = tmp_path / "scim_ir.json"
+    ir_path.write_text(serialize_ir(ir), encoding="utf-8")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
+                "detail": "Resource not found",
+                "status": "404",
+                "scimType": "invalidValue",
+            },
+            request=request,
+        )
+
+    upstream_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        app = create_app(service_ir_path=str(ir_path), upstream_client=upstream_client)
+        with pytest.raises(Exception, match="SCIM error.*404"):
+            await app.state.runtime_state.mcp_server.call_tool(
+                "get_user",
+                {"id": "nonexistent"},
+            )
+    finally:
+        await upstream_client.aclose()

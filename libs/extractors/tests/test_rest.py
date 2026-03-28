@@ -800,3 +800,68 @@ class TestPaginationInference:
         result = extractor._infer_pagination_from_response(endpoint, "POST")
 
         assert result is None
+
+
+class TestDeduplicateOperationIds:
+    """Regression tests for B-005: duplicate operation ID resolution."""
+
+    def test_duplicate_ids_get_numeric_suffix(self) -> None:
+        from libs.extractors.rest import _deduplicate_operation_ids
+        from libs.ir.models import (
+            Operation,
+            RiskMetadata,
+            SourceType,
+        )
+
+        def _make_op(op_id: str, path: str) -> Operation:
+            return Operation(
+                id=op_id,
+                name=op_id,
+                description="test",
+                method="GET",
+                path=path,
+                params=[],
+                risk=RiskMetadata(
+                    writes_state=False,
+                    destructive=False,
+                    risk_level=RiskLevel.safe,
+                    confidence=0.9,
+                    source=SourceType.extractor,
+                ),
+            )
+
+        ops = [
+            _make_op("get_comments", "/comments"),
+            _make_op("get_comments", "/posts/{post_id}/comments"),
+            _make_op("get_users", "/users"),
+        ]
+        result = _deduplicate_operation_ids(ops)
+        ids = [op.id for op in result]
+        assert ids == ["get_comments", "get_comments_1", "get_users"]
+        assert len(set(ids)) == len(ids)
+
+    def test_no_duplication_leaves_ids_unchanged(self) -> None:
+        from libs.extractors.rest import _deduplicate_operation_ids
+        from libs.ir.models import Operation, RiskMetadata, SourceType
+
+        def _make_op(op_id: str) -> Operation:
+            return Operation(
+                id=op_id,
+                name=op_id,
+                description="test",
+                method="GET",
+                path=f"/{op_id}",
+                params=[],
+                risk=RiskMetadata(
+                    writes_state=False,
+                    destructive=False,
+                    risk_level=RiskLevel.safe,
+                    confidence=0.9,
+                    source=SourceType.extractor,
+                ),
+            )
+
+        ops = [_make_op("get_a"), _make_op("get_b"), _make_op("get_c")]
+        result = _deduplicate_operation_ids(ops)
+        ids = [op.id for op in result]
+        assert ids == ["get_a", "get_b", "get_c"]

@@ -183,6 +183,7 @@ class RESTExtractor:
             )
             for classification in classified
         ]
+        operations = _deduplicate_operation_ids(operations)
         source_hash = self._discovery_hash(source.url, discovered_endpoints, classified)
 
         return ServiceIR(
@@ -1048,6 +1049,21 @@ def _operation_id(method: str, path: str) -> str:
     path_parts = [segment for segment in re.split(r"[/{}]+", path) if segment]
     slug = "_".join(_slugify(part).replace("-", "_") for part in path_parts) or "root"
     return f"{method.lower()}_{slug}"
+
+
+def _deduplicate_operation_ids(operations: list[Operation]) -> list[Operation]:
+    """Append numeric suffixes to resolve duplicate operation IDs."""
+    seen: dict[str, int] = {}
+    result: list[Operation] = []
+    for op in operations:
+        base_id = op.id
+        count = seen.get(base_id, 0)
+        if count > 0:
+            new_id = f"{base_id}_{count}"
+            op = op.model_copy(update={"id": new_id})
+        seen[base_id] = count + 1
+        result.append(op)
+    return result
 
 
 def _params_from_path_and_query(path: str) -> list[Param]:

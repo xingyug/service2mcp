@@ -32,6 +32,7 @@ from libs.ir.models import (
     EventTransport,
     GrpcStreamRuntimeConfig,
     GrpcUnaryRuntimeConfig,
+    JsonRpcOperationConfig,
     OAuth2ClientCredentialsConfig,
     Operation,
     RequestBodyMode,
@@ -148,7 +149,7 @@ class RuntimeProxy:
             await self._client.aclose()
         sql_close = getattr(self._sql_executor, "aclose", None)
         if callable(sql_close):
-            await sql_close()
+            await sql_close()  # pyright: ignore[reportGeneralTypeIssues]
 
     async def invoke(self, operation: Operation, arguments: dict[str, Any]) -> dict[str, Any]:
         start_time = perf_counter()
@@ -303,7 +304,58 @@ class RuntimeProxy:
                     )
                     raise tool_error
 
-                result, truncated = self._sanitize_response(response, operation)
+                odata_error = self._odata_error_message(
+                    response, self._service_ir.protocol,
+                )
+                if odata_error is not None:
+                    _failure_recorded = True
+                    breaker.record_failure()
+                    self._observability.record_tool_call(operation.id, "error")
+                    self._observability.record_upstream_error(operation.id, "odata_error")
+                    self._observability.set_circuit_breaker_state(operation.id, breaker.is_open)
+                    tool_error = ToolError(odata_error)
+                    span.record_exception(tool_error)
+                    self._observability.logger.warning(
+                        "runtime odata tool invocation failed",
+                        extra={"extra_fields": {"operation_id": operation.id}},
+                    )
+                    raise tool_error
+
+                jsonrpc_error = self._jsonrpc_error_message(response, operation)
+                if jsonrpc_error is not None:
+                    _failure_recorded = True
+                    breaker.record_failure()
+                    self._observability.record_tool_call(operation.id, "error")
+                    self._observability.record_upstream_error(operation.id, "jsonrpc_error")
+                    self._observability.set_circuit_breaker_state(operation.id, breaker.is_open)
+                    tool_error = ToolError(jsonrpc_error)
+                    span.record_exception(tool_error)
+                    self._observability.logger.warning(
+                        "runtime jsonrpc tool invocation failed",
+                        extra={"extra_fields": {"operation_id": operation.id}},
+                    )
+                    raise tool_error
+
+                scim_error = self._scim_error_message(
+                    response, self._service_ir.protocol,
+                )
+                if scim_error is not None:
+                    _failure_recorded = True
+                    breaker.record_failure()
+                    self._observability.record_tool_call(operation.id, "error")
+                    self._observability.record_upstream_error(operation.id, "scim_error")
+                    self._observability.set_circuit_breaker_state(operation.id, breaker.is_open)
+                    tool_error = ToolError(scim_error)
+                    span.record_exception(tool_error)
+                    self._observability.logger.warning(
+                        "runtime scim tool invocation failed",
+                        extra={"extra_fields": {"operation_id": operation.id}},
+                    )
+                    raise tool_error
+
+                result, truncated = self._sanitize_response(
+                    response, operation, protocol=self._service_ir.protocol,
+                )
             except httpx.TimeoutException as exc:
                 _failure_recorded = True
                 breaker.record_failure()
@@ -560,6 +612,10 @@ class RuntimeProxy:
             return self._prepare_soap_payload(operation, remaining)
         if operation.graphql is not None:
             return self._prepare_graphql_payload(operation, remaining)
+        if operation.jsonrpc is not None:
+            return self._prepare_jsonrpc_payload(operation.jsonrpc, remaining)
+        if self._service_ir.protocol == "odata":
+            return self._prepare_odata_payload(operation, remaining)
 
         if not remaining:
             return PreparedRequestPayload(query_params={})
@@ -645,6 +701,64 @@ class RuntimeProxy:
             raw_body=envelope,
             content_type="text/xml; charset=utf-8",
             signable_body=envelope,
+        )
+
+    def _prepare_odata_payload(
+        self,
+        operation: Operation,
+        remaining: dict[str, Any],
+    ) -> PreparedRequestPayload:
+        """Prepare request payload for OData v4 operations.
+
+        FastMCP strips the ``$`` prefix from OData system query parameters
+        (e.g. ``$filter`` → ``filter``).  This method re-adds the prefix so
+        the upstream OData service receives the correct query option names.
+        """
+        dollar_params: set[str] = set()
+        for param in operation.params:
+            if param.name.startswith("$"):
+                dollar_params.add(param.name[1:])
+
+        odata_query: dict[str, Any] = {}
+        non_odata: dict[str, Any] = {}
+        for key, value in remaining.items():
+            if key in dollar_params:
+                odata_query[f"${key}"] = value
+            else:
+                non_odata[key] = value
+
+        query_params, json_body = self._split_query_and_body(operation, non_odata)
+        query_params.update(odata_query)
+        return PreparedRequestPayload(
+            query_params=query_params,
+            json_body=json_body,
+            signable_body=json_body,
+        )
+
+    @staticmethod
+    def _prepare_jsonrpc_payload(
+        config: JsonRpcOperationConfig,
+        remaining: dict[str, Any],
+    ) -> PreparedRequestPayload:
+        """Wrap tool arguments in a JSON-RPC 2.0 request envelope."""
+        if config.params_type == "positional":
+            params: Any = [remaining.get(n) for n in config.params_names]
+        else:
+            params = {
+                name: remaining[name]
+                for name in config.params_names
+                if name in remaining
+            } or remaining
+        json_body: dict[str, Any] = {
+            "jsonrpc": config.jsonrpc_version,
+            "method": config.method_name,
+            "params": params,
+            "id": 1,
+        }
+        return PreparedRequestPayload(
+            query_params={},
+            json_body=json_body,
+            signable_body=json_body,
         )
 
     def _split_query_and_body(
@@ -1210,6 +1324,71 @@ class RuntimeProxy:
         return f"GraphQL operation {operation.id} failed: {'; '.join(messages)}"
 
     @staticmethod
+    def _odata_error_message(
+        response: httpx.Response,
+        protocol: str,
+    ) -> str | None:
+        """Extract an OData JSON error message if present."""
+        if protocol != "odata":
+            return None
+        payload = _parse_response_payload(response)
+        if not isinstance(payload, dict):
+            return None
+        error = payload.get("error")
+        if not isinstance(error, dict):
+            return None
+        code = error.get("code", "")
+        message = error.get("message", "OData error")
+        if isinstance(message, dict):
+            message = message.get("value", str(message))
+        return f"OData error ({code}): {message}" if code else f"OData error: {message}"
+
+    @staticmethod
+    def _jsonrpc_error_message(
+        response: httpx.Response,
+        operation: Operation,
+    ) -> str | None:
+        """Extract a JSON-RPC 2.0 error message if present."""
+        if operation.jsonrpc is None:
+            return None
+        payload = _parse_response_payload(response)
+        if not isinstance(payload, dict):
+            return None
+        error = payload.get("error")
+        if not isinstance(error, dict):
+            return None
+        code = error.get("code", "")
+        message = error.get("message", "JSON-RPC error")
+        return f"JSON-RPC error ({code}): {message}" if code else f"JSON-RPC error: {message}"
+
+    @staticmethod
+    def _scim_error_message(
+        response: httpx.Response,
+        protocol: str,
+    ) -> str | None:
+        """Extract a SCIM 2.0 error message if present."""
+        if protocol != "scim":
+            return None
+        payload = _parse_response_payload(response)
+        if not isinstance(payload, dict):
+            return None
+        schemas = payload.get("schemas")
+        if not isinstance(schemas, list):
+            return None
+        if not any("Error" in s for s in schemas if isinstance(s, str)):
+            return None
+        detail = payload.get("detail", "SCIM error")
+        status = payload.get("status", "")
+        scim_type = payload.get("scimType", "")
+        parts = ["SCIM error"]
+        if status:
+            parts[0] = f"SCIM error (status {status})"
+        if scim_type:
+            parts.append(scim_type)
+        parts.append(str(detail))
+        return ": ".join(parts)
+
+    @staticmethod
     def _soap_fault_message(
         response: httpx.Response,
         operation: Operation,
@@ -1249,12 +1428,20 @@ class RuntimeProxy:
     def _sanitize_response(
         response: httpx.Response,
         operation: Operation,
+        *,
+        protocol: str = "",
     ) -> tuple[Any, bool]:
         payload = _parse_response_payload(response)
         if operation.soap is not None:
             payload = _unwrap_soap_payload(response, operation)
         if operation.graphql is not None:
             payload = _unwrap_graphql_payload(payload, operation)
+        if protocol == "odata":
+            payload = _unwrap_odata_payload(payload)
+        if protocol == "scim":
+            payload = _unwrap_scim_payload(payload)
+        if operation.jsonrpc is not None:
+            payload = _unwrap_jsonrpc_payload(payload, operation)
         payload = _apply_field_filter(payload, operation.response_strategy.field_filter)
         payload = _apply_array_limit(payload, operation.response_strategy.max_array_items)
         return _apply_truncation(payload, operation.response_strategy)
@@ -1795,6 +1982,67 @@ def _unwrap_graphql_payload(payload: Any, operation: Operation) -> Any:
     if not isinstance(data, dict):
         raise ToolError(f"GraphQL operation {operation.id} returned no data object.")
     return data.get(operation.graphql.operation_name, data)
+
+
+def _unwrap_odata_payload(payload: Any) -> Any:
+    """Unwrap OData collection responses.
+
+    OData services wrap collection results in ``{"value": [...]}`` with optional
+    ``@odata.count`` and ``@odata.nextLink`` metadata.  This function extracts
+    the ``value`` array while preserving single-entity responses as-is.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if "value" in payload and isinstance(payload["value"], list):
+        result: dict[str, Any] = {"items": payload["value"]}
+        count = payload.get("@odata.count")
+        if count is not None:
+            result["total_count"] = count
+        next_link = payload.get("@odata.nextLink")
+        if next_link is not None:
+            result["next_link"] = next_link
+        return result
+    return payload
+
+
+def _unwrap_scim_payload(payload: Any) -> Any:
+    """Unwrap SCIM 2.0 list responses.
+
+    SCIM services wrap collection results in
+    ``{"Resources": [...], "totalResults": N, "startIndex": N, "itemsPerPage": N}``.
+    This function extracts the ``Resources`` array while preserving single-resource
+    responses as-is.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    resources = payload.get("Resources")
+    if isinstance(resources, list):
+        result: dict[str, Any] = {"items": resources}
+        total = payload.get("totalResults")
+        if total is not None:
+            result["total_count"] = total
+        start = payload.get("startIndex")
+        if start is not None:
+            result["start_index"] = start
+        per_page = payload.get("itemsPerPage")
+        if per_page is not None:
+            result["items_per_page"] = per_page
+        return result
+    return payload
+
+
+def _unwrap_jsonrpc_payload(payload: Any, operation: Operation) -> Any:
+    """Unwrap JSON-RPC 2.0 response envelope.
+
+    Extracts ``result`` from ``{"jsonrpc": "2.0", "result": ..., "id": N}``.
+    """
+    if operation.jsonrpc is None:
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+    if "result" in payload:
+        return payload["result"]
+    return payload
 
 
 def _unwrap_soap_payload(response: httpx.Response, operation: Operation) -> Any:

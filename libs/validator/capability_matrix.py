@@ -136,7 +136,9 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         llm_e2e=False,
         notes=(
             "OData v4 $metadata extraction produces CRUD operations per EntitySet "
-            "with OData query params. Error model normalized. Uses existing HTTP runtime proxy."
+            "with OData query params. Error model normalized. Dedicated runtime adapter "
+            "re-adds $ prefix to system query options, unwraps collection responses, "
+            "detects OData JSON errors. Local E2E proof via integration tests."
         ),
     ),
     "scim": ProtocolCapability(
@@ -149,7 +151,9 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         llm_e2e=False,
         notes=(
             "SCIM 2.0 schema extraction produces resource operations respecting "
-            "attribute mutability. Error model normalized. Uses existing HTTP runtime proxy."
+            "attribute mutability. Error model normalized. Dedicated runtime adapter "
+            "unwraps Resources array, detects SCIM error schema. "
+            "Local E2E proof via integration tests."
         ),
     ),
     "jsonrpc": ProtocolCapability(
@@ -162,7 +166,9 @@ _CAPABILITY_ROWS: dict[str, ProtocolCapability] = {
         llm_e2e=False,
         notes=(
             "JSON-RPC 2.0 extraction from OpenRPC specs or manual definitions. "
-            "Error model normalized. Runtime wraps calls in JSON-RPC 2.0 envelope."
+            "Error model normalized. Dedicated runtime adapter wraps calls in "
+            "JSON-RPC 2.0 envelope, unwraps result, detects JSON-RPC error responses. "
+            "Local E2E proof via integration tests."
         ),
     ),
 }
