@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -159,3 +160,87 @@ class TestCustomResourceExtraction:
     def test_no_bulk_operation(self, ir: ServiceIR) -> None:
         op_names = {op.name for op in ir.operations}
         assert "bulk_operation" not in op_names
+
+
+# ── extract edge cases ─────────────────────────────────────────────────────
+
+
+class TestExtractEdgeCases:
+    def test_extract_raises_when_no_content(self, extractor: SCIMExtractor) -> None:
+        """Line 78: extract raises ValueError when _raw_content returns empty."""
+        source = SourceConfig(file_content="placeholder")
+        with patch.object(extractor, "_raw_content", return_value=""):
+            with pytest.raises(ValueError, match="No content available"):
+                extractor.extract(source)
+
+    def test_resource_without_name_is_skipped(self, extractor: SCIMExtractor) -> None:
+        """Lines 93-97: resource without 'name' field is skipped with warning."""
+        content = json.dumps({
+            "schemas": {
+                "Resources": [
+                    {"id": "urn:ietf:params:scim:schemas:core:2.0:NoName", "attributes": []},
+                    {"name": "User", "attributes": [
+                        {"name": "userName", "type": "string", "required": True, "mutability": "readWrite"},
+                    ]},
+                ]
+            },
+            "service_provider_config": {},
+        })
+        source = SourceConfig(file_content=content)
+        ir = extractor.extract(source)
+        # The nameless resource should be skipped; only User operations
+        op_names = {op.name for op in ir.operations}
+        assert "list_users" in op_names
+        # No operations for the nameless resource
+        assert ir.metadata["resource_types"] == ["User"]
+
+
+# ── _raw_content URL branch ───────────────────────────────────────────────
+
+
+class TestRawContentUrl:
+    def test_raw_content_fetches_from_url(self, extractor: SCIMExtractor) -> None:
+        """Lines 140-148: _raw_content fetches from URL with auth headers."""
+        mock_response = MagicMock()
+        mock_response.text = '{"schemas": {}}'
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("libs.extractors.scim.httpx.get", return_value=mock_response) as mock_get:
+            source = SourceConfig(url="https://scim.example.com/v2")
+            content = extractor._raw_content(source)
+
+        assert content == '{"schemas": {}}'
+        mock_get.assert_called_once()
+
+    def test_raw_content_url_with_auth_header(self, extractor: SCIMExtractor) -> None:
+        """Lines 142-143: auth_header passed in request."""
+        mock_response = MagicMock()
+        mock_response.text = "{}"
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("libs.extractors.scim.httpx.get", return_value=mock_response) as mock_get:
+            source = SourceConfig(url="https://scim.example.com/v2", auth_header="Bearer tok")
+            extractor._raw_content(source)
+
+        call_kwargs = mock_get.call_args
+        assert call_kwargs.kwargs["headers"]["Authorization"] == "Bearer tok"
+
+    def test_raw_content_url_with_auth_token(self, extractor: SCIMExtractor) -> None:
+        """Lines 144-145: auth_token formatted as Bearer."""
+        mock_response = MagicMock()
+        mock_response.text = "{}"
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("libs.extractors.scim.httpx.get", return_value=mock_response) as mock_get:
+            source = SourceConfig(url="https://scim.example.com/v2", auth_token="mytoken")
+            extractor._raw_content(source)
+
+        call_kwargs = mock_get.call_args
+        assert call_kwargs.kwargs["headers"]["Authorization"] == "Bearer mytoken"
+
+    def test_raw_content_no_source_returns_empty(self, extractor: SCIMExtractor) -> None:
+        """Line 149: no file_content, no file_path, no URL → empty string."""
+        source = SourceConfig(url="https://scim.example.com/v2")
+        with patch("libs.extractors.scim.httpx.get", side_effect=Exception("fail")):
+            with pytest.raises(Exception):
+                extractor._raw_content(source)

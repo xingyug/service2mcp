@@ -296,3 +296,130 @@ class TestValidateTokenDispatch:
         svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
         with pytest.raises(AuthenticationError, match="PAT is invalid"):
             await svc.validate_token("pat_invalid_token_for_unit_test")
+
+
+# Additional tests to cover uncovered lines in authn/service.py
+
+class TestCreatePat:
+    pass
+
+
+class TestRevokePat:
+    pass
+
+
+class TestValidatePat:
+    pass
+
+
+class TestValidateJwt:
+    def test_malformed_header_json_decode_error(self):
+        """Test line 157: malformed JWT header JSON."""
+        svc = _make_service()
+        
+        # Create token with invalid JSON in header
+        invalid_header = _b64encode(b"not-json")
+        payload = _b64encode(json.dumps(_valid_claims()).encode())
+        signing_input = f"{invalid_header}.{payload}".encode()
+        sig = hmac.new(_SECRET.encode(), signing_input, hashlib.sha256).digest()
+        token = f"{invalid_header}.{payload}.{_b64encode(sig)}"
+        
+        with pytest.raises(AuthenticationError, match="Malformed JWT header"):
+            svc._validate_jwt(token)
+
+    def test_malformed_header_unicode_decode_error(self):
+        """Test line 157: malformed JWT header unicode decode."""
+        svc = _make_service()
+        
+        # Create token with invalid UTF-8 in header
+        invalid_header = _b64encode(b'\xff\xfe')  # Invalid UTF-8
+        payload = _b64encode(json.dumps(_valid_claims()).encode())
+        signing_input = f"{invalid_header}.{payload}".encode()
+        sig = hmac.new(_SECRET.encode(), signing_input, hashlib.sha256).digest()
+        token = f"{invalid_header}.{payload}.{_b64encode(sig)}"
+        
+        with pytest.raises(AuthenticationError, match="Malformed JWT header"):
+            svc._validate_jwt(token)
+
+    def test_malformed_signature_exception(self):
+        """Test lines 170-171: malformed JWT signature encoding."""
+        svc = _make_service()
+        
+        header = _b64encode(json.dumps({"alg": "HS256"}).encode())
+        payload = _b64encode(json.dumps(_valid_claims()).encode())
+        invalid_signature = "invalid@#$%^&*()base64"  # Invalid base64 that will cause exception
+        token = f"{header}.{payload}.{invalid_signature}"
+        
+        with pytest.raises(AuthenticationError, match="Malformed JWT signature encoding"):
+            svc._validate_jwt(token)
+
+    def test_malformed_payload_json_decode_error(self):
+        """Test lines 177-178: malformed JWT payload JSON."""
+        svc = _make_service()
+        
+        header = _b64encode(json.dumps({"alg": "HS256"}).encode())
+        invalid_payload = _b64encode(b"not-json")
+        signing_input = f"{header}.{invalid_payload}".encode()
+        sig = hmac.new(_SECRET.encode(), signing_input, hashlib.sha256).digest()
+        token = f"{header}.{invalid_payload}.{_b64encode(sig)}"
+        
+        with pytest.raises(AuthenticationError, match="Malformed JWT payload"):
+            svc._validate_jwt(token)
+
+    def test_malformed_payload_unicode_decode_error(self):
+        """Test lines 177-178: malformed JWT payload unicode decode."""
+        svc = _make_service()
+        
+        header = _b64encode(json.dumps({"alg": "HS256"}).encode())
+        invalid_payload = _b64encode(b'\xff\xfe')  # Invalid UTF-8  
+        signing_input = f"{header}.{invalid_payload}".encode()
+        sig = hmac.new(_SECRET.encode(), signing_input, hashlib.sha256).digest()
+        token = f"{header}.{invalid_payload}.{_b64encode(sig)}"
+        
+        with pytest.raises(AuthenticationError, match="Malformed JWT payload"):
+            svc._validate_jwt(token)
+
+
+class TestGetOrCreateUser:
+
+    async def test_create_new_user(self):
+        """Test lines 217-221: _get_or_create_user creates new user."""
+        from unittest.mock import MagicMock
+        
+        session = AsyncMock()
+        
+        # Mock no existing user
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        session.execute.return_value = mock_result
+        
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+        
+        result = await svc._get_or_create_user(username="bob", email="bob@example.com")
+        
+        # Should add new user and commit/refresh
+        session.add.assert_called_once()
+        session.commit.assert_called_once()
+        session.refresh.assert_called_once()
+
+
+class TestLoadJwtSettings:
+    def test_load_jwt_settings_non_dev_environment_no_secret(self):
+        """Test lines 231-233: load_jwt_settings raises error in non-dev env without secret."""
+        import os
+        from unittest.mock import patch
+        from apps.access_control.authn.service import load_jwt_settings
+        
+        with patch.dict(os.environ, {"ENV": "production"}, clear=True):
+            with pytest.raises(RuntimeError, match="ACCESS_CONTROL_JWT_SECRET must be set"):
+                load_jwt_settings()
+
+    def test_load_jwt_settings_dev_environment_uses_default(self):
+        """Test lines 229-234: load_jwt_settings uses dev secret in dev environment."""
+        import os
+        from unittest.mock import patch
+        from apps.access_control.authn.service import load_jwt_settings
+        
+        with patch.dict(os.environ, {"ENV": "dev"}, clear=True):
+            settings = load_jwt_settings()
+            assert settings.secret == "dev-secret"

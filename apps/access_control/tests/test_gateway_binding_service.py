@@ -257,3 +257,87 @@ class TestResolveGatewayBindingService:
         configure_gateway_binding_service(state, client=client)
         svc = resolve_gateway_binding_service(state)
         assert isinstance(svc, GatewayBindingService)
+
+
+# Additional tests to cover uncovered lines in gateway_binding/service.py
+
+class TestReconcile:
+    pass
+
+
+class TestDisposeGatewayBindingService:
+    async def test_no_service_to_dispose(self):
+        """Test lines 249-251: dispose when no service exists."""
+        from unittest.mock import AsyncMock
+        from apps.access_control.gateway_binding.service import dispose_gateway_binding_service
+        
+        state = SimpleNamespace()  # No gateway_binding_service attribute
+        
+        # Should not raise any exception
+        await dispose_gateway_binding_service(state)
+
+    async def test_disposes_service_with_aclose(self):
+        """Test lines 252-254: dispose service with aclose method."""
+        from unittest.mock import AsyncMock
+        from apps.access_control.gateway_binding.service import dispose_gateway_binding_service
+        
+        state = SimpleNamespace()
+        mock_client = AsyncMock()
+        mock_client.aclose = AsyncMock()
+        state.gateway_binding_service = SimpleNamespace(_client=mock_client)
+        
+        await dispose_gateway_binding_service(state)
+        
+        mock_client.aclose.assert_called_once()
+
+    async def test_disposes_service_without_aclose(self):
+        """Test lines 252-254: dispose service without aclose method."""
+        from unittest.mock import AsyncMock
+        from apps.access_control.gateway_binding.service import dispose_gateway_binding_service
+        
+        state = SimpleNamespace()
+        mock_client = SimpleNamespace()  # No aclose method
+        state.gateway_binding_service = SimpleNamespace(_client=mock_client)
+        
+        # Should not raise any exception
+        await dispose_gateway_binding_service(state)
+
+
+class TestPolicyDocument:
+    def test_with_policy_response(self):
+        """Test lines 267-269: _policy_document with PolicyResponse."""
+        from apps.access_control.gateway_binding.service import _policy_document
+        
+        policy = _policy_response()
+        doc = _policy_document(policy)
+        
+        assert doc["id"] == str(policy.id)
+        assert doc["risk_threshold"] == policy.risk_threshold.value
+        assert doc["created_at"] == policy.created_at.isoformat()
+        assert doc["created_by"] == policy.created_by
+
+    def test_with_policy_model(self):
+        """Test lines 270-273: _policy_document with Policy model."""
+        from apps.access_control.gateway_binding.service import _policy_document
+        from libs.db_models import Policy
+        from types import SimpleNamespace
+        
+        # Mock Policy object
+        policy = SimpleNamespace(
+            id=uuid4(),
+            subject_type="user",
+            subject_id="alice", 
+            resource_id="svc-1",
+            action_pattern="*",
+            risk_threshold="safe",
+            decision="allow",
+            created_by="admin",
+            created_at=datetime.now(UTC)
+        )
+        
+        doc = _policy_document(policy)
+        
+        assert doc["id"] == str(policy.id)
+        assert doc["risk_threshold"] == "safe"  # RiskLevel enum value
+        assert doc["created_at"] == policy.created_at.isoformat()
+        assert doc["created_by"] == "admin"

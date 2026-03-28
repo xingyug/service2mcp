@@ -206,3 +206,69 @@ def test_generate_returns_new_ir_not_mutated() -> None:
     assert original_ir.operations[0].response_examples == []
     assert len(new_ir.operations[0].response_examples) == 1
     assert new_ir is not original_ir
+
+
+def test_generate_from_schema_returns_none_for_non_dict_or_list_result() -> None:
+    """Test generate_from_schema returns None when _generate_value returns non-dict/non-list."""
+    # This tests the isinstance(result, (dict, list)) check on line 62-64
+    schema = {"type": "unsupported"}
+    result = generate_from_schema(schema)
+    assert result is None
+
+
+def test_generate_value_returns_none_for_unsupported_type() -> None:
+    """Test _generate_value returns None for unsupported types."""
+    from libs.enhancer.examples_generator import _generate_value
+    
+    schema = {"type": "unsupported_type"}
+    result = _generate_value(schema)
+    assert result is None
+
+
+def test_generate_value_handles_empty_array_items() -> None:
+    """Test _generate_value handles arrays with no items schema."""
+    from libs.enhancer.examples_generator import _generate_value
+    
+    schema = {"type": "array"}  # No items specified
+    result = _generate_value(schema)
+    assert result == []
+
+
+def test_generate_value_handles_empty_object_properties() -> None:
+    """Test _generate_value handles objects with no properties."""
+    from libs.enhancer.examples_generator import _generate_value
+    
+    schema = {"type": "object"}  # No properties specified
+    result = _generate_value(schema)
+    assert result == {}
+
+
+def test_parse_examples_handles_unparseable_json() -> None:
+    """Test _parse_examples handles invalid JSON gracefully."""
+    from libs.enhancer.examples_generator import _parse_examples
+    
+    result = _parse_examples("invalid json")
+    assert result == []
+
+
+def test_parse_examples_converts_single_dict_to_list() -> None:
+    """Test _parse_examples converts single dict to list."""
+    from libs.enhancer.examples_generator import _parse_examples
+    
+    single_example = '{"name": "test", "status_code": 200}'
+    result = _parse_examples(single_example)
+    
+    assert len(result) == 1
+    assert result[0].name == "test"
+    assert result[0].status_code == 200
+
+
+def test_parse_examples_skips_non_dict_items() -> None:
+    """Test _parse_examples skips non-dict items in list."""
+    from libs.enhancer.examples_generator import _parse_examples
+    
+    mixed_list = '["not a dict", {"name": "valid", "status_code": 200}, 42]'
+    result = _parse_examples(mixed_list)
+    
+    assert len(result) == 1
+    assert result[0].name == "valid"
