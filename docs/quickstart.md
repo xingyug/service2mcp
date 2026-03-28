@@ -6,7 +6,7 @@ Bring up the local Tool Compiler v2 environment, compile a sample OpenAPI spec, 
 
 ## Prerequisites
 
-- Python `3.11+`
+- Python `3.12+`
 - Docker with the Compose plugin
 - GNU `make`
 - Free local ports: `5432`, `6379`, `7233`, `8000`, `8001`, `8002`, `8003`

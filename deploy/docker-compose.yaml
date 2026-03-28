@@ -35,7 +35,7 @@ services:
       retries: 20
 
   compiler-api:
-    image: python:3.11-slim
+    image: python:3.12-slim
     working_dir: /workspace
     command:
       - /bin/bash
@@ -74,7 +74,7 @@ services:
       retries: 20
 
   access-control:
-    image: python:3.11-slim
+    image: python:3.12-slim
     working_dir: /workspace
     command:
       - /bin/bash
@@ -112,7 +112,7 @@ services:
       retries: 20
 
   gateway-admin-mock:
-    image: python:3.11-slim
+    image: python:3.12-slim
     working_dir: /workspace
     command:
       - /bin/bash
@@ -140,7 +140,7 @@ services:
       retries: 20
 
   compiler-worker:
-    image: python:3.11-slim
+    image: python:3.12-slim
     working_dir: /workspace
     command:
       - /bin/bash
@@ -186,7 +186,7 @@ services:
       retries: 20
 
   mcp-runtime:
-    image: python:3.11-slim
+    image: python:3.12-slim
     working_dir: /workspace
     command:
       - /bin/bash

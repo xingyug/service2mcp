@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ARG APP_MODULE
 ARG APP_PORT=8000

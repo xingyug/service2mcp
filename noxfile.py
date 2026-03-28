@@ -12,7 +12,7 @@ import nox
 nox.options.default_venv_backend = "uv"
 nox.options.reuse_existing_virtualenvs = True
 
-PYTHON = "3.11"
+PYTHON = "3.12"
 
 # ---------------------------------------------------------------------------
 # Lint: ruff check + ruff format --check

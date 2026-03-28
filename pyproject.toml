@@ -7,7 +7,7 @@ name = "service2mcp"
 version = "0.1.0"
 description = "Compile services into governed MCP tool servers"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.6,<3",
     "fastapi>=0.110,<1",
@@ -78,7 +78,7 @@ line-length = 100
 select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 
