@@ -5,11 +5,13 @@ Generates resource CRUD operations from SCIM schema discovery responses.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -48,6 +50,103 @@ SCIM_ERROR_SCHEMA: dict[str, Any] = {
     },
 }
 
+_STANDARD_SCIM_RESOURCES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "urn:ietf:params:scim:schemas:core:2.0:User",
+        "name": "User",
+        "description": "User Account",
+        "attributes": [
+            {
+                "name": "userName",
+                "type": "string",
+                "mutability": "readWrite",
+                "required": True,
+                "multiValued": False,
+                "description": "Unique identifier for the user",
+            },
+            {
+                "name": "name",
+                "type": "complex",
+                "mutability": "readWrite",
+                "required": False,
+                "multiValued": False,
+                "description": "Name of the user",
+            },
+            {
+                "name": "emails",
+                "type": "complex",
+                "mutability": "readWrite",
+                "required": False,
+                "multiValued": True,
+                "description": "Email addresses",
+            },
+            {
+                "name": "active",
+                "type": "boolean",
+                "mutability": "readWrite",
+                "required": False,
+                "multiValued": False,
+                "description": "Active status",
+            },
+            {
+                "name": "id",
+                "type": "string",
+                "mutability": "readOnly",
+                "required": False,
+                "multiValued": False,
+                "description": "Unique identifier",
+            },
+            {
+                "name": "meta",
+                "type": "complex",
+                "mutability": "readOnly",
+                "required": False,
+                "multiValued": False,
+                "description": "Resource metadata",
+            },
+        ],
+    },
+    {
+        "id": "urn:ietf:params:scim:schemas:core:2.0:Group",
+        "name": "Group",
+        "description": "Group",
+        "attributes": [
+            {
+                "name": "displayName",
+                "type": "string",
+                "mutability": "readWrite",
+                "required": True,
+                "multiValued": False,
+                "description": "Display name for the group",
+            },
+            {
+                "name": "members",
+                "type": "complex",
+                "mutability": "readWrite",
+                "required": False,
+                "multiValued": True,
+                "description": "Group members",
+            },
+            {
+                "name": "id",
+                "type": "string",
+                "mutability": "readOnly",
+                "required": False,
+                "multiValued": False,
+                "description": "Unique identifier",
+            },
+            {
+                "name": "meta",
+                "type": "complex",
+                "mutability": "readOnly",
+                "required": False,
+                "multiValued": False,
+                "description": "Resource metadata",
+            },
+        ],
+    },
+)
+
 
 class SCIMExtractor:
     """Extract SCIM 2.0 schema discovery into ServiceIR operations."""
@@ -81,6 +180,8 @@ class SCIMExtractor:
         source_hash = hashlib.sha256(raw.encode()).hexdigest()
 
         resources = self._extract_resources(data)
+        if not resources:
+            resources = self._fallback_resources(source, data)
         spc = self._extract_service_provider_config(data)
 
         operations: list[Operation] = []
@@ -150,11 +251,28 @@ class SCIMExtractor:
         raw = data.get("service_provider_config", {})
         return raw if isinstance(raw, dict) else {}
 
+    def _fallback_resources(
+        self,
+        source: SourceConfig,
+        data: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        url_path = urlparse(source.url or "").path.rstrip("/")
+        if url_path.endswith("/Users") or url_path.endswith("/Groups"):
+            return [copy.deepcopy(resource) for resource in _STANDARD_SCIM_RESOURCES]
+
+        schemas = data.get("schemas")
+        if isinstance(schemas, list) and (
+            "urn:ietf:params:scim:api:messages:2.0:ListResponse" in schemas
+        ):
+            return [copy.deepcopy(resource) for resource in _STANDARD_SCIM_RESOURCES]
+
+        return []
+
     @staticmethod
     def _normalize_base_url(source_url: str | None) -> str:
         if not source_url:
             return "https://scim.example.com"
-        for suffix in ("/Schemas", "/ServiceProviderConfig", "/ResourceTypes"):
+        for suffix in ("/Schemas", "/ServiceProviderConfig", "/ResourceTypes", "/Users", "/Groups"):
             if source_url.endswith(suffix):
                 return source_url[: -len(suffix)]
         return source_url

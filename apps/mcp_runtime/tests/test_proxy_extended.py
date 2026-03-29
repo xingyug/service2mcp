@@ -405,6 +405,13 @@ class TestResolveUrl:
         with pytest.raises(ToolError, match="Missing path parameter"):
             p._resolve_url("/users/{userId}", {})
 
+    def test_root_path_preserves_collection_base_url_without_trailing_slash(self) -> None:
+        p = _proxy(ir=_minimal_ir(base_url="https://api.example.com/items/products"))
+        url, path_params = p._resolve_url("/", {})
+
+        assert url == "https://api.example.com/items/products"
+        assert path_params == set()
+
 
 # ===================================================================
 # _prepare_graphql_payload — line 610

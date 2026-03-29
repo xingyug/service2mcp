@@ -12,6 +12,18 @@ from libs.ir.models import RiskLevel
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tests" / "fixtures"
 WSDL_FIXTURE_PATH = FIXTURES_DIR / "wsdl" / "order_service.wsdl"
+REAL_TARGET_WSDL_FIXTURE_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "deploy"
+    / "k8s"
+    / "real-targets"
+    / "soap-cxf"
+    / "src"
+    / "main"
+    / "resources"
+    / "wsdl"
+    / "OrderService.wsdl"
+)
 
 
 def test_detects_wsdl_fixture() -> None:
@@ -50,6 +62,7 @@ def test_extracts_document_literal_operations_and_metadata() -> None:
     assert get_order_status.soap.request_element == "GetOrderStatusRequest"
     assert get_order_status.soap.response_element == "GetOrderStatusResponse"
     assert get_order_status.soap.soap_action == "http://example.com/orders/GetOrderStatus"
+    assert get_order_status.soap.child_element_form == "qualified"
     assert get_order_status.risk.risk_level is RiskLevel.safe
     assert {param.name: param.type for param in get_order_status.params} == {
         "orderId": "string",
@@ -69,6 +82,95 @@ def test_extracts_document_literal_operations_and_metadata() -> None:
         "priority": "string",
         "order": "object",
     }
+
+
+def test_extract_treats_xsd_defaulted_fields_as_optional(tmp_path: Path) -> None:
+    extractor = SOAPWSDLExtractor()
+
+    wsdl = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<wsdl:definitions
+  xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+  xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+  xmlns:tns="urn:test"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+  targetNamespace="urn:test"
+  name="DefaultedFieldService">
+
+  <wsdl:types>
+    <xsd:schema targetNamespace="urn:test" elementFormDefault="qualified">
+      <xsd:element name="GetOrderStatusRequest">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="orderId" type="xsd:string"/>
+            <xsd:element name="includeHistory" type="xsd:boolean" default="false"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+      <xsd:element name="GetOrderStatusResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="status" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+    </xsd:schema>
+  </wsdl:types>
+
+  <wsdl:message name="GetOrderStatusInput">
+    <wsdl:part name="body" element="tns:GetOrderStatusRequest"/>
+  </wsdl:message>
+  <wsdl:message name="GetOrderStatusOutput">
+    <wsdl:part name="body" element="tns:GetOrderStatusResponse"/>
+  </wsdl:message>
+
+  <wsdl:portType name="DefaultedFieldPortType">
+    <wsdl:operation name="GetOrderStatus">
+      <wsdl:input message="tns:GetOrderStatusInput"/>
+      <wsdl:output message="tns:GetOrderStatusOutput"/>
+    </wsdl:operation>
+  </wsdl:portType>
+
+  <wsdl:binding name="DefaultedFieldBinding" type="tns:DefaultedFieldPortType">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="GetOrderStatus">
+      <soap:operation soapAction="urn:test/GetOrderStatus"/>
+      <wsdl:input><soap:body use="literal"/></wsdl:input>
+      <wsdl:output><soap:body use="literal"/></wsdl:output>
+    </wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:service name="DefaultedFieldService">
+    <wsdl:port name="DefaultedFieldPort" binding="tns:DefaultedFieldBinding">
+      <soap:address location="https://example.test/soap"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>"""
+    wsdl_path = tmp_path / "defaulted_field_service.wsdl"
+    wsdl_path.write_text(wsdl)
+
+    service_ir = extractor.extract(SourceConfig(file_path=str(wsdl_path)))
+
+    get_order_status = next(
+        operation for operation in service_ir.operations if operation.id == "GetOrderStatus"
+    )
+    params = {param.name: param for param in get_order_status.params}
+
+    assert params["orderId"].required is True
+    assert params["includeHistory"].required is False
+
+
+def test_extract_tracks_unqualified_child_elements_from_schema_default() -> None:
+    extractor = SOAPWSDLExtractor()
+
+    service_ir = extractor.extract(SourceConfig(file_path=str(REAL_TARGET_WSDL_FIXTURE_PATH)))
+
+    get_order_status = next(
+        operation for operation in service_ir.operations if operation.id == "GetOrderStatus"
+    )
+
+    assert get_order_status.soap is not None
+    assert get_order_status.soap.child_element_form == "unqualified"
 
 
 def test_extract_raises_on_operation_missing_wsdl_input(tmp_path: Path) -> None:
@@ -537,9 +639,10 @@ def test_parse_schema_types_skips_missing_complex_type_names() -> None:
     </wsdl:definitions>"""
 
     root = ET.fromstring(content)
-    elements, complex_types = _parse_schema_types(root)
+    elements, complex_types, child_element_forms = _parse_schema_types(root)
     assert "ValidType" in complex_types
     assert len(complex_types) == 1
+    assert child_element_forms["ValidType"] == "unqualified"
 
 
 def test_parse_schema_types_skips_missing_element_names() -> None:
@@ -560,8 +663,9 @@ def test_parse_schema_types_skips_missing_element_names() -> None:
     </wsdl:definitions>"""
 
     root = ET.fromstring(content)
-    elements, complex_types = _parse_schema_types(root)
+    elements, complex_types, child_element_forms = _parse_schema_types(root)
     assert len(elements) == 0  # ValidElement has no complex type, so not added
+    assert child_element_forms["ValidElement"] == "unqualified"
 
 
 def test_parse_schema_types_handles_complex_type_references() -> None:
@@ -586,10 +690,11 @@ def test_parse_schema_types_handles_complex_type_references() -> None:
     </wsdl:definitions>"""
 
     root = ET.fromstring(content)
-    elements, complex_types = _parse_schema_types(root)
+    elements, complex_types, child_element_forms = _parse_schema_types(root)
     assert "ValidElement" in elements
     assert "ValidType" in complex_types
     assert len(elements["ValidElement"]) == 1
+    assert child_element_forms["ValidElement"] == "unqualified"
 
 
 def test_extract_xsd_fields_skips_missing_element_names() -> None:
@@ -676,6 +781,7 @@ def test_build_operation_raises_for_missing_operation_name() -> None:
             messages={},
             elements={},
             complex_types={},
+            child_element_forms={},
             soap_actions={},
             target_namespace="",
             binding_style="document",

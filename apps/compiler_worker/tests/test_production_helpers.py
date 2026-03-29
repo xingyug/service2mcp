@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from apps.compiler_worker.activities.production import (
+    _apply_auth_override,
     _apply_post_enhancement,
     _build_extractors,
     _close_extractors,
@@ -19,10 +20,12 @@ from apps.compiler_worker.activities.production import (
     _has_supported_native_grpc_stream,
     _is_safe_optional_grpc_sample_param,
     _manifest_set_from_context,
+    _preferred_smoke_tool_ids,
     _read_service_account_namespace,
     _resolve_extractor,
     _sample_graphql_arguments,
     _sample_grpc_arguments,
+    _sample_invocation_overrides,
     _sample_sql_arguments,
     _sample_value,
     _serialize_manifest_set,
@@ -34,6 +37,7 @@ from apps.compiler_worker.activities.production import (
 )
 from libs.extractors.base import SourceConfig
 from libs.ir.models import (
+    AuthType,
     EventDescriptor,
     EventSupportLevel,
     EventTransport,
@@ -162,9 +166,62 @@ class TestBuildSampleInvocations:
         assert "disabled_op" not in result
         assert result["get_items"]["limit"] == 10
 
+    def test_skips_optional_http_like_params_without_defaults(self) -> None:
+        ir = _ir(
+            operations=[
+                _op(
+                    "list_products",
+                    params=[
+                        Param(name="limit", type="integer", required=False),
+                        Param(name="search", type="string", required=False),
+                        Param(name="status", type="string", required=True),
+                    ],
+                )
+            ]
+        )
+
+        result = build_sample_invocations(ir)
+
+        assert result["list_products"] == {"status": "available"}
+
+    def test_includes_path_params_even_when_not_marked_required(self) -> None:
+        operation = _op(
+            "get_comment",
+            params=[Param(name="id", type="string", required=False)],
+        )
+        operation = operation.model_copy(update={"path": "/comments/{id}"})
+        ir = _ir(operations=[operation])
+
+        result = build_sample_invocations(ir)
+
+        assert result["get_comment"] == {"id": "1"}
+
     def test_empty_operations(self) -> None:
         ir = _ir(operations=[])
         assert build_sample_invocations(ir) == {}
+
+
+class TestPreferredSmokeToolIds:
+    def test_returns_string_ids_only(self) -> None:
+        result = _preferred_smoke_tool_ids(
+            {"preferred_smoke_tool_ids": ["list_users", "", 123, "GetOrderStatus"]}
+        )
+
+        assert result == ("list_users", "GetOrderStatus")
+
+
+class TestSampleInvocationOverrides:
+    def test_filters_non_mapping_overrides(self) -> None:
+        result = _sample_invocation_overrides(
+            {
+                "sample_invocation_overrides": {
+                    "GetOrderStatus": {"orderId": "ORD-1001"},
+                    "bad": "not-a-mapping",
+                }
+            }
+        )
+
+        assert result == {"GetOrderStatus": {"orderId": "ORD-1001"}}
 
 
 # --- _sample_grpc_arguments ---
@@ -459,6 +516,31 @@ class TestSourceConfigFromContext:
         )
         source = _source_config_from_context(ctx)
         assert source.hints == {}
+
+
+class TestApplyAuthOverride:
+    def test_returns_original_ir_without_auth_override(self) -> None:
+        ir = _ir()
+        assert _apply_auth_override(ir, {}) == ir
+
+    def test_applies_runtime_auth_override(self) -> None:
+        ir = _ir()
+        updated = _apply_auth_override(
+            ir,
+            {
+                "auth": {
+                    "type": "bearer",
+                    "runtime_secret_ref": "directus-access-token",
+                }
+            },
+        )
+        assert updated.auth.type == AuthType.bearer
+        assert updated.auth.runtime_secret_ref == "directus-access-token"
+
+    def test_rejects_invalid_auth_override(self) -> None:
+        ir = _ir()
+        with pytest.raises(ValueError, match="custom_header auth requires header_name"):
+            _apply_auth_override(ir, {"auth": {"type": "custom_header"}})
 
 
 # --- Extractor helpers ---

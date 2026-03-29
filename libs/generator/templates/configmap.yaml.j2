@@ -7,6 +7,5 @@ metadata:
 {{ labels_yaml_4 }}
   annotations:
 {{ annotations_yaml_4 }}
-data:
-  service-ir.json: |
-{{ service_ir_json | indent(4, true) }}
+binaryData:
+  {{ service_ir_key }}: "{{ service_ir_gzip_base64 }}"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,7 @@ from libs.extractors.base import ExtractorProtocol, SourceConfig, TypeDetector
 from libs.generator import GeneratedManifestSet, GenericManifestConfig, generate_generic_manifests
 from libs.ir import ServiceIR, serialize_ir
 from libs.ir.models import (
+    AuthConfig,
     EventSupportLevel,
     EventTransport,
     GraphQLOperationType,
@@ -64,6 +66,7 @@ _DEFAULT_PROXY_TIMEOUT_SECONDS = 10.0
 _DEFAULT_ROUTE_PUBLISH_TIMEOUT_SECONDS = 10.0
 _DEFAULT_RUNTIME_STARTUP_TIMEOUT_SECONDS = 10.0
 _DEFAULT_RUNTIME_STARTUP_POLL_SECONDS = 1.0
+_PATH_PLACEHOLDER_PATTERN = re.compile(r"{([^{}]+)}")
 
 
 def _float_env(key: str, default: float) -> float:
@@ -397,7 +400,11 @@ class KubernetesManifestDeployer:
         )
         if response.status_code == 404:
             response = await self.api.client.post(collection_path, json=manifest)
-        response.raise_for_status()
+        if response.is_error:
+            raise RuntimeError(
+                f"K8s apply failed for {plural}/{name}: "
+                f"{response.status_code} {_summarize_k8s_error(response)}"
+            )
         try:
             return cast(dict[str, Any], response.json())
         except Exception as exc:
@@ -539,6 +546,7 @@ def create_default_activity_registry(
         try:
             extractor = _resolve_extractor(context, source, extractors)
             service_ir = extractor.extract(source)
+            service_ir = _apply_auth_override(service_ir, context.request.options)
             if context.request.service_name:
                 service_ir = service_ir.model_copy(
                     update={"service_name": context.request.service_name}
@@ -676,6 +684,7 @@ def create_default_activity_registry(
     async def validate_runtime_stage(context: CompilationContext) -> StageExecutionResult:
         service_ir = ServiceIR.model_validate(context.payload["service_ir"])
         runtime_base_url = str(context.payload["runtime_base_url"])
+        options = context.request.options
         await _wait_for_runtime_http_ready(
             runtime_base_url,
             client_factory=resolved_runtime_http_client_factory,
@@ -683,6 +692,8 @@ def create_default_activity_registry(
             poll_seconds=resolved_settings.runtime_startup_poll_seconds,
         )
         sample_invocations = _build_sample_invocations(service_ir)
+        sample_invocations.update(_sample_invocation_overrides(options))
+        preferred_smoke_tool_ids = _preferred_smoke_tool_ids(options)
         client = resolved_runtime_http_client_factory(runtime_base_url)
         try:
             async with PostDeployValidator(
@@ -693,6 +704,7 @@ def create_default_activity_registry(
                     runtime_base_url,
                     service_ir,
                     sample_invocations=sample_invocations,
+                    preferred_smoke_tool_ids=preferred_smoke_tool_ids,
                 )
         finally:
             await client.aclose()
@@ -868,6 +880,41 @@ def _source_config_from_context(context: CompilationContext) -> SourceConfig:
     )
 
 
+def _apply_auth_override(service_ir: ServiceIR, options: Mapping[str, Any]) -> ServiceIR:
+    raw_auth = options.get("auth")
+    if not isinstance(raw_auth, Mapping):
+        return service_ir
+
+    auth_payload = dict(raw_auth)
+    if not auth_payload:
+        return service_ir
+
+    auth = AuthConfig.model_validate(auth_payload)
+    return service_ir.model_copy(update={"auth": auth})
+
+
+def _preferred_smoke_tool_ids(options: Mapping[str, Any]) -> tuple[str, ...]:
+    raw_preferred_tool_ids = options.get("preferred_smoke_tool_ids")
+    if not isinstance(raw_preferred_tool_ids, (list, tuple)):
+        return ()
+    return tuple(
+        tool_id for tool_id in raw_preferred_tool_ids if isinstance(tool_id, str) and tool_id
+    )
+
+
+def _sample_invocation_overrides(options: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_overrides = options.get("sample_invocation_overrides")
+    if not isinstance(raw_overrides, Mapping):
+        return {}
+
+    overrides: dict[str, dict[str, Any]] = {}
+    for tool_name, arguments in raw_overrides.items():
+        if not isinstance(tool_name, str) or not isinstance(arguments, Mapping):
+            continue
+        overrides[tool_name] = dict(arguments)
+    return overrides
+
+
 def _build_extractors() -> list[ExtractorProtocol]:
     return [
         OpenAPIExtractor(),
@@ -1039,17 +1086,6 @@ def _sample_value(
     if param.default is not None:
         return param.default
     lowered_name = param.name.lower()
-    if (
-        service_ir is not None
-        and service_ir.protocol == "scim"
-        and lowered_name == "id"
-        and operation is not None
-    ):
-        path = operation.path or ""
-        if "/Groups/" in path:
-            return "g1"
-        if "/Users/" in path:
-            return "u1"
     if lowered_name == "status":
         return "available"
     if param.type == "integer":
@@ -1089,9 +1125,16 @@ def _sample_arguments_for_operation(
         return _sample_graphql_arguments(operation)
     if service_ir.protocol == "grpc":
         return _sample_grpc_arguments(operation)
+    path_param_names = {
+        match.group(1) for match in _PATH_PLACEHOLDER_PATTERN.finditer(operation.path or "")
+    }
+    # Keep smoke requests conservative for HTTP/SOAP-style protocols. Real APIs
+    # often reject arbitrary placeholders for optional filters/sorts/search params,
+    # but path placeholders must still be populated so runtime URL resolution works.
     return {
         param.name: _sample_value(param, service_ir=service_ir, operation=operation)
         for param in operation.params
+        if param.required or param.default is not None or param.name in path_param_names
     }
 
 
@@ -1178,6 +1221,22 @@ def _validation_failure_message(prefix: str, report: Any) -> str:
     if not failed_results:
         return prefix
     return f"{prefix}: {'; '.join(failed_results)}"
+
+
+def _summarize_k8s_error(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        payload = response.text
+
+    if isinstance(payload, dict):
+        message = payload.get("message")
+        if isinstance(message, str) and message:
+            return message
+        return str(payload)
+    if isinstance(payload, str) and payload:
+        return payload
+    return response.reason_phrase
 
 
 async def _wait_for_runtime_http_ready(

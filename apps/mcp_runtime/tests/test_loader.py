@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import inspect
 from typing import Any
 
@@ -195,10 +196,26 @@ class TestLoadServiceIr:
         with pytest.raises(RuntimeLoadError, match="Unable to read"):
             load_service_ir(tmp_path / "nonexistent.json")
 
+    def test_loads_gzipped_ir(self, tmp_path: Any) -> None:
+        ir = _ir()
+        path = tmp_path / "ir.json.gz"
+        path.write_bytes(gzip.compress(ir.model_dump_json(indent=2).encode("utf-8"), mtime=0))
+
+        loaded = load_service_ir(path)
+
+        assert loaded.service_name == "loader-test"
+
     def test_raises_on_invalid_json(self, tmp_path: Any) -> None:
         path = tmp_path / "bad.json"
         path.write_text("{invalid json")
         with pytest.raises(RuntimeLoadError, match="Invalid ServiceIR"):
+            load_service_ir(path)
+
+    def test_raises_on_invalid_gzip_payload(self, tmp_path: Any) -> None:
+        path = tmp_path / "bad.json.gz"
+        path.write_bytes(b"not-a-gzip-stream")
+
+        with pytest.raises(RuntimeLoadError, match="Unable to decode"):
             load_service_ir(path)
 
     def test_raises_on_invalid_ir(self, tmp_path: Any) -> None:

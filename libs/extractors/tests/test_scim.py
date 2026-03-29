@@ -215,6 +215,35 @@ class TestExtractEdgeCases:
         # No operations for the nameless resource
         assert ir.metadata["resource_types"] == ["User"]
 
+    def test_fallback_extracts_standard_resources_from_users_list_response(
+        self,
+        extractor: SCIMExtractor,
+    ) -> None:
+        content = json.dumps(
+            {
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
+                "totalResults": 0,
+                "Resources": [],
+            }
+        )
+        source = SourceConfig(
+            url="https://jackson.example.com/api/scim/v2.0/directory-id/Users",
+            file_content=content,
+        )
+
+        ir = extractor.extract(source)
+
+        op_names = {op.name for op in ir.operations}
+        assert "list_users" in op_names
+        assert "list_groups" in op_names
+        assert ir.base_url == "https://jackson.example.com/api/scim/v2.0/directory-id"
+
+    def test_normalize_base_url_strips_users_suffix(self, extractor: SCIMExtractor) -> None:
+        assert (
+            extractor._normalize_base_url("https://example.com/scim/v2/tenant/Users")
+            == "https://example.com/scim/v2/tenant"
+        )
+
 
 # ── _raw_content URL branch ───────────────────────────────────────────────
 

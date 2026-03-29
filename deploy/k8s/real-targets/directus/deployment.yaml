@@ -9,6 +9,8 @@ metadata:
     tool-compiler.io/protocol: graphql
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: directus
@@ -50,6 +52,8 @@ spec:
               value: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
             - name: SECRET
               value: "0987654321-abcdef-ghij-klmn-opqrstuvwxyz"
+            - name: ACCESS_TOKEN_TTL
+              value: "8h"
             - name: PUBLIC_URL
               value: "http://directus.tc-real-targets.svc.cluster.local:8055"
             - name: WEBSOCKETS_ENABLED
@@ -60,28 +64,28 @@ spec:
               value: "*"
           resources:
             requests:
-              cpu: 50m
-              memory: 256Mi
-            limits:
-              cpu: 500m
+              cpu: 100m
               memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
           readinessProbe:
             httpGet:
               path: /server/health
               port: 8055
-            initialDelaySeconds: 30
+            initialDelaySeconds: 45
             periodSeconds: 10
-            timeoutSeconds: 5
+            timeoutSeconds: 15
+            failureThreshold: 6
           livenessProbe:
-            httpGet:
-              path: /server/health
+            tcpSocket:
               port: 8055
-            initialDelaySeconds: 60
+            initialDelaySeconds: 120
             periodSeconds: 30
             timeoutSeconds: 5
+            failureThreshold: 6
           startupProbe:
-            httpGet:
-              path: /server/health
+            tcpSocket:
               port: 8055
-            failureThreshold: 60
+            failureThreshold: 120
             periodSeconds: 5

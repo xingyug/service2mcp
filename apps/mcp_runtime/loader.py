@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import inspect
 import keyword
 import logging
@@ -40,9 +41,16 @@ def load_service_ir(path: str | Path) -> ServiceIR:
 
     ir_path = Path(path)
     try:
-        json_payload = ir_path.read_text(encoding="utf-8")
+        payload_bytes = ir_path.read_bytes()
     except OSError as exc:
         raise RuntimeLoadError(f"Unable to read ServiceIR from {ir_path}: {exc}") from exc
+
+    try:
+        if ir_path.suffix == ".gz" or payload_bytes.startswith(b"\x1f\x8b"):
+            payload_bytes = gzip.decompress(payload_bytes)
+        json_payload = payload_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RuntimeLoadError(f"Unable to decode ServiceIR at {ir_path}: {exc}") from exc
 
     try:
         return deserialize_ir(json_payload)

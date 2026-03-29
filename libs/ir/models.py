@@ -233,6 +233,7 @@ class SoapOperationConfig(BaseModel):
     soap_version: Literal["1.1"] = "1.1"
     binding_style: Literal["document"] = "document"
     body_use: Literal["literal"] = "literal"
+    child_element_form: Literal["qualified", "unqualified"] = "qualified"
 
 
 class GraphQLOperationType(StrEnum):

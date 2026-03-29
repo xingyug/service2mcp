@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from libs.ir.models import (
     GrpcUnaryRuntimeConfig,
     Operation,
     Param,
+    RequestSigningConfig,
     RiskLevel,
     RiskMetadata,
     SourceType,
@@ -134,13 +137,14 @@ def test_generate_generic_manifests_from_fixture() -> None:
     assert config_map["metadata"]["name"] == "billing-runtime-ir"
     assert config_map["metadata"]["namespace"] == "runtime-system"
     assert config_map["metadata"]["labels"]["team"] == "platform"
-    assert json.loads(config_map["data"]["service-ir.json"]) == service_ir.model_dump(mode="json")
+    compressed_ir = base64.b64decode(config_map["binaryData"]["service-ir.json.gz"])
+    assert json.loads(gzip.decompress(compressed_ir)) == service_ir.model_dump(mode="json")
 
     deployment = manifest_set.deployment
     container = deployment["spec"]["template"]["spec"]["containers"][0]
     pod_security_context = deployment["spec"]["template"]["spec"]["securityContext"]
     container_security_context = container["securityContext"]
-    env_entries = {item["name"]: item["value"] for item in container["env"]}
+    env_entries = {item["name"]: item.get("value") for item in container["env"]}
     volume_mounts = {item["name"]: item for item in container["volumeMounts"]}
     volumes = {item["name"]: item for item in deployment["spec"]["template"]["spec"]["volumes"]}
 
@@ -150,7 +154,7 @@ def test_generate_generic_manifests_from_fixture() -> None:
     )
     assert container["image"] == "ghcr.io/example/generic-runtime:1.2.3"
     assert container["ports"][0]["containerPort"] == 8003
-    assert env_entries["SERVICE_IR_PATH"] == "/config/service-ir.json"
+    assert env_entries["SERVICE_IR_PATH"] == "/config/service-ir.json.gz"
     assert env_entries["TMPDIR"] == "/tmp"
     assert container["livenessProbe"]["httpGet"]["path"] == "/healthz"
     assert container["readinessProbe"]["httpGet"]["path"] == "/readyz"
@@ -160,6 +164,9 @@ def test_generate_generic_manifests_from_fixture() -> None:
         "readOnly": True,
     }
     assert volumes["service-ir"]["configMap"]["name"] == "billing-runtime-ir"
+    assert volumes["service-ir"]["configMap"]["items"] == [
+        {"key": "service-ir.json.gz", "path": "service-ir.json.gz"}
+    ]
     assert volumes["tmp"] == {"name": "tmp", "emptyDir": {}}
     assert pod_security_context == {
         "runAsNonRoot": True,
@@ -251,6 +258,38 @@ def test_generate_generic_manifests_supports_version_coexistence_route_config() 
             "namespace": "runtime-system",
             "port": 8080,
         },
+    }
+
+
+def test_generate_generic_manifests_injects_runtime_auth_secret_envs() -> None:
+    service_ir = _load_service_ir().model_copy(
+        update={
+            "auth": AuthConfig(
+                type=AuthType.bearer,
+                runtime_secret_ref="directus-access-token",
+                request_signing=RequestSigningConfig(secret_ref="request-signing-secret"),
+            )
+        }
+    )
+
+    manifest_set = generate_generic_manifests(
+        service_ir,
+        config=GenericManifestConfig(
+            runtime_image="ghcr.io/example/generic-runtime:secure",
+            namespace="runtime-system",
+        ),
+    )
+
+    container = manifest_set.deployment["spec"]["template"]["spec"]["containers"][0]
+    env_entries = {item["name"]: item for item in container["env"]}
+
+    assert env_entries["DIRECTUS_ACCESS_TOKEN"]["valueFrom"]["secretKeyRef"] == {
+        "name": "tool-compiler-runtime-secrets",
+        "key": "directus-access-token",
+    }
+    assert env_entries["REQUEST_SIGNING_SECRET"]["valueFrom"]["secretKeyRef"] == {
+        "name": "tool-compiler-runtime-secrets",
+        "key": "request-signing-secret",
     }
 
 

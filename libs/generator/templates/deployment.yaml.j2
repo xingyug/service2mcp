@@ -43,6 +43,13 @@ spec:
             - name: ENABLE_NATIVE_GRPC_STREAM
               value: "true"
 {% endif %}
+{% for runtime_secret_env in runtime_secret_envs %}
+            - name: {{ runtime_secret_env.env_name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ runtime_secret_env.secret_name }}
+                  key: {{ runtime_secret_env.secret_key }}
+{% endfor %}
           ports:
             - name: http
               containerPort: {{ container_port }}
@@ -72,7 +79,7 @@ spec:
           configMap:
             name: {{ config_map_name }}
             items:
-              - key: service-ir.json
-                path: service-ir.json
+              - key: {{ service_ir_key }}
+                path: {{ service_ir_key }}
         - name: tmp
           emptyDir: {}

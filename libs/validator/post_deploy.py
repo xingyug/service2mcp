@@ -57,6 +57,7 @@ class PostDeployValidator:
         expected_ir: ServiceIR | dict[str, Any],
         *,
         sample_invocations: dict[str, dict[str, Any]] | None = None,
+        preferred_smoke_tool_ids: tuple[str, ...] = (),
     ) -> ValidationReport:
         """Run post-deploy checks against a runtime base URL."""
 
@@ -75,6 +76,7 @@ class PostDeployValidator:
             service_ir,
             available_tools=available_tools,
             sample_invocations=sample_invocations or {},
+            preferred_smoke_tool_ids=preferred_smoke_tool_ids,
             health_passed=health_result.passed,
             tool_listing_passed=tool_listing_result.passed,
         )
@@ -92,6 +94,7 @@ class PostDeployValidator:
         *,
         sample_invocations: dict[str, dict[str, Any]] | None = None,
         audit_policy: AuditPolicy | None = None,
+        preferred_smoke_tool_ids: tuple[str, ...] = (),
     ) -> tuple[ValidationReport, ToolAuditSummary]:
         """Run standard post-deploy validation plus a full generated-tool audit.
 
@@ -120,6 +123,7 @@ class PostDeployValidator:
             service_ir,
             available_tools=available_tools,
             sample_invocations=invocations,
+            preferred_smoke_tool_ids=preferred_smoke_tool_ids,
             health_passed=health_result.passed,
             tool_listing_passed=tool_listing_result.passed,
         )
@@ -198,6 +202,17 @@ class PostDeployValidator:
             try:
                 result = await self._tool_invoker(operation.id, arguments)
             except Exception as exc:
+                failure_skip_reason = audit_policy.failure_skip_reason(operation, arguments)
+                if failure_skip_reason is not None:
+                    audit_results.append(
+                        ToolAuditResult(
+                            tool_name=operation.id,
+                            outcome="skipped",
+                            reason=failure_skip_reason,
+                            arguments=arguments,
+                        )
+                    )
+                    continue
                 audit_results.append(
                     ToolAuditResult(
                         tool_name=operation.id,
@@ -210,6 +225,18 @@ class PostDeployValidator:
 
             status = result.get("status") if isinstance(result, dict) else None
             if status != "ok":
+                failure_skip_reason = audit_policy.failure_skip_reason(operation, arguments)
+                if failure_skip_reason is not None:
+                    audit_results.append(
+                        ToolAuditResult(
+                            tool_name=operation.id,
+                            outcome="skipped",
+                            reason=failure_skip_reason,
+                            arguments=arguments,
+                            result=result if isinstance(result, dict) else {"raw": str(result)},
+                        )
+                    )
+                    continue
                 audit_results.append(
                     ToolAuditResult(
                         tool_name=operation.id,
@@ -355,6 +382,7 @@ class PostDeployValidator:
         *,
         available_tools: dict[str, dict[str, Any]],
         sample_invocations: dict[str, dict[str, Any]],
+        preferred_smoke_tool_ids: tuple[str, ...],
         health_passed: bool,
         tool_listing_passed: bool,
     ) -> ValidationResult:
@@ -400,6 +428,7 @@ class PostDeployValidator:
             enabled_operations=enabled_operations,
             available_tools=available_tools,
             sample_invocations=sample_invocations,
+            preferred_tool_ids=preferred_smoke_tool_ids,
         )
         if operation is None:
             first_available_operation = next(
@@ -532,6 +561,7 @@ def _select_smoke_operation(
     enabled_operations: list[Operation],
     available_tools: dict[str, dict[str, Any]],
     sample_invocations: dict[str, dict[str, Any]],
+    preferred_tool_ids: tuple[str, ...] = (),
 ) -> Operation | None:
     candidates = [
         operation
@@ -540,6 +570,11 @@ def _select_smoke_operation(
     ]
     if not candidates:
         return None
+    preferred_candidate_by_id = {operation.id: operation for operation in candidates}
+    for preferred_tool_id in preferred_tool_ids:
+        preferred_candidate = preferred_candidate_by_id.get(preferred_tool_id)
+        if preferred_candidate is not None:
+            return preferred_candidate
     return min(
         candidates,
         key=lambda operation: _smoke_operation_priority(expected_ir, operation),
@@ -549,7 +584,7 @@ def _select_smoke_operation(
 def _smoke_operation_priority(
     expected_ir: ServiceIR,
     operation: Operation,
-) -> tuple[int, int, str]:
+) -> tuple[int, int, int, str]:
     descriptor = _supported_descriptor_for_operation(expected_ir, operation.id)
     category = 6
 
@@ -581,4 +616,9 @@ def _smoke_operation_priority(
         risk_penalty += 2
     if operation.risk.destructive:
         risk_penalty += 4
-    return (category, risk_penalty, operation.id)
+
+    # Prefer operations with fewer required parameters — they are more
+    # likely to succeed with placeholder sample values.
+    required_param_count = sum(1 for p in operation.params if p.required)
+
+    return (category, risk_penalty, required_param_count, operation.id)

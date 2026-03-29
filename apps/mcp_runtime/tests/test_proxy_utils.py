@@ -259,6 +259,28 @@ class TestBuildSoapEnvelope:
         assert "42" in result
         assert "Envelope" in result
 
+    def test_unqualified_child_elements_when_requested(self) -> None:
+        from libs.ir.models import SoapOperationConfig
+
+        config = SoapOperationConfig(
+            target_namespace="http://example.com/api",
+            request_element="GetItem",
+            response_element="GetItemResponse",
+            soap_action="http://example.com/api/GetItem",
+            child_element_form="unqualified",
+        )
+
+        result = _build_soap_envelope(config, {"id": "42"})
+        root = ET.fromstring(result)
+        body = _soap_body_element(root)
+        assert body is not None
+        request = next(iter(body))
+        children = list(request)
+
+        assert len(children) == 1
+        assert children[0].tag == "id"
+        assert children[0].text == "42"
+
 
 # --- Stream parsing ---
 

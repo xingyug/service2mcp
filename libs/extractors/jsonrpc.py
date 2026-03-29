@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -192,6 +192,7 @@ class JsonRpcExtractor:
     ) -> Operation:
         method_name: str = method["name"]
         op_id = method_name.replace(".", "_")
+        params_type = _resolve_params_type(method)
 
         # Build params
         params: list[Param] = []
@@ -206,6 +207,7 @@ class JsonRpcExtractor:
                     type=_map_type(p_schema),
                     required=p.get("required", False),
                     description=p.get("description", ""),
+                    default=p.get("default", p_schema.get("default")),
                 )
             )
 
@@ -218,6 +220,7 @@ class JsonRpcExtractor:
 
         jsonrpc_config = JsonRpcOperationConfig(
             method_name=method_name,
+            params_type=params_type,
             params_names=param_names,
             result_schema=result_schema,
         )
@@ -306,3 +309,16 @@ class JsonRpcExtractor:
         elif source.auth_token:
             headers["Authorization"] = f"Bearer {source.auth_token}"
         return headers
+
+
+def _resolve_params_type(method: dict[str, Any]) -> Literal["named", "positional"]:
+    raw_params_type = method.get("params_type")
+    if raw_params_type in {"named", "positional"}:
+        return cast(Literal["named", "positional"], raw_params_type)
+
+    param_structure = method.get("paramStructure")
+    if param_structure == "by-position":
+        return "positional"
+    if param_structure in {"by-name", "either"}:
+        return "named"
+    return "named"

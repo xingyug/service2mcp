@@ -92,7 +92,7 @@ class SOAPWSDLExtractor:
         source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         target_namespace = root.attrib.get("targetNamespace", "")
         messages = _parse_messages(root)
-        elements, complex_types = _parse_schema_types(root)
+        elements, complex_types, child_element_forms = _parse_schema_types(root)
         services = root.findall("wsdl:service", NS)
         if not services:
             raise ValueError("No wsdl:service definitions found.")
@@ -148,6 +148,7 @@ class SOAPWSDLExtractor:
                 messages=messages,
                 elements=elements,
                 complex_types=complex_types,
+                child_element_forms=child_element_forms,
                 soap_actions=soap_actions,
                 target_namespace=target_namespace,
                 binding_style=cast(Literal["document"], binding_style),
@@ -231,19 +232,23 @@ def _parse_messages(root: ET.Element) -> dict[str, str]:
 
 def _parse_schema_types(
     root: ET.Element,
-) -> tuple[dict[str, list[XSDField]], dict[str, list[XSDField]]]:
+) -> tuple[dict[str, list[XSDField]], dict[str, list[XSDField]], dict[str, str]]:
     elements: dict[str, list[XSDField]] = {}
     complex_types: dict[str, list[XSDField]] = {}
+    child_element_forms: dict[str, str] = {}
     for schema in root.findall("wsdl:types/xsd:schema", NS):
+        child_element_form = _schema_child_element_form(schema)
         for complex_type in schema.findall("xsd:complexType", NS):
             name = complex_type.attrib.get("name")
             if not name:
                 continue
             complex_types[name] = _extract_xsd_fields(complex_type)
+            child_element_forms[name] = child_element_form
         for element in schema.findall("xsd:element", NS):
             name = element.attrib.get("name")
             if not name:
                 continue
+            child_element_forms[name] = child_element_form
             type_name = _qname_local(element.attrib.get("type", ""))
             if type_name and type_name in complex_types:
                 elements[name] = complex_types[type_name]
@@ -251,7 +256,13 @@ def _parse_schema_types(
             inline_complex_type = element.find("xsd:complexType", NS)
             if inline_complex_type is not None:
                 elements[name] = _extract_xsd_fields(inline_complex_type)
-    return elements, complex_types
+    return elements, complex_types, child_element_forms
+
+
+def _schema_child_element_form(schema: ET.Element) -> str:
+    if schema.attrib.get("elementFormDefault", "unqualified").lower() == "qualified":
+        return "qualified"
+    return "unqualified"
 
 
 def _extract_xsd_fields(container: ET.Element) -> list[XSDField]:
@@ -263,11 +274,15 @@ def _extract_xsd_fields(container: ET.Element) -> list[XSDField]:
         name = element.attrib.get("name")
         if not name:
             continue
+        has_default = "default" in element.attrib
         fields.append(
             XSDField(
                 name=name,
                 type_name=_qname_local(element.attrib.get("type", "xsd:string")),
-                required=element.attrib.get("minOccurs", "1") != "0",
+                # Defaulted XSD fields are optional at call time even when minOccurs
+                # is omitted, otherwise SOAP runtimes over-require inputs like
+                # includeHistory default="false".
+                required=element.attrib.get("minOccurs", "1") != "0" and not has_default,
                 repeated=element.attrib.get("maxOccurs") not in {None, "1"},
             )
         )
@@ -317,6 +332,7 @@ def _build_operation(
     messages: dict[str, str],
     elements: dict[str, list[XSDField]],
     complex_types: dict[str, list[XSDField]],
+    child_element_forms: dict[str, str],
     soap_actions: dict[str, str],
     target_namespace: str,
     binding_style: Literal["document"],
@@ -370,6 +386,10 @@ def _build_operation(
             soap_action=soap_actions.get(operation_name),
             binding_style=binding_style,
             body_use=cast(Literal["literal"], body_uses.get(operation_name, "literal")),
+            child_element_form=cast(
+                Literal["qualified", "unqualified"],
+                child_element_forms.get(input_element_name or operation_name, "qualified"),
+            ),
         ),
         tags=["soap", "wsdl", soap_actions.get(operation_name, "")],
         source=SourceType.extractor,

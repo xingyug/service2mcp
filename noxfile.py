@@ -38,6 +38,7 @@ def typecheck(session: nox.Session) -> None:
     session.install("basedpyright")
     session.run(
         "mypy",
+        "--no-incremental",
         "libs",
         "apps",
         "tests/integration",

@@ -9,6 +9,8 @@ metadata:
     tool-compiler.io/protocol: openapi
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: gitea
@@ -48,11 +50,11 @@ spec:
               value: "1000"
           resources:
             requests:
-              cpu: 50m
-              memory: 128Mi
+              cpu: 100m
+              memory: 256Mi
             limits:
-              cpu: 500m
-              memory: 384Mi
+              cpu: "1"
+              memory: 1Gi
           volumeMounts:
             - name: gitea-data
               mountPath: /data
@@ -60,21 +62,21 @@ spec:
             httpGet:
               path: /api/v1/version
               port: 3000
-            initialDelaySeconds: 15
-            periodSeconds: 10
-            timeoutSeconds: 5
-          livenessProbe:
-            httpGet:
-              path: /api/v1/version
-              port: 3000
             initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 15
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 120
             periodSeconds: 30
             timeoutSeconds: 5
+            failureThreshold: 6
           startupProbe:
-            httpGet:
-              path: /api/v1/version
+            tcpSocket:
               port: 3000
-            failureThreshold: 60
+            failureThreshold: 120
             periodSeconds: 5
       volumes:
         - name: gitea-data

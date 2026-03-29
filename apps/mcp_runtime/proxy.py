@@ -593,11 +593,46 @@ class RuntimeProxy:
             )
 
         original_base_url = self._service_ir.base_url
-        base_url = original_base_url.rstrip("/")
-        path_suffix = resolved_path if resolved_path.startswith("/") else f"/{resolved_path}"
-        if urlsplit(original_base_url).path == path_suffix:
+        base_parts = urlsplit(original_base_url)
+        resolved_parts = urlsplit(resolved_path if resolved_path else "/")
+        if resolved_parts.path in {"", "/"}:
+            return (
+                urlunsplit(
+                    (
+                        base_parts.scheme,
+                        base_parts.netloc,
+                        base_parts.path or "/",
+                        resolved_parts.query or base_parts.query,
+                        resolved_parts.fragment,
+                    )
+                ),
+                path_argument_names,
+            )
+
+        base_path = (base_parts.path or "").rstrip("/")
+        path_suffix = (
+            resolved_parts.path
+            if resolved_parts.path.startswith("/")
+            else f"/{resolved_parts.path}"
+        )
+        if (
+            base_parts.path == path_suffix
+            and not resolved_parts.query
+            and not resolved_parts.fragment
+        ):
             return original_base_url, path_argument_names
-        return f"{base_url}{path_suffix}", path_argument_names
+        return (
+            urlunsplit(
+                (
+                    base_parts.scheme,
+                    base_parts.netloc,
+                    f"{base_path}{path_suffix}",
+                    resolved_parts.query,
+                    resolved_parts.fragment,
+                )
+            ),
+            path_argument_names,
+        )
 
     def _prepare_request_payload(
         self,
@@ -1717,12 +1752,15 @@ def _build_soap_envelope(config: SoapOperationConfig, arguments: dict[str, Any])
         f"{{{config.target_namespace}}}{config.request_element}",
     )
 
+    child_namespace = (
+        config.target_namespace if config.child_element_form == "qualified" else None
+    )
     for key, value in arguments.items():
         _append_soap_argument(
             request_root,
             key,
             value,
-            namespace=config.target_namespace,
+            namespace=child_namespace,
         )
 
     return ET.tostring(envelope, encoding="unicode")
@@ -1733,7 +1771,7 @@ def _append_soap_argument(
     name: str,
     value: Any,
     *,
-    namespace: str,
+    namespace: str | None,
 ) -> None:
     if value is None:
         return
@@ -1742,7 +1780,7 @@ def _append_soap_argument(
             _append_soap_argument(parent, name, item, namespace=namespace)
         return
 
-    child = ET.SubElement(parent, f"{{{namespace}}}{name}")
+    child = ET.SubElement(parent, f"{{{namespace}}}{name}" if namespace else name)
     if isinstance(value, dict):
         for nested_key, nested_value in value.items():
             _append_soap_argument(child, str(nested_key), nested_value, namespace=namespace)

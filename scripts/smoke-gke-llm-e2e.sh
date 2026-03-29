@@ -11,9 +11,13 @@ WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-900}"
 KEEP_NAMESPACE="${KEEP_NAMESPACE:-0}"
 RUN_ID="${RUN_ID:-$(date +%H%M%S)}"
 PROTOCOL="${PROTOCOL:-all}"
+PROOF_PROFILE="${PROOF_PROFILE:-mock}"
+UPSTREAM_NAMESPACE="${UPSTREAM_NAMESPACE:-tc-real-targets}"
 AUDIT_ALL_GENERATED_TOOLS="${AUDIT_ALL_GENERATED_TOOLS:-0}"
 ENABLE_TOOL_GROUPING="${ENABLE_TOOL_GROUPING:-0}"
 ENABLE_LLM_JUDGE="${ENABLE_LLM_JUDGE:-0}"
+ENABLE_LLM_ENHANCEMENT="${ENABLE_LLM_ENHANCEMENT:-1}"
+CASE_IDS="${CASE_IDS:-}"
 IMAGE_REPO_BASE="${IMAGE_REPO_BASE:-us-central1-docker.pkg.dev/insightcompass-465300/tool-compiler}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 COMPILER_API_IMAGE="${COMPILER_API_IMAGE:-${IMAGE_REPO_BASE}/compiler-api:${IMAGE_TAG}}"
@@ -22,6 +26,7 @@ COMPILER_WORKER_IMAGE="${COMPILER_WORKER_IMAGE:-${IMAGE_REPO_BASE}/compiler-work
 MCP_RUNTIME_IMAGE="${MCP_RUNTIME_IMAGE:-${IMAGE_REPO_BASE}/mcp-runtime:${IMAGE_TAG}}"
 PROOF_HELPER_IMAGE="${PROOF_HELPER_IMAGE:-${COMPILER_API_IMAGE}}"
 LLM_API_KEY_FILE="${LLM_API_KEY_FILE:-/home/guoxy/esoc-agents/.deepseek_api_key}"
+REAL_TARGET_ENV_FILE="${REAL_TARGET_ENV_FILE:-${ROOT_DIR}/.env.real-targets.local}"
 TMP_DIR="$(mktemp -d)"
 VALUES_OVERRIDE_PATH="${TMP_DIR}/values.override.yaml"
 RESULTS_PATH="${TMP_DIR}/proof-results.json"
@@ -42,16 +47,25 @@ if [[ ! -x "${HELM_BIN}" ]]; then
   exit 1
 fi
 
-if [[ ! -f "${LLM_API_KEY_FILE}" ]]; then
+if [[ ("${ENABLE_LLM_ENHANCEMENT}" == "1" || "${ENABLE_LLM_JUDGE}" == "1") && ! -f "${LLM_API_KEY_FILE}" ]]; then
   echo "DeepSeek API key file ${LLM_API_KEY_FILE} was not found." >&2
   exit 1
 fi
 
 case "${PROTOCOL}" in
-  all|graphql|rest|grpc|soap|sql)
+  all|graphql|rest|openapi|grpc|jsonrpc|odata|scim|soap|sql)
     ;;
   *)
-    echo "Unsupported PROTOCOL=${PROTOCOL}. Expected one of: all, graphql, rest, grpc, soap, sql." >&2
+    echo "Unsupported PROTOCOL=${PROTOCOL}. Expected one of: all, graphql, rest, openapi, grpc, jsonrpc, odata, scim, soap, sql." >&2
+    exit 1
+    ;;
+esac
+
+case "${PROOF_PROFILE}" in
+  mock|real-targets)
+    ;;
+  *)
+    echo "Unsupported PROOF_PROFILE=${PROOF_PROFILE}. Expected mock or real-targets." >&2
     exit 1
     ;;
 esac
@@ -63,6 +77,199 @@ image_repo() {
 image_tag() {
   printf '%s' "${1##*:}"
 }
+
+append_secret_env() {
+  local env_name="$1"
+  local secret_name="$2"
+  local secret_key="$3"
+  PROOF_RUNNER_ENV_ENTRIES="${PROOF_RUNNER_ENV_ENTRIES}
+            - name: ${env_name}
+              valueFrom:
+                secretKeyRef:
+                  name: ${secret_name}
+                  key: ${secret_key}"
+}
+
+load_real_target_env_file() {
+  if [[ -f "${REAL_TARGET_ENV_FILE}" ]]; then
+    echo "Loading local real-target overrides from ${REAL_TARGET_ENV_FILE}"
+    set -a
+    # shellcheck disable=SC1090
+    source "${REAL_TARGET_ENV_FILE}"
+    set +a
+  fi
+}
+
+fetch_directus_access_token() {
+  local attempt
+  local output
+  for attempt in 1 2 3 4 5; do
+    if output="$("${KUBECTL}" exec -n "${UPSTREAM_NAMESPACE}" deployment/directus -- \
+      node -e '
+const namespace = process.argv[1];
+const baseUrl = `http://directus.${namespace}.svc.cluster.local:8055`;
+fetch(`${baseUrl}/auth/login`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ email: "admin@example.com", password: "Admin123!" }),
+})
+  .then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`Directus login failed: ${response.status} ${await response.text()}`);
+    }
+    const payload = await response.json();
+    process.stdout.write(payload.data.access_token);
+  })
+  .catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+' "${UPSTREAM_NAMESPACE}" | tr -d '\r')"; then
+      printf '%s' "${output}"
+      return 0
+    fi
+    sleep $(( attempt * 2 ))
+  done
+  return 1
+}
+
+fetch_pocketbase_access_token() {
+  local attempt
+  local output
+  for attempt in 1 2 3 4 5; do
+    if output="$("${KUBECTL}" exec -n "${UPSTREAM_NAMESPACE}" deployment/directus -- \
+      node -e '
+const namespace = process.argv[1];
+const baseUrl = `http://pocketbase.${namespace}.svc.cluster.local:8090`;
+fetch(`${baseUrl}/api/collections/_superusers/auth-with-password`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ identity: "admin@example.com", password: "Admin12345!" }),
+})
+  .then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`PocketBase login failed: ${response.status} ${await response.text()}`);
+    }
+    const payload = await response.json();
+    process.stdout.write(payload.token);
+  })
+  .catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+' "${UPSTREAM_NAMESPACE}" | tr -d '\r')"; then
+      printf '%s' "${output}"
+      return 0
+    fi
+    sleep $(( attempt * 2 ))
+  done
+  return 1
+}
+
+fetch_jackson_scim_info() {
+  local attempt
+  local output
+  for attempt in 1 2 3 4 5; do
+    if output="$("${KUBECTL}" exec -n "${UPSTREAM_NAMESPACE}" deployment/directus -- \
+      node -e '
+const namespace = process.argv[1];
+const product = process.argv[2];
+const baseUrl = `http://jackson.${namespace}.svc.cluster.local:5225`;
+fetch(`${baseUrl}/api/v1/dsync`, {
+  method: "POST",
+  headers: {
+    "Authorization": "Api-Key tc-test-api-key-12345",
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ tenant: "tc", product, type: "generic-scim-v2" }),
+})
+  .then(async (response) => {
+    if (!response.ok) {
+      throw new Error(`Jackson directory create failed: ${response.status} ${await response.text()}`);
+    }
+    const payload = await response.json();
+    process.stdout.write(`${payload.data.scim.path}\t${payload.data.scim.secret}`);
+  })
+  .catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });
+' "${UPSTREAM_NAMESPACE}" "proof${RUN_ID,,}" | tr -d '\r')"; then
+      printf '%s' "${output}"
+      return 0
+    fi
+    sleep $(( attempt * 2 ))
+  done
+  return 1
+}
+
+create_mock_secrets() {
+  local secret_args=(
+    create secret generic llm-e2e-secrets
+    --namespace "${NAMESPACE}"
+  )
+  if [[ "${ENABLE_LLM_ENHANCEMENT}" == "1" || "${ENABLE_LLM_JUDGE}" == "1" ]]; then
+    secret_args+=(--from-file=llm-api-key="${LLM_API_KEY_FILE}")
+  fi
+  "${KUBECTL}" "${secret_args[@]}" --dry-run=client -o yaml | "${KUBECTL}" apply -f -
+}
+
+create_real_target_secrets() {
+  local directus_token="${REAL_TARGET_DIRECTUS_ACCESS_TOKEN:-}"
+  local pocketbase_token="${REAL_TARGET_POCKETBASE_ACCESS_TOKEN:-}"
+  local gitea_basic_auth="${REAL_TARGET_GITEA_BASIC_AUTH:-gitea_admin:Admin123!}"
+  local jackson_info=""
+  local jackson_scim_path=""
+  local jackson_scim_secret="${REAL_TARGET_JACKSON_SCIM_SECRET:-}"
+  local jackson_scim_base_url="${REAL_TARGET_JACKSON_SCIM_BASE_URL:-}"
+
+  if [[ -z "${directus_token}" ]]; then
+    directus_token="$(fetch_directus_access_token)"
+  fi
+  if [[ -z "${pocketbase_token}" ]]; then
+    pocketbase_token="$(fetch_pocketbase_access_token)"
+  fi
+  if [[ -z "${jackson_scim_secret}" || -z "${jackson_scim_base_url}" ]]; then
+    jackson_info="$(fetch_jackson_scim_info)"
+    jackson_scim_path="${jackson_info%%$'\t'*}"
+    jackson_scim_secret="${jackson_info#*$'\t'}"
+    jackson_scim_base_url="http://jackson.${UPSTREAM_NAMESPACE}.svc.cluster.local:5225${jackson_scim_path}"
+  fi
+
+  local llm_secret_args=(
+    create secret generic llm-e2e-secrets
+    --namespace "${NAMESPACE}"
+    --from-literal=directus-access-token="${directus_token}"
+    --from-literal=pocketbase-access-token="${pocketbase_token}"
+    --from-literal=gitea-basic-auth="${gitea_basic_auth}"
+    --from-literal=jackson-scim-base-url="${jackson_scim_base_url}"
+    --from-literal=jackson-scim-secret="${jackson_scim_secret}"
+  )
+  if [[ "${ENABLE_LLM_ENHANCEMENT}" == "1" || "${ENABLE_LLM_JUDGE}" == "1" ]]; then
+    llm_secret_args+=(--from-file=llm-api-key="${LLM_API_KEY_FILE}")
+  fi
+  "${KUBECTL}" "${llm_secret_args[@]}" --dry-run=client -o yaml | "${KUBECTL}" apply -f -
+
+  "${KUBECTL}" create secret generic tool-compiler-runtime-secrets \
+    --namespace "${NAMESPACE}" \
+    --from-literal=directus-access-token="${directus_token}" \
+    --from-literal=pocketbase-access-token="${pocketbase_token}" \
+    --from-literal=gitea-basic-auth="${gitea_basic_auth}" \
+    --from-literal=jackson-scim-secret="${jackson_scim_secret}" \
+    --dry-run=client \
+    -o yaml | "${KUBECTL}" apply -f -
+}
+
+COMPILER_WORKER_SECRET_ENV_BLOCK=""
+if [[ "${ENABLE_LLM_ENHANCEMENT}" == "1" || "${ENABLE_LLM_JUDGE}" == "1" ]]; then
+  COMPILER_WORKER_SECRET_ENV_BLOCK=$(cat <<'YAML'
+  secretEnv:
+    - name: LLM_API_KEY
+      secretName: llm-e2e-secrets
+      secretKey: llm-api-key
+YAML
+)
+fi
 
 cat > "${VALUES_OVERRIDE_PATH}" <<YAML
 images:
@@ -99,32 +306,32 @@ compilerWorker:
     - name: LLM_SKIP_IF_DESCRIPTION_EXISTS
       value: "false"
     - name: WORKER_ENABLE_LLM_ENHANCEMENT
-      value: "true"
+      value: "${ENABLE_LLM_ENHANCEMENT}"
     - name: WORKER_ENABLE_TOOL_GROUPING
       value: "${ENABLE_TOOL_GROUPING}"
-  secretEnv:
-    - name: LLM_API_KEY
-      secretName: llm-e2e-secrets
-      secretKey: llm-api-key
+${COMPILER_WORKER_SECRET_ENV_BLOCK}
 YAML
 
 cd "${ROOT_DIR}"
 
-echo "Running GKE LLM-enabled proof with protocol=${PROTOCOL}"
+echo "Running GKE proof with profile=${PROOF_PROFILE} protocol=${PROTOCOL} llm_enhancement=${ENABLE_LLM_ENHANCEMENT}"
 
 "${KUBECTL}" get namespace "${NAMESPACE}" >/dev/null 2>&1 || "${KUBECTL}" create namespace "${NAMESPACE}" >/dev/null
 
-"${KUBECTL}" create secret generic llm-e2e-secrets \
-  --namespace "${NAMESPACE}" \
-  --from-file=llm-api-key="${LLM_API_KEY_FILE}" \
-  --dry-run=client \
-  -o yaml | "${KUBECTL}" apply -f -
+if [[ "${PROOF_PROFILE}" == "real-targets" ]]; then
+  load_real_target_env_file
+  create_real_target_secrets
+else
+  create_mock_secrets
+fi
 
-"${KUBECTL}" create configmap llm-proof-sql-init \
-  --namespace "${NAMESPACE}" \
-  --from-file=init.sql="${ROOT_DIR}/tests/fixtures/sql_schemas/catalog_live.sql" \
-  --dry-run=client \
-  -o yaml | "${KUBECTL}" apply -f -
+if [[ "${PROOF_PROFILE}" == "mock" ]]; then
+  "${KUBECTL}" create configmap llm-proof-sql-init \
+    --namespace "${NAMESPACE}" \
+    --from-file=init.sql="${ROOT_DIR}/tests/fixtures/sql_schemas/catalog_live.sql" \
+    --dry-run=client \
+    -o yaml | "${KUBECTL}" apply -f -
+fi
 
 "${HELM_BIN}" upgrade --install "${RELEASE_NAME}" \
   "${ROOT_DIR}/deploy/helm/tool-compiler" \
@@ -134,7 +341,8 @@ echo "Running GKE LLM-enabled proof with protocol=${PROTOCOL}"
   --wait \
   --timeout "${WAIT_TIMEOUT_SECONDS}s"
 
-"${KUBECTL}" apply -n "${NAMESPACE}" -f - <<YAML
+if [[ "${PROOF_PROFILE}" == "mock" ]]; then
+  "${KUBECTL}" apply -n "${NAMESPACE}" -f - <<YAML
 apiVersion: v1
 kind: Service
 metadata:
@@ -292,56 +500,84 @@ spec:
           configMap:
             name: llm-proof-sql-init
 YAML
+fi
 
-for deployment in \
-  "${RELEASE_NAME}-compiler-api" \
-  "${RELEASE_NAME}-access-control" \
-  "${RELEASE_NAME}-compiler-worker" \
-  "${RELEASE_NAME}-gateway-admin-mock" \
-  "llm-proof-http" \
-  "llm-proof-grpc" \
-  "llm-proof-sql"
-do
+DEPLOYMENTS=(
+  "${RELEASE_NAME}-compiler-api"
+  "${RELEASE_NAME}-access-control"
+  "${RELEASE_NAME}-compiler-worker"
+  "${RELEASE_NAME}-gateway-admin-mock"
+)
+if [[ "${PROOF_PROFILE}" == "mock" ]]; then
+  DEPLOYMENTS+=("llm-proof-http" "llm-proof-grpc" "llm-proof-sql")
+fi
+
+for deployment in "${DEPLOYMENTS[@]}"; do
   "${KUBECTL}" rollout status -n "${NAMESPACE}" "deployment/${deployment}" --timeout="${WAIT_TIMEOUT_SECONDS}s"
 done
 
-deadline=$(( $(date +%s) + WAIT_TIMEOUT_SECONDS ))
-until "${KUBECTL}" exec -n "${NAMESPACE}" deployment/llm-proof-sql -- sh -lc \
-  'PGPASSWORD=proofsql psql -U proofsql -d proofsql -c "SELECT count(*) FROM order_summaries;" >/dev/null'
-do
-  if [[ "$(date +%s)" -ge "${deadline}" ]]; then
-    echo "Timed out waiting for SQL proof database initialization." >&2
-    exit 1
-  fi
-  sleep 2
-done
+if [[ "${PROOF_PROFILE}" == "mock" ]]; then
+  deadline=$(( $(date +%s) + WAIT_TIMEOUT_SECONDS ))
+  until "${KUBECTL}" exec -n "${NAMESPACE}" deployment/llm-proof-sql -- sh -lc \
+    'PGPASSWORD=proofsql psql -U proofsql -d proofsql -c "SELECT count(*) FROM order_summaries;" >/dev/null'
+  do
+    if [[ "$(date +%s)" -ge "${deadline}" ]]; then
+      echo "Timed out waiting for SQL proof database initialization." >&2
+      exit 1
+    fi
+    sleep 2
+  done
+fi
 
 PROOF_JOB_NAME="llm-proof-runner-${RUN_ID}"
 EXTRA_PROOF_ARGS=""
+PROOF_RUNNER_ENV_ENTRIES=""
 
 if [[ "${AUDIT_ALL_GENERATED_TOOLS}" == "1" ]]; then
   EXTRA_PROOF_ARGS="${EXTRA_PROOF_ARGS}
             - \"--audit-all-generated-tools\""
 fi
 
+if [[ "${ENABLE_LLM_ENHANCEMENT}" != "1" ]]; then
+  EXTRA_PROOF_ARGS="${EXTRA_PROOF_ARGS}
+            - \"--skip-llm-artifact-checks\""
+fi
+
 if [[ "${ENABLE_LLM_JUDGE}" == "1" ]]; then
   EXTRA_PROOF_ARGS="${EXTRA_PROOF_ARGS}
             - \"--enable-llm-judge\""
-fi
-
-# The proof runner needs LLM credentials when judge evaluation is enabled.
-PROOF_RUNNER_ENV=""
-if [[ "${ENABLE_LLM_JUDGE}" == "1" ]]; then
-  PROOF_RUNNER_ENV='          env:
+  PROOF_RUNNER_ENV_ENTRIES="${PROOF_RUNNER_ENV_ENTRIES}
             - name: LLM_PROVIDER
               value: deepseek
             - name: LLM_MODEL
-              value: deepseek-chat
-            - name: LLM_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: llm-e2e-secrets
-                  key: llm-api-key'
+              value: deepseek-chat"
+  append_secret_env "LLM_API_KEY" "llm-e2e-secrets" "llm-api-key"
+fi
+
+if [[ "${PROOF_PROFILE}" == "real-targets" ]]; then
+  append_secret_env "PROOF_DIRECTUS_ACCESS_TOKEN" "llm-e2e-secrets" "directus-access-token"
+  append_secret_env "PROOF_POCKETBASE_ACCESS_TOKEN" "llm-e2e-secrets" "pocketbase-access-token"
+  append_secret_env "PROOF_GITEA_BASIC_AUTH" "llm-e2e-secrets" "gitea-basic-auth"
+  append_secret_env "PROOF_JACKSON_SCIM_BASE_URL" "llm-e2e-secrets" "jackson-scim-base-url"
+  append_secret_env "PROOF_JACKSON_SCIM_SECRET" "llm-e2e-secrets" "jackson-scim-secret"
+fi
+
+if [[ -n "${CASE_IDS}" ]]; then
+  IFS=',' read -r -a requested_case_ids <<< "${CASE_IDS}"
+  for case_id in "${requested_case_ids[@]}"; do
+    case_id="${case_id// /}"
+    if [[ -z "${case_id}" ]]; then
+      continue
+    fi
+    EXTRA_PROOF_ARGS="${EXTRA_PROOF_ARGS}
+            - \"--case-id\"
+            - \"${case_id}\""
+  done
+fi
+
+PROOF_RUNNER_ENV=""
+if [[ -n "${PROOF_RUNNER_ENV_ENTRIES}" ]]; then
+  PROOF_RUNNER_ENV="          env:${PROOF_RUNNER_ENV_ENTRIES}"
 fi
 
 "${KUBECTL}" delete job -n "${NAMESPACE}" "${PROOF_JOB_NAME}" --ignore-not-found >/dev/null 2>&1 || true
@@ -372,6 +608,10 @@ ${PROOF_RUNNER_ENV}
             - "http://${RELEASE_NAME}-compiler-api:8000"
             - "--namespace"
             - "${NAMESPACE}"
+            - "--profile"
+            - "${PROOF_PROFILE}"
+            - "--upstream-namespace"
+            - "${UPSTREAM_NAMESPACE}"
             - "--protocol"
             - "${PROTOCOL}"
             - "--timeout-seconds"

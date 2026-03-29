@@ -158,6 +158,43 @@ class TestSwagger20Extraction:
         param_names = {p.name for p in create_op.params}
         assert "name" in param_names
 
+    def test_base_url_falls_back_to_source_url_when_swagger_host_missing(self, extractor):
+        source = SourceConfig(
+            url="http://gitea.tc-real-targets.svc.cluster.local:3000/swagger.v1.json",
+            file_content=json.dumps(
+                {
+                    "swagger": "2.0",
+                    "info": {"title": "Gitea", "version": "1.0"},
+                    "basePath": "/api/v1",
+                    "schemes": ["https", "http"],
+                    "paths": {},
+                }
+            ),
+        )
+
+        ir = extractor.extract(source)
+
+        assert ir.base_url == "http://gitea.tc-real-targets.svc.cluster.local:3000/api/v1"
+
+    def test_base_url_uses_source_host_for_loopback_swagger_host(self, extractor):
+        source = SourceConfig(
+            url="http://gitea.tc-real-targets.svc.cluster.local:3000/swagger.v1.json",
+            file_content=json.dumps(
+                {
+                    "swagger": "2.0",
+                    "host": "localhost:3000",
+                    "info": {"title": "Loopback", "version": "1.0"},
+                    "basePath": "/api/v1",
+                    "schemes": ["https", "http"],
+                    "paths": {},
+                }
+            ),
+        )
+
+        ir = extractor.extract(source)
+
+        assert ir.base_url == "http://gitea.tc-real-targets.svc.cluster.local:3000/api/v1"
+
 
 # ── Edge Cases ─────────────────────────────────────────────────────────────
 
@@ -199,6 +236,37 @@ paths:
         source = SourceConfig(file_content=spec)
         ir = extractor.extract(source)
         assert ir.auth.type == AuthType.none
+
+    def test_infers_missing_path_template_param(self, extractor):
+        spec = """
+openapi: "3.0.0"
+info:
+  title: Missing Path Param
+  version: "1.0"
+servers:
+  - url: https://example.com
+paths:
+  /comments/{id}:
+    get:
+      operationId: getComment
+      summary: Retrieve a comment
+      parameters:
+        - name: fields
+          in: query
+          schema:
+            type: array
+      responses:
+        "200":
+          description: OK
+"""
+        ir = extractor.extract(SourceConfig(file_content=spec))
+
+        operation = next(op for op in ir.operations if op.id == "getComment")
+        param_map = {param.name: param for param in operation.params}
+
+        assert "id" in param_map
+        assert param_map["id"].required is True
+        assert param_map["id"].type == "string"
 
     def test_idempotent_extraction(self, extractor):
         """Same input should produce same output (modulo created_at)."""

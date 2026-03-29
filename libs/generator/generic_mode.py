@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import gzip
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -11,11 +14,12 @@ import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from libs.ir import ServiceIR, serialize_ir
-from libs.ir.models import EventSupportLevel, EventTransport
+from libs.ir.models import AuthConfig, EventSupportLevel, EventTransport
 
 DEFAULT_NAMESPACE = "default"
-DEFAULT_SERVICE_IR_PATH = "/config/service-ir.json"
+DEFAULT_SERVICE_IR_PATH = "/config/service-ir.json.gz"
 DEFAULT_WORKLOAD_PORT = 8003
+DEFAULT_RUNTIME_SECRET_NAME = "tool-compiler-runtime-secrets"
 _DNS_PORT = 53
 _MAX_RESOURCE_NAME_LENGTH = 63
 _TEMPLATE_DIRECTORY = Path(__file__).with_name("templates")
@@ -40,6 +44,7 @@ class GenericManifestConfig:
     service_port: int = DEFAULT_WORKLOAD_PORT
     name_suffix: str | None = None
     image_pull_policy: str = "IfNotPresent"
+    runtime_secret_name: str | None = DEFAULT_RUNTIME_SECRET_NAME
     labels: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -57,6 +62,8 @@ class GenericManifestConfig:
             raise ValueError("service_id must not be empty when provided.")
         if self.version_number is not None and self.version_number < 1:
             raise ValueError("version_number must be >= 1 when provided.")
+        if self.runtime_secret_name is not None and not self.runtime_secret_name.strip():
+            raise ValueError("runtime_secret_name must not be empty when provided.")
 
 
 @dataclass(frozen=True)
@@ -110,6 +117,10 @@ def generate_generic_manifests(
         resource_name=resource_name,
         route_base_name=_route_base_name(service_ir, config),
     )
+    runtime_secret_envs = _runtime_secret_envs(
+        service_ir.auth,
+        runtime_secret_name=config.runtime_secret_name,
+    )
 
     context = {
         "annotations_yaml_4": _yaml_block(annotations, indent=4),
@@ -126,9 +137,11 @@ def generate_generic_manifests(
         "network_policy_name": resource_name,
         "replicas": config.replicas,
         "runtime_image": config.runtime_image,
+        "runtime_secret_envs": runtime_secret_envs,
         "selector_labels_yaml_4": _yaml_block(selector_labels, indent=4),
         "selector_labels_yaml_6": _yaml_block(selector_labels, indent=6),
-        "service_ir_json": serialize_ir(service_ir),
+        "service_ir_gzip_base64": _gzip_ir_base64(serialize_ir(service_ir)),
+        "service_ir_key": Path(DEFAULT_SERVICE_IR_PATH).name,
         "service_ir_path": DEFAULT_SERVICE_IR_PATH,
         "service_name": resource_name,
         "service_port": config.service_port,
@@ -188,6 +201,11 @@ def _parse_manifest(rendered_manifest: str) -> dict[str, Any]:
 def _yaml_block(mapping: dict[str, str], *, indent: int) -> str:
     rendered = yaml.safe_dump(mapping, sort_keys=True, default_flow_style=False).rstrip()
     return "\n".join(f"{' ' * indent}{line}" for line in rendered.splitlines())
+
+
+def _gzip_ir_base64(payload: str) -> str:
+    compressed = gzip.compress(payload.encode("utf-8"), mtime=0)
+    return base64.b64encode(compressed).decode("ascii")
 
 
 def _annotations_for(service_ir: ServiceIR) -> dict[str, str]:
@@ -324,6 +342,45 @@ def build_route_config(
     else:
         route_config["version_route"] = None
     return route_config
+
+
+def _runtime_secret_envs(
+    auth: AuthConfig,
+    *,
+    runtime_secret_name: str | None,
+) -> list[dict[str, str]]:
+    if runtime_secret_name is None:
+        return []
+
+    secret_refs = _runtime_secret_refs(auth)
+    return [
+        {
+            "env_name": _secret_ref_env_name(secret_ref),
+            "secret_name": runtime_secret_name,
+            "secret_key": secret_ref,
+        }
+        for secret_ref in secret_refs
+    ]
+
+
+def _runtime_secret_refs(auth: AuthConfig) -> list[str]:
+    refs: list[str] = []
+    for secret_ref in (
+        auth.runtime_secret_ref,
+        auth.oauth2.client_id_ref if auth.oauth2 is not None else None,
+        auth.oauth2.client_secret_ref if auth.oauth2 is not None else None,
+        auth.mtls.cert_ref if auth.mtls is not None else None,
+        auth.mtls.key_ref if auth.mtls is not None else None,
+        auth.mtls.ca_ref if auth.mtls is not None else None,
+        auth.request_signing.secret_ref if auth.request_signing is not None else None,
+    ):
+        if secret_ref and secret_ref not in refs:
+            refs.append(secret_ref)
+    return refs
+
+
+def _secret_ref_env_name(secret_ref: str) -> str:
+    return re.sub(r"\W+", "_", secret_ref).upper()
 
 
 __all__ = [

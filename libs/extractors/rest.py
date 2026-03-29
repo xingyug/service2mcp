@@ -187,7 +187,10 @@ class RESTExtractor:
         if not source.url:
             raise ValueError("RESTExtractor requires source.url pointing at a REST API base URL")
 
-        discovered_endpoints = self._discover(source.url)
+        discovered_endpoints = self._discover(
+            source.url,
+            auth_headers=self._auth_headers(source),
+        )
         if not discovered_endpoints:
             raise ValueError(f"No REST endpoints discovered from {source.url}")
 
@@ -199,10 +202,18 @@ class RESTExtractor:
             raise ValueError(f"Classifier returned no REST operations for {source.url}")
 
         base_path = _normalized_base_path(source.url)
+        path_param_defaults = _path_param_defaults_by_operation_path(
+            discovered_endpoints,
+            base_path=base_path,
+        )
         operations = [
             self._classification_to_operation(
                 classification,
                 base_path=base_path,
+                path_param_defaults=path_param_defaults.get(
+                    _normalize_classification_path(classification.path, base_path=base_path),
+                    {},
+                ),
             )
             for classification in classified
         ]
@@ -231,11 +242,17 @@ class RESTExtractor:
         if self._owns_client:
             self._client.close()
 
-    def _discover(self, base_url: str) -> list[DiscoveredEndpoint]:
+    def _discover(
+        self,
+        base_url: str,
+        *,
+        auth_headers: dict[str, str] | None = None,
+    ) -> list[DiscoveredEndpoint]:
         observed: dict[str, _ObservedEndpoint] = {}
         json_server_relations: dict[str, set[str]] = {}
         queue = [(base_url, 0)]
         visited_pages: set[str] = set()
+        headers = auth_headers or {}
 
         while queue and len(visited_pages) < self._max_pages:
             current_url, depth = queue.pop(0)
@@ -244,7 +261,7 @@ class RESTExtractor:
             visited_pages.add(current_url)
 
             try:
-                response = self._client.get(current_url)
+                response = self._client.get(current_url, headers=headers)
             except httpx.HTTPError:
                 continue
             if response.status_code >= 400:
@@ -254,9 +271,17 @@ class RESTExtractor:
                 current_url=current_url,
                 response=response,
                 observed=observed,
+                auth_headers=headers,
             )
             for parent_name, child_names in discovered_relations.items():
                 json_server_relations.setdefault(parent_name, set()).update(child_names)
+
+            self._bootstrap_current_json_entrypoint(
+                current_url=current_url,
+                response=response,
+                observed=observed,
+                auth_headers=headers,
+            )
 
             for path, source_name in self._extract_candidate_paths(base_url, response):
                 candidate_url = urljoin(base_url, path)
@@ -294,6 +319,7 @@ class RESTExtractor:
                 base_url,
                 observed,
                 json_server_relations=json_server_relations,
+                auth_headers=headers,
             )
             if not inferred:
                 break
@@ -311,12 +337,59 @@ class RESTExtractor:
             endpoint.freeze() for endpoint in sorted(observed.values(), key=lambda item: item.path)
         ]
 
+    def _bootstrap_current_json_entrypoint(
+        self,
+        *,
+        current_url: str,
+        response: httpx.Response,
+        observed: dict[str, _ObservedEndpoint],
+        auth_headers: dict[str, str],
+    ) -> None:
+        content_type = response.headers.get("content-type", "").lower()
+        if "json" not in content_type:
+            return
+
+        try:
+            payload = response.json()
+        except Exception:
+            return
+
+        collection_items = _extract_collection_items(payload)
+        if collection_items is None:
+            return
+
+        collection_path = self._normalize_path(current_url)
+        self._register_endpoint(
+            observed,
+            path=collection_path,
+            absolute_url=current_url,
+            methods={"GET"},
+            source="json_entrypoint",
+            confidence=0.96,
+        )
+
+        sample_id = _sample_resource_id(collection_items)
+        if sample_id is None:
+            return
+
+        param_name = _resource_param_name_from_path(collection_path)
+        detail_path = f"{collection_path.rstrip('/')}/{{{param_name}}}"
+        detail_url = _join_relative_url(current_url, str(sample_id))
+        self._probe_and_register(
+            detail_path,
+            detail_url,
+            observed,
+            source="json_entrypoint",
+            auth_headers=auth_headers,
+        )
+
     def _bootstrap_json_server(
         self,
         *,
         current_url: str,
         response: httpx.Response,
         observed: dict[str, _ObservedEndpoint],
+        auth_headers: dict[str, str],
     ) -> dict[str, set[str]]:
         content_type = response.headers.get("content-type", "").lower()
         if "html" not in content_type:
@@ -326,7 +399,7 @@ class RESTExtractor:
 
         db_url = _join_relative_url(current_url, "db")
         try:
-            db_response = self._client.get(db_url)
+            db_response = self._client.get(db_url, headers=auth_headers)
         except httpx.HTTPError:
             return {}
         if db_response.status_code >= 400:
@@ -379,6 +452,7 @@ class RESTExtractor:
         observed: dict[str, _ObservedEndpoint],
         *,
         json_server_relations: dict[str, set[str]] | None = None,
+        auth_headers: dict[str, str] | None = None,
     ) -> dict[str, _ObservedEndpoint]:
         """Synthesize and probe sub-resource paths from discovered endpoints.
 
@@ -391,6 +465,7 @@ class RESTExtractor:
         inferred: dict[str, _ObservedEndpoint] = {}
         probed: set[str] = set()
         relation_hints = json_server_relations or {}
+        headers = auth_headers or {}
 
         for path in list(observed.keys()):
             endpoint = observed[path]
@@ -415,6 +490,7 @@ class RESTExtractor:
                         candidate_url,
                         inferred,
                         source="inferred",
+                        auth_headers=headers,
                     )
 
             # If this looks like a detail endpoint (has {param} leaf),
@@ -440,6 +516,7 @@ class RESTExtractor:
                             candidate_url,
                             inferred,
                             source="inferred",
+                            auth_headers=headers,
                         )
 
         return inferred
@@ -476,10 +553,15 @@ class RESTExtractor:
 
         return llm_inferred
 
-    def _head_probe(self, absolute_url: str) -> set[str]:
+    def _head_probe(
+        self,
+        absolute_url: str,
+        *,
+        auth_headers: dict[str, str] | None = None,
+    ) -> set[str]:
         """Lightweight HEAD probe; returns {'GET'} if successful, else empty."""
         try:
-            response = self._client.head(absolute_url)
+            response = self._client.head(absolute_url, headers=auth_headers or {})
             if response.status_code < 400:
                 return {"GET"}  # HEAD success implies GET works
         except httpx.HTTPError:
@@ -493,13 +575,15 @@ class RESTExtractor:
         target: dict[str, _ObservedEndpoint],
         *,
         source: str = "inferred",
+        auth_headers: dict[str, str] | None = None,
     ) -> None:
         """Probe a candidate URL via OPTIONS and optionally GET, registering it if valid."""
         methods: set[str] = set()
+        headers = auth_headers or {}
 
         # Phase 1: Try OPTIONS
         try:
-            response = self._client.options(absolute_url)
+            response = self._client.options(absolute_url, headers=headers)
             if response.status_code < 400:
                 allow_header = response.headers.get("allow", "").strip()
                 if allow_header == "*":
@@ -512,18 +596,18 @@ class RESTExtractor:
                     }
             elif response.status_code == 405:
                 # Endpoint exists but OPTIONS not allowed — try HEAD
-                methods = self._head_probe(absolute_url)
+                methods = self._head_probe(absolute_url, auth_headers=headers)
         except httpx.HTTPError:
             pass
 
         # Phase 2: HEAD fallback if OPTIONS produced nothing
         if not methods:
-            methods = self._head_probe(absolute_url)
+            methods = self._head_probe(absolute_url, auth_headers=headers)
 
         # Phase 3: GET fallback with Content-Type validation
         if not methods:
             try:
-                response = self._client.get(absolute_url)
+                response = self._client.get(absolute_url, headers=headers)
                 if response.status_code < 400:
                     ct = response.headers.get("content-type", "").lower()
                     if any(t in ct for t in ("json", "html", "xml", "text")):
@@ -559,6 +643,13 @@ class RESTExtractor:
         endpoint.methods.update(methods)
         endpoint.sources.add(source)
         endpoint.confidence = max(endpoint.confidence, confidence)
+
+    def _auth_headers(self, source: SourceConfig) -> dict[str, str]:
+        if source.auth_header:
+            return {"Authorization": source.auth_header}
+        if source.auth_token:
+            return {"Authorization": f"Bearer {source.auth_token}"}
+        return {}
 
     def _extract_candidate_paths(
         self,
@@ -713,6 +804,7 @@ class RESTExtractor:
         classification: EndpointClassification,
         *,
         base_path: str,
+        path_param_defaults: dict[str, str] | None = None,
     ) -> Operation:
         method = classification.method.upper()
         normalized_path = _normalize_classification_path(
@@ -721,6 +813,13 @@ class RESTExtractor:
         )
         path = normalized_path.split("?", 1)[0]
         params = _params_from_path_and_query(normalized_path)
+        if path_param_defaults:
+            params = [
+                param.model_copy(update={"default": path_param_defaults[param.name]})
+                if param.name in path_param_defaults and param.default is None
+                else param
+                for param in params
+            ]
         body_param_name: str | None = None
         if method in {"POST", "PUT", "PATCH"} and not any(
             param.name == "payload" for param in params
@@ -1145,6 +1244,19 @@ def _json_server_collection_methods(resource_value: Any) -> set[str]:
     return {"GET"}
 
 
+def _extract_collection_items(payload: Any) -> list[Any] | None:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("data", "items", "records", "results", "value"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    return None
+
+
 def _sample_resource_id(resource_value: Any) -> str | int | None:
     if not isinstance(resource_value, list):
         return None
@@ -1161,6 +1273,53 @@ def _join_relative_url(base_url: str, relative_path: str) -> str:
     normalized_base = base_url if base_url.endswith("/") else f"{base_url}/"
     normalized_relative = relative_path.lstrip("/")
     return urljoin(normalized_base, normalized_relative)
+
+
+def _resource_param_name_from_path(path: str) -> str:
+    clean = path.split("?", 1)[0].rstrip("/")
+    leaf = clean.rsplit("/", 1)[-1] if clean else "resource"
+    singular = leaf[:-1] if leaf.endswith("s") and len(leaf) > 2 else leaf
+    normalized = _slugify(singular).replace("-", "_")
+    return f"{normalized or 'resource'}_id"
+
+
+def _path_param_defaults_by_operation_path(
+    endpoints: list[DiscoveredEndpoint],
+    *,
+    base_path: str,
+) -> dict[str, dict[str, str]]:
+    defaults_by_path: dict[str, dict[str, str]] = {}
+    for endpoint in endpoints:
+        defaults = _path_param_defaults_from_endpoint(endpoint, base_path=base_path)
+        if not defaults:
+            continue
+        normalized_path = _normalize_classification_path(endpoint.path, base_path=base_path)
+        defaults_by_path.setdefault(normalized_path, defaults)
+    return defaults_by_path
+
+
+def _path_param_defaults_from_endpoint(
+    endpoint: DiscoveredEndpoint,
+    *,
+    base_path: str,
+) -> dict[str, str]:
+    del base_path
+    template_segments = [segment for segment in urlparse(endpoint.path).path.split("/") if segment]
+    concrete_segments = [
+        unquote(segment) for segment in urlparse(endpoint.absolute_url).path.split("/") if segment
+    ]
+    if len(template_segments) != len(concrete_segments):
+        return {}
+
+    defaults: dict[str, str] = {}
+    for template_segment, concrete_segment in zip(template_segments, concrete_segments):
+        if not (template_segment.startswith("{") and template_segment.endswith("}")):
+            continue
+        param_name = template_segment[1:-1].strip()
+        if not param_name:
+            continue
+        defaults[param_name] = concrete_segment
+    return defaults
 
 
 def _infer_json_server_relations(payload: Any) -> dict[str, set[str]]:

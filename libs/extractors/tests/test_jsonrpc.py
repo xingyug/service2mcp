@@ -127,6 +127,40 @@ def test_extract_manual_user_service() -> None:
     assert len(paths) == 1
 
 
+def test_extract_preserves_param_defaults_and_positional_mode() -> None:
+    extractor = JsonRpcExtractor()
+    source = SourceConfig(
+        file_content=json.dumps(
+            {
+                "jsonrpc_service": True,
+                "endpoint": "https://downloads.example.com/jsonrpc",
+                "methods": [
+                    {
+                        "name": "aria2.getVersion",
+                        "params_type": "positional",
+                        "params": [
+                            {
+                                "name": "token",
+                                "required": True,
+                                "default": "token:test-secret",
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+
+    ir = extractor.extract(source)
+
+    assert len(ir.operations) == 1
+    operation = ir.operations[0]
+    assert operation.jsonrpc is not None
+    assert operation.jsonrpc.params_type == "positional"
+    assert operation.params[0].default == "token:test-secret"
+
+
 # ── additional detection edge cases ────────────────────────────────────────
 
 

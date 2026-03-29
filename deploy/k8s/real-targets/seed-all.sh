@@ -25,10 +25,24 @@ trap cleanup EXIT
 
 pf_start() {
   local svc="$1" local_port="$2" remote_port="$3"
-  kubectl port-forward "svc/${svc}" "${local_port}:${remote_port}" -n "${NAMESPACE}" &>/dev/null &
-  PF_PIDS+=($!)
-  sleep 3
-  log "Port-forward: ${svc}:${remote_port} → localhost:${local_port}"
+  local pf_log="/tmp/seed-port-forward-${svc}-${local_port}.log"
+  : > "${pf_log}"
+  kubectl port-forward "svc/${svc}" "${local_port}:${remote_port}" -n "${NAMESPACE}" >"${pf_log}" 2>&1 &
+  local pf_pid=$!
+  PF_PIDS+=(${pf_pid})
+  for _ in $(seq 1 30); do
+    if grep -q "Forwarding from" "${pf_log}" 2>/dev/null; then
+      log "Port-forward: ${svc}:${remote_port} → localhost:${local_port}"
+      return 0
+    fi
+    if ! kill -0 "${pf_pid}" 2>/dev/null; then
+      cat "${pf_log}" >&2 || true
+      fail "Port-forward for ${svc}:${remote_port} exited before becoming ready"
+    fi
+    sleep 1
+  done
+  cat "${pf_log}" >&2 || true
+  fail "Port-forward for ${svc}:${remote_port} did not become ready within 30s"
 }
 
 # ── Base URLs ─────────────────────────────────────────────────────────────────

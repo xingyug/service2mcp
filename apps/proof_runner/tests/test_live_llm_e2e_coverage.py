@@ -489,6 +489,87 @@ class TestBuildProofCases:
         for case in cases:
             assert len(case.tool_invocations) >= 1
 
+    def test_builds_real_target_cases(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PROOF_DIRECTUS_ACCESS_TOKEN", "directus-token")
+        monkeypatch.setenv("PROOF_POCKETBASE_ACCESS_TOKEN", "pocketbase-token")
+        monkeypatch.setenv("PROOF_GITEA_BASIC_AUTH", "gitea_admin:Admin123!")
+        monkeypatch.setenv(
+            "PROOF_JACKSON_SCIM_BASE_URL",
+            "http://jackson.tc-real-targets.svc.cluster.local:5225/api/scim/v2.0/dir-id",
+        )
+        monkeypatch.setenv("PROOF_JACKSON_SCIM_SECRET", "jackson-secret")
+
+        cases = _build_proof_cases(
+            "proof-ns",
+            "rid",
+            profile="real-targets",
+            upstream_namespace="tc-real-targets",
+        )
+
+        assert len(cases) == 11
+        case_ids = {case.case_id for case in cases}
+        assert case_ids == {
+            "aria2-jsonrpc",
+            "directus-graphql",
+            "directus-openapi",
+            "directus-rest",
+            "gitea-openapi",
+            "jackson-scim",
+            "northbreeze-odata",
+            "openfga-grpc",
+            "pocketbase-rest",
+            "real-postgres-sql",
+            "soap-cxf",
+        }
+
+        scim_case = next(case for case in cases if case.case_id == "jackson-scim")
+        assert scim_case.request_payload["source_url"].endswith("/Users")
+        assert scim_case.request_payload["options"]["auth"]["runtime_secret_ref"] == (
+            "jackson-scim-secret"
+        )
+        assert scim_case.request_payload["options"]["preferred_smoke_tool_ids"] == ["list_users"]
+
+        grpc_case = next(case for case in cases if case.case_id == "openfga-grpc")
+        assert grpc_case.request_payload["source_url"].startswith("grpc://openfga.")
+        assert "service OpenFGAService" in grpc_case.request_payload["source_content"]
+
+        directus_openapi_case = next(case for case in cases if case.case_id == "directus-openapi")
+        assert directus_openapi_case.tool_invocations == (
+            ToolInvocationSpec(tool_name="readItemsProducts", arguments={}),
+        )
+        assert directus_openapi_case.audit_skip_tool_ids == ("oauth",)
+
+        gitea_openapi_case = next(case for case in cases if case.case_id == "gitea-openapi")
+        assert gitea_openapi_case.audit_skip_tool_ids == ("getNodeInfo",)
+
+        soap_case = next(case for case in cases if case.case_id == "soap-cxf")
+        assert soap_case.tool_invocations == (
+            ToolInvocationSpec(
+                tool_name="GetOrderStatus",
+                arguments={"orderId": "ORD-1001"},
+            ),
+        )
+
+    def test_filters_cases_by_case_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PROOF_DIRECTUS_ACCESS_TOKEN", "directus-token")
+        monkeypatch.setenv("PROOF_POCKETBASE_ACCESS_TOKEN", "pocketbase-token")
+        monkeypatch.setenv("PROOF_GITEA_BASIC_AUTH", "gitea_admin:Admin123!")
+        monkeypatch.setenv(
+            "PROOF_JACKSON_SCIM_BASE_URL",
+            "http://jackson.tc-real-targets.svc.cluster.local:5225/api/scim/v2.0/dir-id",
+        )
+        monkeypatch.setenv("PROOF_JACKSON_SCIM_SECRET", "jackson-secret")
+
+        cases = _build_proof_cases(
+            "proof-ns",
+            "rid",
+            profile="real-targets",
+            upstream_namespace="tc-real-targets",
+            selected_case_ids={"gitea-openapi", "soap-cxf"},
+        )
+
+        assert [case.case_id for case in cases] == ["gitea-openapi", "soap-cxf"]
+
 
 # --- _invoke_runtime_tools ---
 
@@ -565,6 +646,24 @@ class TestAuditGeneratedTools:
             audit_policy=policy,
         )
         assert summary.skipped == 1
+
+    async def test_tool_skipped_by_case_policy(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        ir = _ir(operations=[_op("getNodeInfo")])
+
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(),
+            representative_results=[],
+            available_tool_names={"getNodeInfo"},
+            forced_skip_tool_ids=("getNodeInfo",),
+        )
+
+        assert summary.skipped == 1
+        assert summary.results[0].tool_name == "getNodeInfo"
+        assert "disabled in the target deployment" in summary.results[0].reason
 
     async def test_invocation_raises_exception(self) -> None:
         from apps.proof_runner.live_llm_e2e import _audit_generated_tools
@@ -724,6 +823,33 @@ class TestRunProofs:
                 run_id="abc",
             )
         assert len(results) == 5
+
+    async def test_run_proofs_filters_selected_case_ids(self) -> None:
+        mock_result = ProofResult(
+            protocol="soap",
+            service_id="soap-svc",
+            job_id="job-1",
+            active_version=1,
+            operations_enhanced=1,
+            llm_field_count=1,
+            invocation_results=[],
+            case_id="mock-soap",
+        )
+        with patch(
+            "apps.proof_runner.live_llm_e2e._run_case",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            results = await run_proofs(
+                namespace="test-ns",
+                api_base_url="http://test:8000",
+                protocol="all",
+                timeout_seconds=10.0,
+                run_id="abc",
+                selected_case_ids={"mock-soap"},
+            )
+        assert len(results) == 1
+        assert results[0].case_id == "mock-soap"
 
 
 # --- _run_case ---
@@ -1223,6 +1349,8 @@ class TestParseArgs:
             assert args.timeout_seconds == 900.0
             assert args.audit_all_generated_tools is False
             assert args.enable_llm_judge is False
+            assert args.case_ids == []
+            assert args.skip_llm_artifact_checks is False
 
     def test_all_arguments(self) -> None:
         with patch(
@@ -1241,6 +1369,11 @@ class TestParseArgs:
                 "test-run",
                 "--audit-all-generated-tools",
                 "--enable-llm-judge",
+                "--case-id",
+                "directus-openapi",
+                "--case-id",
+                "gitea-openapi",
+                "--skip-llm-artifact-checks",
             ],
         ):
             args = _parse_args()
@@ -1251,6 +1384,8 @@ class TestParseArgs:
             assert args.run_id == "test-run"
             assert args.audit_all_generated_tools is True
             assert args.enable_llm_judge is True
+            assert args.case_ids == ["directus-openapi", "gitea-openapi"]
+            assert args.skip_llm_artifact_checks is True
 
 
 # --- _build_llm_judge_from_env ---
@@ -1290,10 +1425,14 @@ class TestAsyncMainAndMain:
             namespace="test-ns",
             api_base_url="http://test:8000",
             protocol="rest",
+            profile="mock",
+            upstream_namespace=None,
             timeout_seconds=30.0,
             run_id="abc",
             audit_all_generated_tools=False,
             enable_llm_judge=False,
+            case_ids=[],
+            skip_llm_artifact_checks=False,
         )
         mock_result = ProofResult(
             protocol="rest",
@@ -1325,10 +1464,14 @@ class TestAsyncMainAndMain:
             namespace="test-ns",
             api_base_url="http://test:8000",
             protocol="rest",
+            profile="mock",
+            upstream_namespace=None,
             timeout_seconds=30.0,
             run_id="abc",
             audit_all_generated_tools=False,
             enable_llm_judge=True,
+            case_ids=[],
+            skip_llm_artifact_checks=False,
         )
         mock_result = ProofResult(
             protocol="rest",

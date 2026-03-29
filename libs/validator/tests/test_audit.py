@@ -88,6 +88,120 @@ class TestAuditPolicySkipReason:
         assert reason is not None
         assert "sample invocation" in reason.lower()
 
+    def test_path_placeholder_sample_is_skipped(self) -> None:
+        operation = Operation(
+            id="get_item",
+            name="get_item",
+            description="Get item.",
+            method="GET",
+            path="/items/{id}",
+            params=[Param(name="id", type="string", required=True)],
+            risk=RiskMetadata(
+                risk_level=RiskLevel.safe,
+                confidence=1.0,
+                source=SourceType.extractor,
+                writes_state=False,
+                destructive=False,
+                external_side_effect=False,
+                idempotent=True,
+            ),
+            enabled=True,
+        )
+        policy = AuditPolicy()
+        reason = policy.skip_reason(operation, {"get_item": {"id": "sample"}})
+        assert reason is not None
+        assert "path parameters" in reason.lower()
+
+    def test_non_path_sample_is_not_skipped(self) -> None:
+        operation = Operation(
+            id="search_items",
+            name="search_items",
+            description="Search items.",
+            method="GET",
+            path="/items/search",
+            params=[Param(name="q", type="string", required=True)],
+            risk=RiskMetadata(
+                risk_level=RiskLevel.safe,
+                confidence=1.0,
+                source=SourceType.extractor,
+                writes_state=False,
+                destructive=False,
+                external_side_effect=False,
+                idempotent=True,
+            ),
+            enabled=True,
+        )
+        policy = AuditPolicy()
+        assert policy.skip_reason(operation, {"search_items": {"q": "sample"}}) is None
+
+    def test_path_placeholder_with_default_is_not_skipped(self) -> None:
+        operation = Operation(
+            id="get_repo",
+            name="get_repo",
+            description="Get repo.",
+            method="GET",
+            path="/repos/{owner}",
+            params=[Param(name="owner", type="string", required=True, default="sample")],
+            risk=RiskMetadata(
+                risk_level=RiskLevel.safe,
+                confidence=1.0,
+                source=SourceType.extractor,
+                writes_state=False,
+                destructive=False,
+                external_side_effect=False,
+                idempotent=True,
+            ),
+            enabled=True,
+        )
+        policy = AuditPolicy()
+        assert policy.skip_reason(operation, {"get_repo": {"owner": "sample"}}) is None
+
+    def test_failure_skip_reason_skips_numeric_path_placeholder(self) -> None:
+        operation = Operation(
+            id="get_repo",
+            name="get_repo",
+            description="Get repo.",
+            method="GET",
+            path="/repos/{id}",
+            params=[Param(name="id", type="integer", required=True)],
+            risk=RiskMetadata(
+                risk_level=RiskLevel.safe,
+                confidence=1.0,
+                source=SourceType.extractor,
+                writes_state=False,
+                destructive=False,
+                external_side_effect=False,
+                idempotent=True,
+            ),
+            enabled=True,
+        )
+        policy = AuditPolicy()
+        reason = policy.failure_skip_reason(operation, {"id": 1})
+        assert reason is not None
+        assert "placeholder" in reason.lower()
+
+    def test_failure_skip_reason_keeps_real_string_path_value(self) -> None:
+        operation = Operation(
+            id="get_repo",
+            name="get_repo",
+            description="Get repo.",
+            method="GET",
+            path="/repos/{owner}",
+            params=[Param(name="owner", type="string", required=True)],
+            risk=RiskMetadata(
+                risk_level=RiskLevel.safe,
+                confidence=1.0,
+                source=SourceType.extractor,
+                writes_state=False,
+                destructive=False,
+                external_side_effect=False,
+                idempotent=True,
+            ),
+            enabled=True,
+        )
+        policy = AuditPolicy()
+        assert policy.failure_skip_reason(operation, {"owner": "gitea_admin"}) is None
+
     def test_allow_idempotent_writes_audits_idempotent_mutation(self) -> None:
         operation = _make_operation(writes_state=True, idempotent=True)
         policy = AuditPolicy(allow_idempotent_writes=True)

@@ -10,3 +10,5 @@ __pycache__
 build
 dist
 htmlcov
+apps/web-ui/.next
+apps/web-ui/node_modules

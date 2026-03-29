@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urljoin, urlsplit
@@ -60,6 +61,7 @@ _TYPE_MAP: dict[str, str] = {
     "object": "object",
     "file": "string",
 }
+_PATH_TEMPLATE_PARAM_PATTERN = re.compile(r"{([^{}]+)}")
 
 
 class OpenAPIExtractor:
@@ -212,10 +214,19 @@ class OpenAPIExtractor:
         is_swagger: bool,
     ) -> str:
         if is_swagger:
-            host = spec.get("host", "localhost")
+            source_parts = urlsplit(source.url or "")
+            raw_host = str(spec.get("host") or "")
+            host = (
+                source_parts.netloc if not raw_host or _is_loopback_host(raw_host) else raw_host
+            ) or "localhost"
             base_path = spec.get("basePath", "")
             schemes = spec.get("schemes", ["https"])
-            scheme = schemes[0] if schemes else "https"
+            use_source_scheme = not raw_host or _is_loopback_host(raw_host)
+            scheme = (
+                source_parts.scheme
+                if use_source_scheme and source_parts.scheme
+                else (schemes[0] if schemes else (source_parts.scheme or "https"))
+            )
             return f"{scheme}://{host}{base_path}"
         servers = spec.get("servers", [])
         if isinstance(servers, list) and servers and isinstance(servers[0], dict):
@@ -370,6 +381,7 @@ class OpenAPIExtractor:
                     path_item,
                     is_swagger,
                 )
+                params = self._ensure_path_template_params(path, params)
                 callbacks = op_spec.get("callbacks", {})
                 if isinstance(callbacks, dict):
                     for callback_name in callbacks:
@@ -483,6 +495,25 @@ class OpenAPIExtractor:
                     seen_names.add(bp.name)
 
         return params, request_body_mode, body_param_name
+
+    def _ensure_path_template_params(self, path: str, params: list[Param]) -> list[Param]:
+        existing_names = {param.name for param in params}
+        augmented = list(params)
+        for name in _PATH_TEMPLATE_PARAM_PATTERN.findall(path):
+            if name in existing_names:
+                continue
+            augmented.append(
+                Param(
+                    name=name,
+                    type="string",
+                    required=True,
+                    description="Path parameter inferred from the URL template.",
+                    source=SourceType.extractor,
+                    confidence=0.8,
+                )
+            )
+            existing_names.add(name)
+        return augmented
 
     def _resolve_param_type(self, param: JSONDict, is_swagger: bool) -> str:
         if is_swagger:
@@ -889,3 +920,8 @@ def _slugify(text: str) -> str:
     text = text.lower().strip()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     return text.strip("-")
+
+
+def _is_loopback_host(host: str) -> bool:
+    hostname = urlsplit(f"//{host}").hostname or host
+    return hostname in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}

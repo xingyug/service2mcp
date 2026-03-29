@@ -1,7 +1,8 @@
-"""Shared audit types, skip-policy, and regression thresholds for generated-tool coverage."""
+"""Shared audit types, policy, and regression thresholds for generated-tool coverage."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -61,6 +62,10 @@ class AuditPolicy:
         if operation.id not in sample_invocations:
             return "No sample invocation is available for this tool."
 
+        arguments = sample_invocations[operation.id]
+        if _has_synthetic_path_placeholder_samples(operation, arguments):
+            return "Skipped tool because path parameters still use synthetic placeholder samples."
+
         # Safe-method override — always audit GET/HEAD/OPTIONS
         if self.audit_safe_methods and operation.method:
             if operation.method.upper() in {"GET", "HEAD", "OPTIONS"}:
@@ -83,6 +88,88 @@ class AuditPolicy:
                 return None
             return "Skipped state-mutating tool by policy."
         return None
+
+    def failure_skip_reason(
+        self,
+        operation: Operation,
+        arguments: dict[str, Any],
+    ) -> str | None:
+        """Return a skip reason for a failed invocation, or ``None`` to keep it failed."""
+
+        if _has_synthetic_path_placeholder_samples(
+            operation,
+            arguments,
+            include_numeric_fallbacks=True,
+        ):
+            return (
+                "Skipped failed invocation because path parameters still use "
+                "synthetic placeholder samples."
+            )
+        return None
+
+
+_PATH_PLACEHOLDER_PATTERN = re.compile(r"{([^{}]+)}")
+
+
+def _has_synthetic_path_placeholder_samples(
+    operation: Operation,
+    arguments: dict[str, Any],
+    *,
+    include_numeric_fallbacks: bool = False,
+) -> bool:
+    """Detect unresolved path placeholders that still use synthetic string samples."""
+
+    path = operation.path or ""
+    if not path:
+        return False
+
+    path_param_names = {match.group(1) for match in _PATH_PLACEHOLDER_PATTERN.finditer(path)}
+    if not path_param_names:
+        return False
+
+    params_by_name = {param.name: param for param in operation.params}
+    for name in path_param_names:
+        if name not in arguments:
+            continue
+        param = params_by_name.get(name)
+        if param is not None and param.default is not None:
+            continue
+        if _contains_synthetic_placeholder_sample(
+            arguments[name],
+            include_numeric_fallbacks=include_numeric_fallbacks,
+        ):
+            return True
+    return False
+
+
+def _contains_synthetic_placeholder_sample(
+    value: Any,
+    *,
+    include_numeric_fallbacks: bool,
+) -> bool:
+    if isinstance(value, str):
+        if value == "sample":
+            return True
+        return include_numeric_fallbacks and value == "1"
+    if isinstance(value, int):
+        return include_numeric_fallbacks and value == 1
+    if isinstance(value, list):
+        return any(
+            _contains_synthetic_placeholder_sample(
+                item,
+                include_numeric_fallbacks=include_numeric_fallbacks,
+            )
+            for item in value
+        )
+    if isinstance(value, dict):
+        return any(
+            _contains_synthetic_placeholder_sample(
+                item,
+                include_numeric_fallbacks=include_numeric_fallbacks,
+            )
+            for item in value.values()
+        )
+    return False
 
 
 @dataclass(frozen=True)

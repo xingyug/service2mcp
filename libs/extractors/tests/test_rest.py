@@ -315,6 +315,121 @@ def test_relative_json_links_are_still_discovered() -> None:
     assert "/users/123/orders" in operation_paths
 
 
+def test_current_directus_collection_entrypoint_is_discovered() -> None:
+    """Collection URLs that directly return Directus-style JSON must still discover tools."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        routes = {
+            ("GET", "https://directus.example.com/items/products"): httpx.Response(
+                200,
+                json={"data": [{"id": "prod_1", "name": "Widget"}]},
+                request=request,
+            ),
+            ("OPTIONS", "https://directus.example.com/items/products"): httpx.Response(
+                200,
+                headers={"allow": "GET, POST"},
+                request=request,
+            ),
+            ("OPTIONS", "https://directus.example.com/items/products/prod_1"): httpx.Response(
+                200,
+                headers={"allow": "GET, PATCH, DELETE"},
+                request=request,
+            ),
+        }
+        return routes.get(
+            (request.method, str(request.url)),
+            httpx.Response(404, request=request),
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    extractor = RESTExtractor(client=client)
+
+    try:
+        service_ir = extractor.extract(
+            SourceConfig(url="https://directus.example.com/items/products")
+        )
+    finally:
+        extractor.close()
+
+    methods_by_path = {(operation.method, operation.path) for operation in service_ir.operations}
+
+    assert service_ir.base_url == "https://directus.example.com/items/products"
+    assert "/items/products" in service_ir.metadata["discovered_paths"]
+    assert "/items/products/{product_id}" in service_ir.metadata["discovered_paths"]
+    assert ("GET", "/") in methods_by_path
+    assert ("POST", "/") in methods_by_path
+    assert ("GET", "/{product_id}") in methods_by_path
+    assert ("PATCH", "/{product_id}") in methods_by_path
+    assert ("DELETE", "/{product_id}") in methods_by_path
+    detail_operation = next(
+        operation
+        for operation in service_ir.operations
+        if operation.method == "GET" and operation.path == "/{product_id}"
+    )
+    params_by_name = {param.name: param for param in detail_operation.params}
+    assert params_by_name["product_id"].default == "prod_1"
+
+
+def test_current_pocketbase_collection_entrypoint_is_discovered_without_links() -> None:
+    """PocketBase-style paginated JSON entrypoints should bootstrap collection/detail tools."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        routes = {
+            ("GET", "https://pocketbase.example.com/api/collections/products/records"): (
+                httpx.Response(
+                    200,
+                    json={
+                        "page": 1,
+                        "perPage": 30,
+                        "totalItems": 1,
+                        "items": [{"id": "rec123", "name": "Widget"}],
+                    },
+                    request=request,
+                )
+            ),
+            (
+                "GET",
+                "https://pocketbase.example.com/api/collections/products/records/rec123",
+            ): httpx.Response(
+                200,
+                json={"id": "rec123", "name": "Widget"},
+                request=request,
+            ),
+        }
+        return routes.get(
+            (request.method, str(request.url)),
+            httpx.Response(404, request=request),
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    extractor = RESTExtractor(client=client)
+
+    try:
+        service_ir = extractor.extract(
+            SourceConfig(url="https://pocketbase.example.com/api/collections/products/records")
+        )
+    finally:
+        extractor.close()
+
+    operation_paths = {operation.path for operation in service_ir.operations}
+
+    assert service_ir.base_url == "https://pocketbase.example.com/api/collections/products/records"
+    assert "/api/collections/products/records" in service_ir.metadata["discovered_paths"]
+    assert (
+        "/api/collections/products/records/{record_id}"
+        in service_ir.metadata["discovered_paths"]
+    )
+    assert "/" in operation_paths
+    assert "/{record_id}" in operation_paths
+    detail_operation = next(
+        operation
+        for operation in service_ir.operations
+        if operation.method == "GET" and operation.path == "/{record_id}"
+    )
+    params_by_name = {param.name: param for param in detail_operation.params}
+    assert params_by_name["record_id"].default == "rec123"
+
+
 def test_sibling_coalescing_merges_value_like_leaves() -> None:
     """When HTML links produce many sibling paths with value-like segments, coalesce them."""
 

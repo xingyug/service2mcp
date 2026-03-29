@@ -36,7 +36,7 @@ from libs.ir.models import (
 )
 from libs.ir.schema import serialize_ir
 from libs.validator.audit import AuditThresholds, check_thresholds
-from libs.validator.post_deploy import PostDeployValidator
+from libs.validator.post_deploy import PostDeployValidator, _select_smoke_operation
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tests" / "fixtures" / "ir"
 VALID_IR_PATH = FIXTURES_DIR / "service_ir_valid.json"
@@ -561,6 +561,28 @@ async def test_post_deploy_validator_prefers_graphql_query_over_mutation(
 
     assert report.overall_passed is True
     assert invoked == ["searchProducts"]
+
+
+def test_select_smoke_operation_honors_preferred_tool_ids() -> None:
+    service_ir = _build_graphql_query_and_mutation_ir()
+    enabled_operations = [operation for operation in service_ir.operations if operation.enabled]
+
+    selected = _select_smoke_operation(
+        service_ir,
+        enabled_operations=enabled_operations,
+        available_tools={
+            "searchProducts": {"name": "searchProducts"},
+            "adjustInventory": {"name": "adjustInventory"},
+        },
+        sample_invocations={
+            "searchProducts": {"term": "widget"},
+            "adjustInventory": {"sku": "sku-1", "delta": 1},
+        },
+        preferred_tool_ids=("adjustInventory",),
+    )
+
+    assert selected is not None
+    assert selected.id == "adjustInventory"
 
 
 @pytest.mark.asyncio
@@ -1592,6 +1614,119 @@ async def test_audit_invocation_non_ok_status(
         for r in audit_summary.results
         if r.outcome == "failed"
     )
+
+
+@pytest.mark.asyncio
+async def test_audit_skips_failed_string_placeholder_path_samples() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path in {"/healthz", "/readyz"}:
+            return httpx.Response(200, request=request)
+        if path == "/tools":
+            return httpx.Response(
+                200,
+                json={"tools": [{"name": "getRepo"}]},
+                request=request,
+            )
+        return httpx.Response(200, json={}, request=request)
+
+    service_ir = ServiceIR(
+        source_hash="b" * 64,
+        protocol="openapi",
+        service_name="audit-placeholder-skip",
+        service_description="Audit placeholder skip test",
+        base_url="https://api.example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="getRepo",
+                name="Get Repo",
+                description="Fetch a repo.",
+                method="GET",
+                path="/repos/{owner}/{repo}",
+                params=[
+                    Param(name="owner", type="string", required=True),
+                    Param(name="repo", type="string", required=True),
+                ],
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.safe,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                ),
+                enabled=True,
+            ),
+        ],
+    )
+    transport = httpx.MockTransport(handler)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"status": "error", "detail": "bad"}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        _, audit_summary = await validator.validate_with_audit(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"getRepo": {"owner": "sample", "repo": "sample"}},
+        )
+
+    skipped = [r for r in audit_summary.results if r.outcome == "skipped"]
+    assert any("synthetic placeholder" in r.reason.lower() for r in skipped)
+
+
+@pytest.mark.asyncio
+async def test_audit_skips_failed_numeric_placeholder_path_samples() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path in {"/healthz", "/readyz"}:
+            return httpx.Response(200, request=request)
+        if path == "/tools":
+            return httpx.Response(
+                200,
+                json={"tools": [{"name": "getKey"}]},
+                request=request,
+            )
+        return httpx.Response(200, json={}, request=request)
+
+    service_ir = ServiceIR(
+        source_hash="c" * 64,
+        protocol="openapi",
+        service_name="audit-numeric-placeholder-skip",
+        service_description="Audit numeric placeholder skip test",
+        base_url="https://api.example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="getKey",
+                name="Get Key",
+                description="Fetch a key.",
+                method="GET",
+                path="/user/keys/{id}",
+                params=[Param(name="id", type="integer", required=True)],
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.safe,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                ),
+                enabled=True,
+            ),
+        ],
+    )
+    transport = httpx.MockTransport(handler)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"status": "error", "detail": "bad"}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        _, audit_summary = await validator.validate_with_audit(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"getKey": {"id": 1}},
+        )
+
+    skipped = [r for r in audit_summary.results if r.outcome == "skipped"]
+    assert any("synthetic placeholder" in r.reason.lower() for r in skipped)
 
 
 @pytest.mark.asyncio
