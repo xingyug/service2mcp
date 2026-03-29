@@ -7,6 +7,7 @@ from typing import cast
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.access_control.audit.service import AuditLogService
 from apps.access_control.authn.models import (
     PATCreateRequest,
     PATCreateResponse,
@@ -15,14 +16,20 @@ from apps.access_control.authn.models import (
     TokenPrincipalResponse,
     TokenValidationRequest,
 )
-from apps.access_control.authn.service import AuthenticationError, AuthnService, JWTSettings
-from apps.access_control.audit.service import AuditLogService
+from apps.access_control.authn.service import (
+    AuthenticationError,
+    AuthnService,
+    JWTSettings,
+)
 from apps.access_control.db import get_db_session
 from apps.access_control.gateway_binding.service import (
     GatewayBindingService,
     get_gateway_binding_service,
 )
-from apps.access_control.security import require_authenticated_caller, require_self_or_admin
+from apps.access_control.security import (
+    require_authenticated_caller,
+    require_self_or_admin,
+)
 
 router = APIRouter(prefix="/api/v1/authn", tags=["authn"])
 

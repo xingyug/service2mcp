@@ -71,7 +71,15 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("review_workflows", schema="compiler")
-    op.drop_index("ix_compilation_jobs_environment", table_name="compilation_jobs", schema="compiler")
-    op.drop_index("ix_compilation_jobs_tenant", table_name="compilation_jobs", schema="compiler")
+    op.drop_index(
+        "ix_compilation_jobs_environment",
+        table_name="compilation_jobs",
+        schema="compiler",
+    )
+    op.drop_index(
+        "ix_compilation_jobs_tenant",
+        table_name="compilation_jobs",
+        schema="compiler",
+    )
     op.drop_column("compilation_jobs", "environment", schema="compiler")
     op.drop_column("compilation_jobs", "tenant", schema="compiler")

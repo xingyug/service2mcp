@@ -243,7 +243,8 @@ class SQLExtractor:
             referred_columns = foreign_key.get("referred_columns") or []
             if len(constrained_columns) != len(referred_columns):
                 logger.warning(
-                    "FK column count mismatch for %s: constrained=%s, referred=%s; pairing only matched columns.",
+                    "FK column count mismatch for %s: constrained=%s, referred=%s; "
+                    "pairing only matched columns.",
                     relation_name,
                     constrained_columns,
                     referred_columns,

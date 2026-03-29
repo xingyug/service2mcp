@@ -97,7 +97,10 @@ class RollbackWorkflow:
         if not bool(validation_report.get("overall_passed", False)):
             if current_active is not None:
                 fresh_active = await self._store.get_active_version(request.service_id)
-                if fresh_active is not None and fresh_active.version_number == current_active.version_number:
+                if (
+                    fresh_active is not None
+                    and fresh_active.version_number == current_active.version_number
+                ):
                     await self._store.activate_version(
                         request.service_id,
                         current_active.version_number,

@@ -193,7 +193,10 @@ class JsonRpcExtractor:
     ) -> Operation | None:
         method_name = method.get("name")
         if not method_name:
-            logger.warning("JSON-RPC method missing 'name' field, skipping: %s", method.get("id", "<unknown>"))
+            logger.warning(
+                "JSON-RPC method missing 'name' field, skipping: %s",
+                method.get("id", "<unknown>"),
+            )
             return None
         op_id = method_name.replace(".", "_")
         params_type = _resolve_params_type(method)
