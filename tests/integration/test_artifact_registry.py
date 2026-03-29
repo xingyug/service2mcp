@@ -169,10 +169,10 @@ async def test_artifact_registry_crud_filters_and_diff(http_client: httpx.AsyncC
             description="Fetch account information with optional verbosity.",
             include_verbose_param=True,
             tenant="team-a",
-            environment="staging",
+            environment="prod",
         ),
         "tenant": "team-a",
-        "environment": "staging",
+        "environment": "prod",
         "validation_report": {"status": "passed"},
     }
     create_v2 = await http_client.post("/api/v1/artifacts", json=version_two_payload)
@@ -188,7 +188,7 @@ async def test_artifact_registry_crud_filters_and_diff(http_client: httpx.AsyncC
         params={"tenant": "team-a", "environment": "prod"},
     )
     assert filtered.status_code == 200
-    assert [version["version_number"] for version in filtered.json()["versions"]] == [1]
+    assert [version["version_number"] for version in filtered.json()["versions"]] == [2, 1]
 
     fetched_v1 = await http_client.get(
         "/api/v1/artifacts/billing-api/versions/1",

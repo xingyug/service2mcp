@@ -12,15 +12,12 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from apps.compiler_api.repository import (
     ArtifactRegistryRepository,
     CompilationRepository,
     ServiceCatalogRepository,
 )
-from libs.db_models import CompilationEvent, CompilationJob
-from libs.ir.diff import ParamChange
+from libs.db_models import CompilationJob
 from libs.ir.models import ServiceIR
 
 

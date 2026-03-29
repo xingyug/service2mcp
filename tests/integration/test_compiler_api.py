@@ -48,6 +48,10 @@ from libs.ir.models import (
 )
 from libs.registry_client.models import ArtifactVersionCreate
 
+_TEST_COMPILER_API_JWT_SECRET = "integration-test-compiler-api-jwt-secret"
+
+_TEST_COMPILER_API_JWT_SETTINGS = JWTSettings(secret=_TEST_COMPILER_API_JWT_SECRET)
+
 
 def _to_asyncpg_url(connection_url: str) -> str:
     if connection_url.startswith("postgresql+psycopg2://"):
@@ -170,7 +174,9 @@ def app(
     session_factory: async_sessionmaker[AsyncSession],
     dispatcher: RecordingDispatcher,
 ) -> FastAPI:
-    return create_app(session_factory=session_factory, compilation_dispatcher=dispatcher)
+    application = create_app(session_factory=session_factory, compilation_dispatcher=dispatcher)
+    application.state.jwt_settings = _TEST_COMPILER_API_JWT_SETTINGS
+    return application
 
 
 @pytest_asyncio.fixture
@@ -323,7 +329,12 @@ async def test_compilation_events_endpoint_streams_sse_for_terminal_job(
         detail={"service_name": "billing-api"},
     )
 
-    async with http_client.stream("GET", f"/api/v1/compilations/{job_id}/events") as response:
+    sse_token = build_service_jwt(jwt_settings=_TEST_COMPILER_API_JWT_SETTINGS)
+    async with http_client.stream(
+        "GET",
+        f"/api/v1/compilations/{job_id}/events",
+        params={"token": sse_token},
+    ) as response:
         body = ""
         async for chunk in response.aiter_text():
             body += chunk

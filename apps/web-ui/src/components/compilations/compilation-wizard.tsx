@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Upload, AlertCircle } from "lucide-react";
@@ -224,14 +224,13 @@ export function CompilationWizard({
   }));
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!initialServiceName) {
-      return;
-    }
-    setForm((prev) =>
-      prev.serviceName.trim() ? prev : { ...prev, serviceName: initialServiceName },
-    );
-  }, [initialServiceName]);
+  const effectiveForm = useMemo(
+    () => ({
+      ...form,
+      serviceName: form.serviceName.trim() || initialServiceName || "",
+    }),
+    [form, initialServiceName],
+  );
 
   const updateField = useCallback(
     <K extends keyof WizardFormData>(field: K, value: WizardFormData[K]) => {
@@ -249,7 +248,7 @@ export function CompilationWizard({
         return;
       }
       for (let i = step; i < target; i++) {
-        const err = validateStep(i, form);
+        const err = validateStep(i, effectiveForm);
         if (err) {
           setStep(i);
           setError(err);
@@ -259,18 +258,18 @@ export function CompilationWizard({
       setStep(target);
       setError(null);
     },
-    [step, form],
+    [step, effectiveForm],
   );
 
   const handleNext = useCallback(() => {
-    const err = validateStep(step, form);
+    const err = validateStep(step, effectiveForm);
     if (err) {
       setError(err);
       return;
     }
     setStep((s) => Math.min(s + 1, STEP_LABELS.length - 1));
     setError(null);
-  }, [step, form]);
+  }, [step, effectiveForm]);
 
   const handleBack = useCallback(() => {
     setStep((s) => Math.max(s - 1, 0));
@@ -279,7 +278,7 @@ export function CompilationWizard({
 
   const handleSubmit = useCallback(async () => {
     setError(null);
-    const req = buildRequest(form);
+    const req = buildRequest(effectiveForm);
     try {
       const result = await createMutation.mutateAsync(req);
       toast.success("Compilation job created successfully!");
@@ -290,7 +289,7 @@ export function CompilationWizard({
       setError(message);
       toast.error(message);
     }
-  }, [form, createMutation, router]);
+  }, [effectiveForm, createMutation, router]);
 
   const handleSourceUrlChange = useCallback(
     (url: string) => {
@@ -321,6 +320,7 @@ export function CompilationWizard({
       {step === 0 && (
         <SourceInputStep
           form={form}
+          initialServiceName={initialServiceName}
           updateField={updateField}
           onSourceUrlChange={handleSourceUrlChange}
         />
@@ -329,7 +329,7 @@ export function CompilationWizard({
         <ProtocolOptionsStep form={form} updateField={updateField} />
       )}
       {step === 2 && <AuthConfigStep form={form} updateField={updateField} />}
-      {step === 3 && <ReviewStep form={form} onEditStep={goToStep} />}
+      {step === 3 && <ReviewStep form={effectiveForm} onEditStep={goToStep} />}
 
       <div className="flex items-center justify-between pt-2">
         <Button variant="outline" onClick={handleBack} disabled={step === 0}>
@@ -365,9 +365,13 @@ interface StepProps {
 
 function SourceInputStep({
   form,
+  initialServiceName = "",
   updateField,
   onSourceUrlChange,
-}: StepProps & { onSourceUrlChange: (url: string) => void }) {
+}: StepProps & {
+  initialServiceName?: string;
+  onSourceUrlChange: (url: string) => void;
+}) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
@@ -533,7 +537,7 @@ function SourceInputStep({
           <Input
             id="service-name"
             placeholder="my-api-service"
-            value={form.serviceName}
+            value={form.serviceName || initialServiceName}
             onChange={(e) => updateField("serviceName", e.target.value)}
           />
         </div>

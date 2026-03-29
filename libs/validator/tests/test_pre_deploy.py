@@ -552,7 +552,8 @@ async def test_non_none_auth_without_secret_refs_fails() -> None:
         await validator.aclose()
 
     assert report.get_result("auth_smoke").passed is False
-    assert "compile_time_secret_ref or runtime_secret_ref" in report.get_result("auth_smoke").details
+    auth_detail = report.get_result("auth_smoke").details
+    assert "compile_time_secret_ref or runtime_secret_ref" in auth_detail
 
 
 # ---------------------------------------------------------------------------
@@ -593,7 +594,8 @@ async def test_oauth2_with_token_url_but_no_secret_refs_fails() -> None:
         await validator.aclose()
 
     assert report.get_result("auth_smoke").passed is False
-    assert "compile_time_secret_ref or runtime_secret_ref" in report.get_result("auth_smoke").details
+    oauth_detail = report.get_result("auth_smoke").details
+    assert "compile_time_secret_ref or runtime_secret_ref" in oauth_detail
 
 
 # ---------------------------------------------------------------------------

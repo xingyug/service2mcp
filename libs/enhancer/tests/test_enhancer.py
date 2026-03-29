@@ -960,10 +960,10 @@ def test_getenv_bool_returns_false_for_false_values():
 
 
 def test_select_operations_picks_op_with_short_param_description():
-    """Test _select_operations selects ops with description >=20 but param description <10 (lines 403-404)."""
+    """_select_operations picks ops with long description but short param text (403-404)."""
     from libs.enhancer.enhancer import EnhancerConfig, IREnhancer
 
-    # Operation has a long enough description (>= 20 chars) but a param with short description (< 10)
+    # Long description (>= 20 chars) but one param still has short description (< 10).
     op = Operation(
         id="op_with_short_param",
         name="GetUser",
@@ -996,7 +996,7 @@ def test_select_operations_picks_op_with_short_param_description():
 
 
 def test_batch_operations_splits_correctly():
-    """Test _batch_operations splits > batch_size operations into multiple batches (lines 157-164)."""
+    """_batch_operations splits large op lists into batches (lines 157-164)."""
     from libs.enhancer.enhancer import EnhancerConfig, IREnhancer
 
     ir = make_raw_ir(7)

@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from apps.access_control.authn.models import PATCreateResponse, PATResponse, TokenPrincipalResponse
 from apps.access_control.authn.service import (
     AuthenticationError,
     AuthnService,
@@ -595,7 +594,12 @@ class TestValidatePat:
         svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
 
         pat_id = uuid4()
-        pat = SimpleNamespace(id=pat_id, name="my-pat", revoked_at=None, token_hash=_hash_token("pat_abc123"))
+        pat = SimpleNamespace(
+            id=pat_id,
+            name="my-pat",
+            revoked_at=None,
+            token_hash=_hash_token("pat_abc123"),
+        )
         user = SimpleNamespace(username="alice")
 
         mock_result = MagicMock()

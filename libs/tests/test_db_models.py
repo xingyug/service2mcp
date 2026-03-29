@@ -29,6 +29,7 @@ class TestModelDefinitions:
             "pats",
             "policies",
             "audit_log",
+            "review_workflows",
         }
         assert expected == table_names
 

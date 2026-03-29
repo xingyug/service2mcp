@@ -103,12 +103,6 @@ export function useCompilationEvents(
   const sourceRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    setEvents([]);
-    setError(null);
-    setIsConnected(false);
-  }, [jobId]);
-
-  useEffect(() => {
     if (!jobId) {
       if (sourceRef.current) {
         sourceRef.current.close();
@@ -167,6 +161,9 @@ export function useCompilationEvents(
         sourceRef.current.close();
         sourceRef.current = null;
       }
+      setEvents([]);
+      setError(null);
+      setIsConnected(false);
     };
   }, [jobId]);
 

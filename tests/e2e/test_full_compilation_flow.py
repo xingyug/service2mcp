@@ -21,6 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
+from apps.access_control.authn.service import JWTSettings, build_service_jwt
 from apps.compiler_api.dispatcher import CeleryCompilationDispatcher
 from apps.compiler_api.main import create_app as create_compiler_api_app
 from apps.compiler_api.repository import ArtifactRegistryRepository
@@ -46,13 +47,13 @@ from libs.enhancer import EnhancerConfig, IREnhancer, LLMProvider, create_llm_cl
 from libs.extractors.base import SourceConfig, TypeDetector
 from libs.extractors.graphql import GraphQLExtractor
 from libs.extractors.grpc import GrpcProtoExtractor
+from libs.extractors.jsonrpc import JsonRpcExtractor
 from libs.extractors.openapi import OpenAPIExtractor
 from libs.extractors.rest import (
     EndpointClassification,
     EndpointClassifier,
     RESTExtractor,
 )
-from libs.extractors.jsonrpc import JsonRpcExtractor
 from libs.extractors.soap import SOAPWSDLExtractor
 from libs.extractors.sql import SQLExtractor
 from libs.generator import GenericManifestConfig, generate_generic_manifests
@@ -80,6 +81,16 @@ WSDL_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "wsdl"
 ORDER_SERVICE_WSDL_PATH = WSDL_FIXTURES_DIR / "order_service.wsdl"
 JSONRPC_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "jsonrpc_specs"
 JSONRPC_CALCULATOR_PATH = JSONRPC_FIXTURES_DIR / "openrpc_calculator.json"
+
+_E2E_COMPILER_API_JWT_SETTINGS = JWTSettings(secret="e2e-compilation-flow-jwt-secret-hs256")
+
+
+def _configure_compiler_api_sse_auth(app: FastAPI) -> None:
+    app.state.jwt_settings = _E2E_COMPILER_API_JWT_SETTINGS
+
+
+def _e2e_compiler_api_sse_token() -> str:
+    return build_service_jwt(jwt_settings=_E2E_COMPILER_API_JWT_SETTINGS)
 
 
 def _initialize_sqlite_catalog(tmp_path: Path) -> str:
@@ -606,6 +617,7 @@ async def test_openapi_spec_compiles_to_running_runtime_and_tool_invocation(
         session_factory=session_factory,
         compilation_dispatcher=CeleryCompilationDispatcher(celery_app=worker_celery_app),
     )
+    _configure_compiler_api_sse_auth(compiler_api_app)
     transport = httpx.ASGITransport(app=compiler_api_app)
 
     try:
@@ -652,6 +664,7 @@ async def test_openapi_spec_compiles_to_running_runtime_and_tool_invocation(
                 async with http_client.stream(
                     "GET",
                     f"/api/v1/compilations/{job_id}/events",
+                    params={"token": _e2e_compiler_api_sse_token()},
                 ) as response:
                     body = ""
                     async for chunk in response.aiter_text():
@@ -949,6 +962,7 @@ async def test_rest_discovery_compiles_to_running_runtime_and_tool_invocation(
         session_factory=session_factory,
         compilation_dispatcher=CeleryCompilationDispatcher(celery_app=worker_celery_app),
     )
+    _configure_compiler_api_sse_auth(compiler_api_app)
     transport = httpx.ASGITransport(app=compiler_api_app)
 
     try:
@@ -995,6 +1009,7 @@ async def test_rest_discovery_compiles_to_running_runtime_and_tool_invocation(
                 async with http_client.stream(
                     "GET",
                     f"/api/v1/compilations/{job_id}/events",
+                    params={"token": _e2e_compiler_api_sse_token()},
                 ) as response:
                     body = ""
                     async for chunk in response.aiter_text():
@@ -1346,6 +1361,7 @@ async def test_grpc_proto_compiles_to_running_runtime_and_tool_invocation(
         session_factory=session_factory,
         compilation_dispatcher=CeleryCompilationDispatcher(celery_app=worker_celery_app),
     )
+    _configure_compiler_api_sse_auth(compiler_api_app)
     transport = httpx.ASGITransport(app=compiler_api_app)
 
     try:
@@ -1396,6 +1412,7 @@ async def test_grpc_proto_compiles_to_running_runtime_and_tool_invocation(
                 async with http_client.stream(
                     "GET",
                     f"/api/v1/compilations/{job_id}/events",
+                    params={"token": _e2e_compiler_api_sse_token()},
                 ) as response:
                     body = ""
                     async for chunk in response.aiter_text():
@@ -1739,6 +1756,7 @@ async def test_soap_wsdl_compiles_to_running_runtime_and_tool_invocation(
         session_factory=session_factory,
         compilation_dispatcher=CeleryCompilationDispatcher(celery_app=worker_celery_app),
     )
+    _configure_compiler_api_sse_auth(compiler_api_app)
     transport = httpx.ASGITransport(app=compiler_api_app)
 
     try:
@@ -1785,6 +1803,7 @@ async def test_soap_wsdl_compiles_to_running_runtime_and_tool_invocation(
                 async with http_client.stream(
                     "GET",
                     f"/api/v1/compilations/{job_id}/events",
+                    params={"token": _e2e_compiler_api_sse_token()},
                 ) as response:
                     body = ""
                     async for chunk in response.aiter_text():
@@ -2072,6 +2091,7 @@ async def test_graphql_introspection_compiles_to_running_runtime_and_tool_invoca
         session_factory=session_factory,
         compilation_dispatcher=CeleryCompilationDispatcher(celery_app=worker_celery_app),
     )
+    _configure_compiler_api_sse_auth(compiler_api_app)
     transport = httpx.ASGITransport(app=compiler_api_app)
 
     try:
@@ -2124,6 +2144,7 @@ async def test_graphql_introspection_compiles_to_running_runtime_and_tool_invoca
                 async with http_client.stream(
                     "GET",
                     f"/api/v1/compilations/{job_id}/events",
+                    params={"token": _e2e_compiler_api_sse_token()},
                 ) as response:
                     body = ""
                     async for chunk in response.aiter_text():
@@ -2379,6 +2400,7 @@ async def test_sql_schema_compiles_to_running_runtime_and_tool_invocation(
         session_factory=session_factory,
         compilation_dispatcher=CeleryCompilationDispatcher(celery_app=worker_celery_app),
     )
+    _configure_compiler_api_sse_auth(compiler_api_app)
     transport = httpx.ASGITransport(app=compiler_api_app)
 
     try:
@@ -2425,6 +2447,7 @@ async def test_sql_schema_compiles_to_running_runtime_and_tool_invocation(
                 async with http_client.stream(
                     "GET",
                     f"/api/v1/compilations/{job_id}/events",
+                    params={"token": _e2e_compiler_api_sse_token()},
                 ) as response:
                     body = ""
                     async for chunk in response.aiter_text():
@@ -2710,6 +2733,7 @@ async def test_jsonrpc_openrpc_compiles_to_running_runtime_and_tool_invocation(
         session_factory=session_factory,
         compilation_dispatcher=CeleryCompilationDispatcher(celery_app=worker_celery_app),
     )
+    _configure_compiler_api_sse_auth(compiler_api_app)
     transport = httpx.ASGITransport(app=compiler_api_app)
 
     try:
@@ -2756,6 +2780,7 @@ async def test_jsonrpc_openrpc_compiles_to_running_runtime_and_tool_invocation(
                 async with http_client.stream(
                     "GET",
                     f"/api/v1/compilations/{job_id}/events",
+                    params={"token": _e2e_compiler_api_sse_token()},
                 ) as response:
                     body = ""
                     async for chunk in response.aiter_text():

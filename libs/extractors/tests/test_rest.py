@@ -2319,7 +2319,7 @@ class TestIsPathLikeCustomSchemes:
         assert _is_path_like("ftp://files.example.com/data") is True
 
     def test_parsed_scheme_without_slashes(self) -> None:
-        """Values that urlparse treats as having a scheme but no netloc are rejected (line 1166-1167)."""
+        """urlparse scheme-without-netloc values are rejected (lines 1166-1167)."""
         assert _is_path_like("mailto:user@example.com") is False
 
 

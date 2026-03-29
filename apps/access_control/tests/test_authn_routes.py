@@ -10,7 +10,6 @@ from fastapi import HTTPException
 
 from apps.access_control.authn.models import (
     PATCreateRequest,
-    PATResponse,
     TokenPrincipalResponse,
     TokenValidationRequest,
 )

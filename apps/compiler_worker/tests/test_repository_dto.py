@@ -113,7 +113,7 @@ class TestCreateJobIntegrityError:
 
     @pytest.mark.asyncio
     async def test_create_job_integrity_error_no_allow_existing(self) -> None:
-        from unittest.mock import AsyncMock, MagicMock, patch
+        from unittest.mock import AsyncMock, MagicMock
 
         from sqlalchemy.exc import IntegrityError
 

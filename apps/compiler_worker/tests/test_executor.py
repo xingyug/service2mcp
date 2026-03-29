@@ -133,16 +133,16 @@ class TestDatabaseWorkflowCompilationExecutor:
             ),
             patch(
                 "apps.compiler_worker.executor.async_sessionmaker",
-            ) as mock_sm,
+            ),
             patch(
                 "apps.compiler_worker.executor.SQLAlchemyCompilationJobStore",
-            ) as mock_store_cls,
+            ),
             patch(
                 "apps.compiler_worker.executor.CompilationWorkflow",
             ) as mock_wf_cls,
             patch(
                 "apps.compiler_worker.executor.create_default_activity_registry",
-            ) as mock_registry,
+            ),
         ):
             mock_wf_cls.return_value = mock_workflow_instance
             executor = DatabaseWorkflowCompilationExecutor(

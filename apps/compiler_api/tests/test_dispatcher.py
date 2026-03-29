@@ -143,7 +143,7 @@ class TestCeleryCompilationDispatcher:
 
 class TestGetDispatcherFallback:
     def test_fallback_creates_and_caches_dispatcher(self) -> None:
-        """get_compilation_dispatcher() with no preset state falls back to _resolve_default_dispatcher()."""
+        """Dispatcher with no preset state falls back to _resolve_default_dispatcher()."""
         app = FastAPI()
         # Do NOT call configure_compilation_dispatcher — state is empty
 

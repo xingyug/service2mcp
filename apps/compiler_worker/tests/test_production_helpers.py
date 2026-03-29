@@ -885,14 +885,18 @@ class TestKubernetesAPISessionFromInCluster:
 
         from apps.compiler_worker.activities.production import KubernetesAPISession
 
-        with patch.dict(os.environ, {"KUBERNETES_SERVICE_HOST": "10.0.0.1", "KUBERNETES_SERVICE_PORT": "443"}):
-            with mock_patch("apps.compiler_worker.activities.production.Path") as MockPath:
+        k8s_env = {
+            "KUBERNETES_SERVICE_HOST": "10.0.0.1",
+            "KUBERNETES_SERVICE_PORT": "443",
+        }
+        with patch.dict(os.environ, k8s_env):
+            with mock_patch("apps.compiler_worker.activities.production.Path") as mock_path:
                 # Make token_path.exists() return False
                 mock_token = MagicMock()
                 mock_token.exists.return_value = False
                 mock_cert = MagicMock()
                 mock_cert.exists.return_value = True
-                MockPath.side_effect = [mock_token, mock_cert]
+                mock_path.side_effect = [mock_token, mock_cert]
 
                 with pytest.raises(RuntimeError, match="in-cluster service account token"):
                     KubernetesAPISession.from_in_cluster(namespace="default")

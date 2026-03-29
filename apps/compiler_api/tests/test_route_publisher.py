@@ -13,7 +13,6 @@ from apps.compiler_api.route_publisher import (
     AccessControlArtifactRoutePublisher,
     NoopArtifactRoutePublisher,
     _resolve_default_route_publisher,
-    configure_route_publisher,
     dispose_route_publisher,
     get_route_publisher,
 )
