@@ -3,10 +3,13 @@ import {
   ApiError,
   compilationApi,
   serviceApi,
+  artifactApi,
+  authApi,
   policyApi,
   auditApi,
   gatewayApi,
 } from "../api-client";
+import type { ServiceRouteRequest } from "@/types/api";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -161,6 +164,39 @@ describe("api-client", () => {
     expect(lastFetchOptions().method).toBeUndefined();
   });
 
+  it("compilationApi.list normalizes backend job payloads", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse([
+        {
+          id: "job-42",
+          status: "running",
+          protocol: "openapi",
+          current_stage: "extract",
+          error_detail: null,
+          created_at: "2026-03-29T00:00:00Z",
+          updated_at: "2026-03-29T00:01:00Z",
+          service_name: "billing-api",
+        },
+      ]),
+    );
+
+    const jobs = await compilationApi.list();
+
+    expect(jobs).toEqual([
+      {
+        job_id: "job-42",
+        protocol: "openapi",
+        status: "running",
+        current_stage: "extract",
+        failed_stage: undefined,
+        created_at: "2026-03-29T00:00:00Z",
+        completed_at: undefined,
+        error_message: undefined,
+        artifacts: { ir_id: "billing-api" },
+      },
+    ]);
+  });
+
   it("compilationApi.get sends GET with jobId in URL", async () => {
     await compilationApi.get("job-42");
     expect(lastFetchUrl()).toBe(`${COMPILER_API}/api/v1/compilations/job-42`);
@@ -188,6 +224,24 @@ describe("api-client", () => {
     expect(lastFetchOptions().method).toBe("POST");
   });
 
+  it("compilationApi.streamEvents includes auth token in the SSE URL", () => {
+    localStorage.setItem("auth_token", "secret-token");
+    const close = vi.fn();
+    class MockEventSource {
+      constructor(public readonly url: string) {}
+
+      close = close;
+    }
+    vi.stubGlobal("EventSource", MockEventSource);
+
+    const stream = compilationApi.streamEvents("job-42");
+
+    expect(stream).toBeInstanceOf(MockEventSource);
+    expect((stream as unknown as MockEventSource).url).toBe(
+      `${COMPILER_API}/api/v1/compilations/job-42/events?token=secret-token`,
+    );
+  });
+
   // -----------------------------------------------------------------------
   // serviceApi
   // -----------------------------------------------------------------------
@@ -209,6 +263,246 @@ describe("api-client", () => {
     expect(lastFetchUrl()).toBe(`${COMPILER_API}/api/v1/services/svc-99`);
   });
 
+  it("serviceApi.list normalizes backend service summaries", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        services: [
+          {
+            service_id: "svc-1",
+            active_version: 2,
+            service_name: "Billing API",
+            tool_count: 3,
+            protocol: "openapi",
+            tenant: "team-a",
+            environment: "prod",
+            created_at: "2026-03-29T00:00:00Z",
+          },
+        ],
+      }),
+    );
+
+    const response = await serviceApi.list();
+
+    expect(response).toEqual({
+      services: [
+        {
+          service_id: "svc-1",
+          name: "Billing API",
+          protocol: "openapi",
+          tool_count: 3,
+          active_version: 2,
+          version_count: 2,
+          last_compiled: "2026-03-29T00:00:00Z",
+          tenant: "team-a",
+          environment: "prod",
+        },
+      ],
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // artifactApi
+  // -----------------------------------------------------------------------
+
+  it("artifactApi.listVersions uses artifact registry paths and normalizes IR payloads", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        service_id: "svc-1",
+        versions: [
+          {
+            service_id: "svc-1",
+            version_number: 3,
+            is_active: true,
+            created_at: "2026-03-29T00:00:00Z",
+            ir_json: {
+              service_name: "Billing API",
+              operations: [],
+            },
+          },
+        ],
+      }),
+    );
+
+    const response = await artifactApi.listVersions("svc-1");
+
+    expect(lastFetchUrl()).toBe(`${COMPILER_API}/api/v1/artifacts/svc-1/versions`);
+    expect(response.versions[0]).toMatchObject({
+      service_id: "svc-1",
+      version_number: 3,
+      is_active: true,
+      created_at: "2026-03-29T00:00:00Z",
+      ir: {
+        service_name: "Billing API",
+        operations: [],
+      },
+    });
+  });
+
+  it("artifactApi.diff uses artifact registry paths and reconstructs operation details", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        mockResponse({
+          service_id: "svc-1",
+          from_version: 1,
+          to_version: 2,
+          added_operations: ["createOrder"],
+          removed_operations: ["deleteOrder"],
+          changed_operations: [
+            {
+              operation_id: "getOrder",
+              operation_name: "Get Order",
+              changes: [
+                {
+                  field_name: "description",
+                  old_value: "old",
+                  new_value: "new",
+                },
+              ],
+              added_params: ["expand"],
+              removed_params: [],
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          service_id: "svc-1",
+          version_number: 1,
+          is_active: false,
+          created_at: "2026-03-29T00:00:00Z",
+          ir_json: {
+            operations: [
+              {
+                id: "deleteOrder",
+                name: "Delete Order",
+                description: "",
+                params: [],
+                risk: { risk_level: "dangerous", confidence: 1, source: "extractor" },
+                tags: [],
+                source: "extractor",
+                confidence: 1,
+                enabled: true,
+              },
+            ],
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          service_id: "svc-1",
+          version_number: 2,
+          is_active: true,
+          created_at: "2026-03-29T00:00:00Z",
+          ir_json: {
+            operations: [
+              {
+                id: "createOrder",
+                name: "Create Order",
+                description: "",
+                params: [],
+                risk: { risk_level: "cautious", confidence: 1, source: "extractor" },
+                tags: [],
+                source: "extractor",
+                confidence: 1,
+                enabled: true,
+              },
+            ],
+          },
+        }),
+      );
+
+    const response = await artifactApi.diff("svc-1", 1, 2);
+
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/diff?from=1&to=2`,
+    );
+    expect(mockFetch.mock.calls[1]?.[0]).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/versions/1`,
+    );
+    expect(mockFetch.mock.calls[2]?.[0]).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/versions/2`,
+    );
+    expect(response.added_operations[0]?.id).toBe("createOrder");
+    expect(response.removed_operations[0]?.id).toBe("deleteOrder");
+    expect(response.changed_operations[0]).toMatchObject({
+      operation_id: "getOrder",
+      diff_type: "modify",
+    });
+    expect(response.changed_operations[0]?.changes).toEqual([
+      {
+        field: "description",
+        old_value: "old",
+        new_value: "new",
+      },
+      {
+        field: "param.expand",
+        new_value: "added",
+      },
+    ]);
+  });
+
+  it("artifactApi.activateVersion uses activation endpoint", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        service_id: "svc-1",
+        version_number: 2,
+        is_active: true,
+        created_at: "2026-03-29T00:00:00Z",
+        ir_json: { operations: [] },
+      }),
+    );
+
+    await artifactApi.activateVersion("svc-1", 2);
+
+    expect(lastFetchUrl()).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/versions/2/activate`,
+    );
+    expect(lastFetchOptions().method).toBe("POST");
+  });
+
+  it("artifactApi.deleteVersion uses delete endpoint", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(undefined, { status: 204, statusText: "No Content" }),
+    );
+
+    await artifactApi.deleteVersion("svc-1", 2);
+
+    expect(lastFetchUrl()).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/versions/2`,
+    );
+    expect(lastFetchOptions().method).toBe("DELETE");
+  });
+
+  // -----------------------------------------------------------------------
+  // authApi
+  // -----------------------------------------------------------------------
+
+  it("authApi.validateToken sends POST to /authn/validate with JSON body", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        subject: "alice",
+        token_type: "jwt",
+        claims: { email: "alice@example.com", roles: ["admin"] },
+      }),
+    );
+
+    await authApi.validateToken({ token: "jwt-token" });
+
+    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/authn/validate`);
+    expect(lastFetchOptions().method).toBe("POST");
+    expect(lastFetchOptions().body).toBe(JSON.stringify({ token: "jwt-token" }));
+  });
+
+  it("authApi.listPATs sends username query param to /authn/pats", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ items: [] }));
+
+    await authApi.listPATs("alice");
+
+    expect(lastFetchUrl()).toBe(
+      `${ACCESS_CONTROL_API}/api/v1/authn/pats?username=alice`,
+    );
+  });
+
   // -----------------------------------------------------------------------
   // policyApi
   // -----------------------------------------------------------------------
@@ -217,17 +511,17 @@ describe("api-client", () => {
     const body = { name: "policy-1" };
     await policyApi.create(body as never);
 
-    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/policies`);
+    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/authz/policies`);
     expect(lastFetchOptions().method).toBe("POST");
     expect(lastFetchOptions().body).toBe(JSON.stringify(body));
   });
 
-  it("policyApi.update sends PATCH", async () => {
+  it("policyApi.update sends PUT", async () => {
     const body = { name: "updated" };
     await policyApi.update("pol-1", body as never);
 
-    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/policies/pol-1`);
-    expect(lastFetchOptions().method).toBe("PATCH");
+    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/authz/policies/pol-1`);
+    expect(lastFetchOptions().method).toBe("PUT");
   });
 
   it("policyApi.delete sends DELETE", async () => {
@@ -236,7 +530,7 @@ describe("api-client", () => {
     );
     await policyApi.delete("pol-1");
 
-    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/policies/pol-1`);
+    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/authz/policies/pol-1`);
     expect(lastFetchOptions().method).toBe("DELETE");
   });
 
@@ -245,21 +539,38 @@ describe("api-client", () => {
   // -----------------------------------------------------------------------
 
   it("auditApi.list sends GET with no query params when no filters", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ items: [] }));
     await auditApi.list();
-    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/audit`);
+    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/audit/logs`);
   });
 
   it("auditApi.list sends GET with correct query params", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ items: [] }));
     await auditApi.list({ actor: "alice", action: "create", since: "2024-01-01" });
     const url = lastFetchUrl();
     expect(url).toContain("actor=alice");
     expect(url).toContain("action=create");
-    expect(url).toContain("since=2024-01-01");
+    expect(url).toContain("start_at=2024-01-01");
   });
 
-  it("auditApi.get sends GET with entryId in URL", async () => {
+  it("auditApi.get falls back to list() and returns the matching entry", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        items: [
+          {
+            id: "entry-7",
+            actor: "alice",
+            action: "policy.created",
+            resource: "svc-1",
+            detail: { ok: true },
+            timestamp: "2026-03-29T00:00:00Z",
+          },
+        ],
+      }),
+    );
+
     await auditApi.get("entry-7");
-    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/audit/entry-7`);
+    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/audit/logs`);
   });
 
   // -----------------------------------------------------------------------
@@ -269,27 +580,61 @@ describe("api-client", () => {
   it("gatewayApi.reconcile sends POST", async () => {
     await gatewayApi.reconcile();
 
-    expect(lastFetchUrl()).toBe(`${COMPILER_API}/api/v1/gateway/reconcile`);
+    expect(lastFetchUrl()).toBe(
+      `${ACCESS_CONTROL_API}/api/v1/gateway-binding/reconcile`,
+    );
     expect(lastFetchOptions().method).toBe("POST");
   });
 
-  it("gatewayApi.setRoute sends POST with body", async () => {
-    const body = { service_id: "svc-1", path: "/api" };
-    await gatewayApi.setRoute(body as never);
+  it("gatewayApi.syncRoutes sends POST with route payload", async () => {
+    const body: ServiceRouteRequest = {
+      route_config: { service_id: "svc-1" },
+      previous_routes: {},
+    };
+    await gatewayApi.syncRoutes(body);
 
-    expect(lastFetchUrl()).toBe(`${COMPILER_API}/api/v1/gateway/routes`);
+    expect(lastFetchUrl()).toBe(
+      `${ACCESS_CONTROL_API}/api/v1/gateway-binding/service-routes/sync`,
+    );
     expect(lastFetchOptions().method).toBe("POST");
     expect(lastFetchOptions().body).toBe(JSON.stringify(body));
   });
 
-  it("gatewayApi.deleteRoute sends DELETE with serviceId", async () => {
-    mockFetch.mockResolvedValueOnce(
-      mockResponse(undefined, { status: 204, statusText: "No Content" }),
-    );
-    await gatewayApi.deleteRoute("svc-1");
+  it("gatewayApi.deleteRoutes sends POST with route payload", async () => {
+    const body: ServiceRouteRequest = {
+      route_config: { service_id: "svc-1" },
+      previous_routes: {},
+    };
+    await gatewayApi.deleteRoutes(body);
 
-    expect(lastFetchUrl()).toBe(`${COMPILER_API}/api/v1/gateway/routes/svc-1`);
-    expect(lastFetchOptions().method).toBe("DELETE");
+    expect(lastFetchUrl()).toBe(
+      `${ACCESS_CONTROL_API}/api/v1/gateway-binding/service-routes/delete`,
+    );
+    expect(lastFetchOptions().method).toBe("POST");
+    expect(lastFetchOptions().body).toBe(JSON.stringify(body));
+  });
+
+  it("gatewayApi.rollbackRoutes sends POST with current and previous routes", async () => {
+    const body: ServiceRouteRequest = {
+      route_config: { service_id: "svc-1" },
+      previous_routes: {
+        "svc-1-active": {
+          route_id: "svc-1-active",
+          route_type: "default",
+          service_id: "svc-1",
+          service_name: "Billing API",
+          namespace: "runtime-system",
+          target_service: { name: "billing-runtime-v1", port: 8003 },
+        },
+      },
+    };
+    await gatewayApi.rollbackRoutes(body);
+
+    expect(lastFetchUrl()).toBe(
+      `${ACCESS_CONTROL_API}/api/v1/gateway-binding/service-routes/rollback`,
+    );
+    expect(lastFetchOptions().method).toBe("POST");
+    expect(lastFetchOptions().body).toBe(JSON.stringify(body));
   });
 
   // -----------------------------------------------------------------------

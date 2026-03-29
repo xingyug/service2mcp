@@ -39,10 +39,19 @@ describe("LoginPage", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders login form with username and password fields", () => {
+  function mockApiErrorResponse(detail: string, status = 401): Response {
+    return {
+      ok: false,
+      status,
+      statusText: "Unauthorized",
+      json: () => Promise.resolve({ detail }),
+      headers: new Headers(),
+    } as Response;
+  }
+
+  it("renders login form with JWT token field", () => {
     render(<LoginPage />);
-    expect(screen.getByLabelText("Username")).toBeInTheDocument();
-    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+    expect(screen.getByLabelText("JWT Token", { selector: "input" })).toBeInTheDocument();
   });
 
   it("renders page heading and description", () => {
@@ -58,7 +67,7 @@ describe("LoginPage", () => {
     // "Sign in" appears in the card title and also in the submit button
     expect(screen.getAllByText(/Sign in/).length).toBeGreaterThanOrEqual(2);
     expect(
-      screen.getByText("Choose your preferred authentication method."),
+      screen.getByText("Validate a JWT or PAT against the access-control service."),
     ).toBeInTheDocument();
   });
 
@@ -67,60 +76,67 @@ describe("LoginPage", () => {
     expect(screen.getByText("PAT Token")).toBeInTheDocument();
   });
 
-  it("renders Password Login tab", () => {
+  it("renders JWT Token tab", () => {
     render(<LoginPage />);
-    expect(screen.getByText("Password Login")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "JWT Token" })).toBeInTheDocument();
   });
 
-  it("shows sign in button on password tab", () => {
+  it("shows JWT sign in button on default tab", () => {
     render(<LoginPage />);
     expect(
-      screen.getByRole("button", { name: "Sign in" }),
+      screen.getByRole("button", { name: "Sign in with JWT" }),
     ).toBeInTheDocument();
   });
 
-  it("shows error message on failed password login", async () => {
+  it("shows error message on failed JWT login", async () => {
     const user = userEvent.setup();
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
-      ok: false,
-      status: 401,
-      text: () => Promise.resolve("Invalid credentials"),
-    } as Response);
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      mockApiErrorResponse("JWT is invalid"),
+    );
 
     render(<LoginPage />);
 
-    await user.type(screen.getByLabelText("Username"), "admin");
-    await user.type(screen.getByLabelText("Password"), "wrong");
-    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await user.type(screen.getByLabelText("JWT Token", { selector: "input" }), "bad-token");
+    await user.click(screen.getByRole("button", { name: "Sign in with JWT" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Invalid credentials")).toBeInTheDocument();
+      expect(screen.getByText("JWT is invalid")).toBeInTheDocument();
     });
   });
 
-  it("calls auth store login on successful password submission", async () => {
+  it("calls auth store login on successful JWT submission", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
       ok: true,
       status: 200,
       json: () =>
         Promise.resolve({
-          token: "jwt-token-123",
-          username: "admin",
-          email: "admin@example.com",
-          roles: ["admin"],
+          subject: "admin",
+          token_type: "jwt",
+          claims: {
+            email: "admin@example.com",
+            roles: ["admin"],
+          },
         }),
     } as Response);
 
     render(<LoginPage />);
 
-    await user.type(screen.getByLabelText("Username"), "admin");
-    await user.type(screen.getByLabelText("Password"), "password123");
-    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await user.type(
+      screen.getByLabelText("JWT Token", { selector: "input" }),
+      "jwt-token-123",
+    );
+    await user.click(screen.getByRole("button", { name: "Sign in with JWT" }));
 
     await waitFor(() => {
       expect(mockLogin).toHaveBeenCalledWith("jwt-token-123", {
         username: "admin",
+        subject: "admin",
+        tokenType: "jwt",
+        claims: {
+          email: "admin@example.com",
+          roles: ["admin"],
+        },
         email: "admin@example.com",
         roles: ["admin"],
       });
@@ -134,23 +150,26 @@ describe("LoginPage", () => {
       status: 200,
       json: () =>
         Promise.resolve({
-          token: "jwt-token-123",
-          username: "admin",
+          subject: "admin",
+          token_type: "jwt",
+          claims: {},
         }),
     } as Response);
 
     render(<LoginPage />);
 
-    await user.type(screen.getByLabelText("Username"), "admin");
-    await user.type(screen.getByLabelText("Password"), "password123");
-    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await user.type(
+      screen.getByLabelText("JWT Token", { selector: "input" }),
+      "jwt-token-123",
+    );
+    await user.click(screen.getByRole("button", { name: "Sign in with JWT" }));
 
     await waitFor(() => {
       expect(mockReplace).toHaveBeenCalledWith("/");
     });
   });
 
-  it("shows loading state during password submission", async () => {
+  it("shows loading state during JWT submission", async () => {
     const user = userEvent.setup();
     // Create a promise that we can control
     let resolveFetch!: (value: Response) => void;
@@ -162,23 +181,25 @@ describe("LoginPage", () => {
 
     render(<LoginPage />);
 
-    await user.type(screen.getByLabelText("Username"), "admin");
-    await user.type(screen.getByLabelText("Password"), "password123");
-    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await user.type(
+      screen.getByLabelText("JWT Token", { selector: "input" }),
+      "jwt-token-123",
+    );
+    await user.click(screen.getByRole("button", { name: "Sign in with JWT" }));
 
-    // While loading, button should say "Signing in…" and be disabled
-    expect(screen.getByText("Signing in…")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Signing in…" })).toBeDisabled();
+    // While loading, button should say "Validating…" and be disabled
+    expect(screen.getByText("Validating…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Validating…" })).toBeDisabled();
 
     // Resolve the fetch to clean up
     resolveFetch({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ token: "t", username: "u" }),
+      json: () => Promise.resolve({ subject: "u", token_type: "jwt", claims: {} }),
     } as Response);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Sign in" })).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: "Sign in with JWT" })).not.toBeDisabled();
     });
   });
 
@@ -190,43 +211,49 @@ describe("LoginPage", () => {
 
     render(<LoginPage />);
 
-    await user.type(screen.getByLabelText("Username"), "admin");
-    await user.type(screen.getByLabelText("Password"), "password123");
-    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await user.type(
+      screen.getByLabelText("JWT Token", { selector: "input" }),
+      "jwt-token-123",
+    );
+    await user.click(screen.getByRole("button", { name: "Sign in with JWT" }));
 
     await waitFor(() => {
       expect(screen.getByText("Network error")).toBeInTheDocument();
     });
   });
 
-  it("uses basic auth token when API response has no token field", async () => {
+  it("stores the submitted JWT token after validation succeeds", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({}),
+      json: () =>
+        Promise.resolve({
+          subject: "admin",
+          token_type: "jwt",
+          claims: {},
+        }),
     } as Response);
 
     render(<LoginPage />);
 
-    await user.type(screen.getByLabelText("Username"), "admin");
-    await user.type(screen.getByLabelText("Password"), "pass");
-    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await user.type(
+      screen.getByLabelText("JWT Token", { selector: "input" }),
+      "submitted-jwt",
+    );
+    await user.click(screen.getByRole("button", { name: "Sign in with JWT" }));
 
     await waitFor(() => {
-      const expectedToken = btoa("admin:pass");
       expect(mockLogin).toHaveBeenCalledWith(
-        expectedToken,
+        "submitted-jwt",
         expect.objectContaining({ username: "admin" }),
       );
     });
   });
 
-  it("requires username and password fields", () => {
+  it("requires JWT token field", () => {
     render(<LoginPage />);
-    const usernameInput = screen.getByLabelText("Username");
-    const passwordInput = screen.getByLabelText("Password");
-    expect(usernameInput).toBeRequired();
-    expect(passwordInput).toBeRequired();
+    const jwtInput = screen.getByLabelText("JWT Token", { selector: "input" });
+    expect(jwtInput).toBeRequired();
   });
 });

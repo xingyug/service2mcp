@@ -174,6 +174,33 @@ class TestRollbackWorkflowErrors:
             await wf.run(RollbackRequest(service_id="svc-1", target_version=2))
 
     @pytest.mark.asyncio
+    async def test_validation_failure_restores_previous_active(self) -> None:
+        v1 = _make_version(version_number=1, is_active=True)
+        v2 = _make_version(version_number=2)
+        store = FakeVersionStore()
+        store.versions[("svc-1", 1)] = v1
+        store.versions[("svc-1", 2)] = v2
+        store.active["svc-1"] = v1
+        deployer = FakeDeployer()
+        validator = FakeValidator(passed=False)
+        wf = RollbackWorkflow(store=store, deployer=deployer, validator=validator)
+        with pytest.raises(RuntimeError, match="validation failed"):
+            await wf.run(RollbackRequest(service_id="svc-1", target_version=2))
+        assert ("svc-1", 1) in store.activated
+
+    @pytest.mark.asyncio
+    async def test_validation_failure_no_previous_active_skips_restore(self) -> None:
+        v2 = _make_version(version_number=2)
+        store = FakeVersionStore()
+        store.versions[("svc-1", 2)] = v2
+        deployer = FakeDeployer()
+        validator = FakeValidator(passed=False)
+        wf = RollbackWorkflow(store=store, deployer=deployer, validator=validator)
+        with pytest.raises(RuntimeError, match="validation failed"):
+            await wf.run(RollbackRequest(service_id="svc-1", target_version=2))
+        assert store.activated == []
+
+    @pytest.mark.asyncio
     async def test_activation_returns_none_raises(self) -> None:
         v2 = _make_version(version_number=2)
         store = FakeVersionStore()

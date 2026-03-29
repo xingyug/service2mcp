@@ -236,6 +236,74 @@ class TestToolGrouper:
         result = grouper.group(ir)
         assert len(result.groups) == 1
 
+    def test_non_array_json_returns_empty(self) -> None:
+        """Lines 148-149: valid JSON but not an array → empty groups."""
+        ir = _make_ir()
+        client = MockGroupingLLMClient(response='{"not": "an array"}')
+        grouper = ToolGrouper(client)
+
+        result = grouper.group(ir)
+
+        assert len(result.groups) == 0
+        assert result.llm_calls == 1
+
+    def test_non_dict_array_item_skipped(self) -> None:
+        """Line 154: array item that is not a dict → skipped."""
+        ir = _make_ir()
+        response = json.dumps(
+            [
+                "not a dict",
+                {
+                    "id": "g1",
+                    "label": "Group 1",
+                    "intent": "test",
+                    "operation_ids": ["list_users"],
+                    "confidence": 0.8,
+                },
+            ]
+        )
+        client = MockGroupingLLMClient(response=response)
+        grouper = ToolGrouper(client)
+
+        result = grouper.group(ir)
+
+        assert len(result.groups) == 1
+        assert result.groups[0].id == "g1"
+
+    def test_missing_id_or_label_skipped(self) -> None:
+        """Line 158: group item missing id or label → skipped."""
+        ir = _make_ir()
+        response = json.dumps(
+            [
+                {"label": "No ID", "operation_ids": ["list_users"], "confidence": 0.8},
+                {"id": "no-label", "operation_ids": ["get_user"], "confidence": 0.8},
+                {
+                    "id": "valid",
+                    "label": "Valid",
+                    "operation_ids": ["list_orders"],
+                    "confidence": 0.8,
+                },
+            ]
+        )
+        client = MockGroupingLLMClient(response=response)
+        grouper = ToolGrouper(client)
+
+        result = grouper.group(ir)
+
+        assert len(result.groups) == 1
+        assert result.groups[0].id == "valid"
+
+    def test_malformed_json_returns_empty(self) -> None:
+        """Lines 179-181: malformed JSON from LLM → empty groups."""
+        ir = _make_ir()
+        client = MockGroupingLLMClient(response="this is not valid json {{{")
+        grouper = ToolGrouper(client)
+
+        result = grouper.group(ir)
+
+        assert len(result.groups) == 0
+        assert result.llm_calls == 1
+
 
 class TestApplyGrouping:
     def test_apply_grouping_sets_tool_grouping(self) -> None:

@@ -156,10 +156,10 @@ export default function DashboardPage() {
   const totalServices = services.length;
   const totalCompilations = allCompilations.length;
   const publishedCount = allCompilations.filter(
-    (c) => c.status === "PUBLISHED",
+    (c) => c.status === "succeeded",
   ).length;
   const failedCount = allCompilations.filter(
-    (c) => c.status === "FAILED",
+    (c) => c.status === "failed",
   ).length;
   const successRate =
     totalCompilations > 0
@@ -169,7 +169,7 @@ export default function DashboardPage() {
       : 0;
 
   const totalTools = services.reduce(
-    (sum, s) => sum + (s.version_count ?? 0),
+    (sum, s) => sum + (s.tool_count ?? 0),
     0,
   );
 

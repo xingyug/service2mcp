@@ -9,10 +9,20 @@ const eventTypeColors: Record<CompilationEventType, string> = {
   stage_completed:
     "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
   stage_failed: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+  stage_retrying:
+    "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300",
   job_started: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
   job_completed:
     "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
   job_failed: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+  job_rolled_back:
+    "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300",
+  rollback_started:
+    "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300",
+  rollback_succeeded:
+    "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+  rollback_failed:
+    "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
 };
 
 function formatEventType(type: CompilationEventType): string {

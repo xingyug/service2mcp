@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { authApi, ApiError } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,41 +25,38 @@ export default function LoginPage() {
   const router = useRouter();
   const login = useAuthStore((s) => s.login);
 
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
+  const [jwtToken, setJwtToken] = useState("");
   const [patToken, setPatToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  async function handlePasswordLogin(e: React.FormEvent) {
+  function buildUser(principal: Awaited<ReturnType<typeof authApi.validateToken>>) {
+    return {
+      username: principal.username,
+      subject: principal.subject,
+      tokenType: principal.token_type,
+      claims: principal.claims,
+      email: principal.email,
+      roles: principal.roles,
+    };
+  }
+
+  async function handleJwtLogin(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setLoading(true);
 
     try {
-      const basicToken = btoa(`${username}:${password}`);
-      const res = await fetch("/api/v1/authn/validate", {
-        method: "POST",
-        headers: { Authorization: `Basic ${basicToken}` },
-      });
-
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(body || `Authentication failed (${res.status})`);
-      }
-
-      const data = await res.json().catch(() => ({}));
-      const token = data.token ?? basicToken;
-      const user = {
-        username: data.username ?? username,
-        email: data.email,
-        roles: data.roles,
-      };
-
-      login(token, user);
+      const principal = await authApi.validateToken({ token: jwtToken });
+      login(jwtToken, buildUser(principal));
       router.replace("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      if (err instanceof ApiError && typeof err.detail === "object" && err.detail) {
+        const detail = (err.detail as { detail?: string }).detail;
+        setError(detail ?? err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Login failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -70,27 +68,16 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const res = await fetch("/api/v1/authn/validate", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${patToken}` },
-      });
-
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(body || `Token validation failed (${res.status})`);
-      }
-
-      const data = await res.json().catch(() => ({}));
-      const user = {
-        username: data.username ?? "user",
-        email: data.email,
-        roles: data.roles,
-      };
-
-      login(patToken, user);
+      const principal = await authApi.validateToken({ token: patToken });
+      login(patToken, buildUser(principal));
       router.replace("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      if (err instanceof ApiError && typeof err.detail === "object" && err.detail) {
+        const detail = (err.detail as { detail?: string }).detail;
+        setError(detail ?? err.message);
+      } else {
+        setError(err instanceof Error ? err.message : "Login failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -109,50 +96,39 @@ export default function LoginPage() {
         <CardHeader>
           <CardTitle>Sign in</CardTitle>
           <CardDescription>
-            Choose your preferred authentication method.
+            Validate a JWT or PAT against the access-control service.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Tabs defaultValue="password">
+          <Tabs defaultValue="jwt">
             <TabsList className="mb-4 w-full">
-              <TabsTrigger value="password" className="flex-1">
-                Password Login
+              <TabsTrigger value="jwt" className="flex-1">
+                JWT Token
               </TabsTrigger>
               <TabsTrigger value="pat" className="flex-1">
                 PAT Token
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="password">
-              <form onSubmit={handlePasswordLogin} className="space-y-4">
+            <TabsContent value="jwt">
+              <form onSubmit={handleJwtLogin} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="username">Username</Label>
+                  <Label htmlFor="jwt-token">JWT Token</Label>
                   <Input
-                    id="username"
-                    placeholder="Enter your username"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    required
-                    autoComplete="username"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
-                  <Input
-                    id="password"
+                    id="jwt-token"
                     type="password"
-                    placeholder="Enter your password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Paste a signed JWT"
+                    value={jwtToken}
+                    onChange={(e) => setJwtToken(e.target.value)}
                     required
-                    autoComplete="current-password"
+                    autoComplete="off"
                   />
                 </div>
                 {error && (
                   <p className="text-sm text-destructive">{error}</p>
                 )}
                 <Button type="submit" className="w-full" disabled={loading}>
-                  {loading ? "Signing in…" : "Sign in"}
+                  {loading ? "Validating…" : "Sign in with JWT"}
                 </Button>
               </form>
             </TabsContent>

@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 from apps.access_control.authz.models import PolicyEvaluationRequest, PolicyResponse
@@ -201,11 +201,144 @@ class TestToResponse:
 
 
 class TestCreatePolicy:
-    pass
+    async def test_create_policy_with_commit(self) -> None:
+        """Lines 60-63: commit=True triggers session.commit() then session.refresh()."""
+        mock_session = AsyncMock()
+        mock_session.add = MagicMock()
+
+        # refresh() simulates DB populating id and created_at on the ORM object
+        async def _fake_refresh(obj: Any) -> None:
+            obj.id = uuid4()
+            obj.created_at = datetime.now(UTC)
+
+        mock_session.refresh = AsyncMock(side_effect=_fake_refresh)
+
+        from apps.access_control.authz.models import PolicyCreateRequest
+
+        payload = PolicyCreateRequest(
+            subject_type="user",
+            subject_id="bob",
+            resource_id="svc-2",
+            action_pattern="write_*",
+            risk_threshold=RiskLevel.cautious,
+            decision="deny",
+            created_by="admin",
+        )
+
+        service = AuthzService(mock_session)
+        result = await service.create_policy(payload, commit=True)
+
+        mock_session.add.assert_called_once()
+        mock_session.flush.assert_awaited_once()
+        mock_session.commit.assert_awaited_once()
+        mock_session.refresh.assert_awaited_once()
+        assert isinstance(result, PolicyResponse)
+
+    async def test_create_policy_without_commit(self) -> None:
+        """commit=False should NOT call session.commit(), but still calls flush/refresh."""
+        mock_session = AsyncMock()
+        mock_session.add = MagicMock()
+
+        async def _fake_refresh(obj: Any) -> None:
+            obj.id = uuid4()
+            obj.created_at = datetime.now(UTC)
+
+        mock_session.refresh = AsyncMock(side_effect=_fake_refresh)
+
+        from apps.access_control.authz.models import PolicyCreateRequest
+
+        payload = PolicyCreateRequest(
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action_pattern="*",
+            decision="allow",
+            created_by="admin",
+        )
+
+        service = AuthzService(mock_session)
+        result = await service.create_policy(payload, commit=False)
+
+        mock_session.flush.assert_awaited_once()
+        mock_session.commit.assert_not_awaited()
+        mock_session.refresh.assert_awaited_once()
+        assert isinstance(result, PolicyResponse)
 
 
 class TestListPolicies:
-    pass
+    async def test_filter_by_subject_type(self) -> None:
+        """Line 74: filter by subject_type only."""
+        mock_session = AsyncMock()
+        policies = [_mock_policy(subject_type="user")]
+        mock_scalars_result = MagicMock()
+        mock_scalars_result.all.return_value = policies
+        mock_session.scalars.return_value = mock_scalars_result
+
+        service = AuthzService(mock_session)
+        result = await service.list_policies(subject_type="user")
+
+        assert len(result) == 1
+        assert result[0].subject_type == "user"
+        mock_session.scalars.assert_awaited_once()
+
+    async def test_filter_by_subject_id(self) -> None:
+        """Line 78: filter by subject_id only."""
+        mock_session = AsyncMock()
+        policies = [_mock_policy(subject_id="bob")]
+        mock_scalars_result = MagicMock()
+        mock_scalars_result.all.return_value = policies
+        mock_session.scalars.return_value = mock_scalars_result
+
+        service = AuthzService(mock_session)
+        result = await service.list_policies(subject_id="bob")
+
+        assert len(result) == 1
+        assert result[0].subject_id == "bob"
+
+    async def test_filter_by_resource_id(self) -> None:
+        """Line 81: filter by resource_id only."""
+        mock_session = AsyncMock()
+        policies = [_mock_policy(resource_id="svc-3")]
+        mock_scalars_result = MagicMock()
+        mock_scalars_result.all.return_value = policies
+        mock_session.scalars.return_value = mock_scalars_result
+
+        service = AuthzService(mock_session)
+        result = await service.list_policies(resource_id="svc-3")
+
+        assert len(result) == 1
+        assert result[0].resource_id == "svc-3"
+
+    async def test_filter_combined(self) -> None:
+        """Lines 74, 78, 81: all three filters at once."""
+        mock_session = AsyncMock()
+        policies = [_mock_policy(subject_type="role", subject_id="editor", resource_id="doc-1")]
+        mock_scalars_result = MagicMock()
+        mock_scalars_result.all.return_value = policies
+        mock_session.scalars.return_value = mock_scalars_result
+
+        service = AuthzService(mock_session)
+        result = await service.list_policies(
+            subject_type="role", subject_id="editor", resource_id="doc-1"
+        )
+
+        assert len(result) == 1
+        assert result[0].subject_type == "role"
+        assert result[0].subject_id == "editor"
+        assert result[0].resource_id == "doc-1"
+
+    async def test_no_filters_returns_all(self) -> None:
+        """Line 87: no filters, returns everything from scalars."""
+        mock_session = AsyncMock()
+        policies = [_mock_policy(), _mock_policy(subject_id="bob")]
+        mock_scalars_result = MagicMock()
+        mock_scalars_result.all.return_value = policies
+        mock_session.scalars.return_value = mock_scalars_result
+
+        service = AuthzService(mock_session)
+        result = await service.list_policies()
+
+        assert len(result) == 2
 
 
 class TestGetPolicy:
@@ -306,3 +439,80 @@ class TestEvaluate:
         result = service._matches(policy, req)
 
         assert result is False
+
+    async def test_evaluate_top_match_highest_specificity(self) -> None:
+        """Lines 161-165: multiple matches, returns the highest-specificity one."""
+        # Policy A: wildcard subject → specificity 2+1=3
+        policy_a = _mock_policy(
+            subject_type="user",
+            subject_id="*",
+            resource_id="svc-1",
+            action_pattern="read",
+            risk_threshold="safe",
+            decision="allow",
+        )
+        # Policy B: exact subject → specificity 4+2+1=7
+        policy_b = _mock_policy(
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action_pattern="read",
+            risk_threshold="safe",
+            decision="deny",
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars_result = MagicMock()
+        mock_scalars_result.all.return_value = [policy_a, policy_b]
+        mock_session.scalars.return_value = mock_scalars_result
+
+        service = AuthzService(mock_session)
+        req = _eval_request(
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action="read",
+            risk_level=RiskLevel.safe,
+        )
+        result = await service.evaluate(req)
+
+        assert result.decision == "deny"
+        assert result.matched_policy_id == policy_b.id
+        assert "alice" in result.reason
+
+    async def test_evaluate_same_specificity_picks_higher_decision_priority(self) -> None:
+        """Lines 154-164: tied specificity → higher decision priority wins."""
+        policy_allow = _mock_policy(
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action_pattern="read",
+            risk_threshold="safe",
+            decision="allow",
+        )
+        policy_deny = _mock_policy(
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action_pattern="read",
+            risk_threshold="safe",
+            decision="deny",
+        )
+
+        mock_session = AsyncMock()
+        mock_scalars_result = MagicMock()
+        mock_scalars_result.all.return_value = [policy_allow, policy_deny]
+        mock_session.scalars.return_value = mock_scalars_result
+
+        service = AuthzService(mock_session)
+        req = _eval_request(
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action="read",
+            risk_level=RiskLevel.safe,
+        )
+        result = await service.evaluate(req)
+
+        assert result.decision == "deny"
+        assert result.matched_policy_id == policy_deny.id

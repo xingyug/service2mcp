@@ -317,6 +317,48 @@ async def test_supported_grpc_stream_descriptor_passes_with_native_opt_in() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "expected_fragment"),
+    [
+        (GrpcStreamMode.client, "grpc_stream_mode_client"),
+        (GrpcStreamMode.bidirectional, "grpc_stream_mode_bidirectional"),
+    ],
+)
+async def test_supported_grpc_stream_descriptor_rejects_unimplemented_native_modes(
+    mode: GrpcStreamMode,
+    expected_fragment: str,
+) -> None:
+    ir = _build_ir().model_copy(
+        update={
+            "event_descriptors": [
+                EventDescriptor(
+                    id="watchInventory",
+                    name="watchInventory",
+                    transport=EventTransport.grpc_stream,
+                    support=EventSupportLevel.supported,
+                    operation_id="listItems",
+                    channel="/catalog.v1.InventoryService/WatchInventory",
+                    grpc_stream=GrpcStreamRuntimeConfig(
+                        rpc_path="/catalog.v1.InventoryService/WatchInventory",
+                        mode=mode,
+                    ),
+                )
+            ]
+        }
+    )
+    validator = PreDeployValidator(allow_native_grpc_stream=True)
+
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.overall_passed is False
+    assert report.get_result("event_support").passed is False
+    assert expected_fragment in report.get_result("event_support").details
+
+
+@pytest.mark.asyncio
 async def test_extracted_grpc_ir_with_native_stream_enabled_passes_pre_deploy_validation() -> None:
     service_ir = GrpcProtoExtractor().extract(
         SourceConfig(
@@ -481,3 +523,280 @@ class TestValidationReportAuditSummary:
         )
         data = report.model_dump()
         assert data["audit_summary"]["passed"] == 3
+
+
+# ---------------------------------------------------------------------------
+# ValidationReport.get_result raises KeyError (line 51)
+# ---------------------------------------------------------------------------
+
+
+def test_get_result_raises_key_error_for_missing_stage() -> None:
+    report = ValidationReport(results=[], overall_passed=True)
+    with pytest.raises(KeyError, match="not_a_stage"):
+        report.get_result("not_a_stage")
+
+
+# ---------------------------------------------------------------------------
+# Auth type not none but missing both secret refs (lines 162-173)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_non_none_auth_without_secret_refs_fails() -> None:
+    auth = AuthConfig(type=AuthType.bearer)
+    ir = _build_ir(auth=auth)
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("auth_smoke").passed is False
+    assert "compile_time_secret_ref or runtime_secret_ref" in report.get_result("auth_smoke").details
+
+
+# ---------------------------------------------------------------------------
+# OAuth2 missing token_url (line 203)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_oauth2_without_token_url_fails() -> None:
+    auth = AuthConfig(type=AuthType.oauth2)
+    ir = _build_ir(auth=auth)
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("auth_smoke").passed is False
+    assert "oauth2 auth requires" in report.get_result("auth_smoke").details.lower()
+
+
+# ---------------------------------------------------------------------------
+# OAuth2 with token_url but no oauth2 config and no secret refs (line 214)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_oauth2_with_token_url_but_no_secret_refs_fails() -> None:
+    auth = AuthConfig(
+        type=AuthType.oauth2,
+        oauth2_token_url="https://auth.example.com/token",
+    )
+    ir = _build_ir(auth=auth)
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("auth_smoke").passed is False
+    assert "compile_time_secret_ref or runtime_secret_ref" in report.get_result("auth_smoke").details
+
+
+# ---------------------------------------------------------------------------
+# Token endpoint returns 404 or 500 (line 232)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_token_endpoint_returning_404_fails() -> None:
+    auth = AuthConfig(
+        type=AuthType.oauth2,
+        oauth2=OAuth2ClientCredentialsConfig(
+            token_url="https://auth.example.com/token",
+            client_id_ref="cid",
+            client_secret_ref="csec",
+        ),
+    )
+    ir = _build_ir(auth=auth)
+    respx.get("https://auth.example.com/token").mock(
+        return_value=httpx.Response(404)
+    )
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("auth_smoke").passed is False
+    assert "unhealthy response" in report.get_result("auth_smoke").details.lower()
+    assert "404" in report.get_result("auth_smoke").details
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_token_endpoint_returning_500_fails() -> None:
+    auth = AuthConfig(
+        type=AuthType.oauth2,
+        oauth2=OAuth2ClientCredentialsConfig(
+            token_url="https://auth.example.com/token",
+            client_id_ref="cid",
+            client_secret_ref="csec",
+        ),
+    )
+    ir = _build_ir(auth=auth)
+    respx.get("https://auth.example.com/token").mock(
+        return_value=httpx.Response(500)
+    )
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("auth_smoke").passed is False
+    assert "unhealthy response" in report.get_result("auth_smoke").details.lower()
+    assert "500" in report.get_result("auth_smoke").details
+
+
+# ---------------------------------------------------------------------------
+# Event descriptor with EventSupportLevel.planned (lines 261-262)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_planned_event_descriptor_fails() -> None:
+    ir = _build_ir().model_copy(
+        update={
+            "event_descriptors": [
+                EventDescriptor(
+                    id="futureEvent",
+                    name="futureEvent",
+                    transport=EventTransport.sse,
+                    support=EventSupportLevel.planned,
+                )
+            ]
+        }
+    )
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("event_support").passed is False
+    assert "planned" in report.get_result("event_support").details.lower()
+
+
+# ---------------------------------------------------------------------------
+# gRPC stream descriptor missing operation_id (lines 266-267)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_grpc_stream_missing_operation_id_fails() -> None:
+    ir = _build_ir().model_copy(
+        update={
+            "event_descriptors": [
+                EventDescriptor(
+                    id="streamEvent",
+                    name="streamEvent",
+                    transport=EventTransport.grpc_stream,
+                    support=EventSupportLevel.supported,
+                    grpc_stream=GrpcStreamRuntimeConfig(
+                        rpc_path="/test/Stream",
+                        mode=GrpcStreamMode.server,
+                    ),
+                )
+            ]
+        }
+    )
+    validator = PreDeployValidator(allow_native_grpc_stream=True)
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("event_support").passed is False
+    assert "missing_operation_id" in report.get_result("event_support").details
+
+
+# ---------------------------------------------------------------------------
+# gRPC stream descriptor missing grpc_stream config (lines 269-270)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_grpc_stream_missing_grpc_stream_config_fails() -> None:
+    descriptor = EventDescriptor.model_construct(
+        id="streamEvent",
+        name="streamEvent",
+        transport=EventTransport.grpc_stream,
+        support=EventSupportLevel.supported,
+        operation_id="listItems",
+        channel=None,
+        grpc_stream=None,
+        description=None,
+    )
+    ir = _build_ir().model_copy(update={"event_descriptors": [descriptor]})
+    validator = PreDeployValidator(allow_native_grpc_stream=True)
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("event_support").passed is False
+    assert "missing_grpc_stream" in report.get_result("event_support").details
+
+
+# ---------------------------------------------------------------------------
+# Non-gRPC descriptor with unsupported transport (lines 281-282)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_non_grpc_unsupported_transport_fails() -> None:
+    ir = _build_ir().model_copy(
+        update={
+            "event_descriptors": [
+                EventDescriptor(
+                    id="webhookEvent",
+                    name="webhookEvent",
+                    transport=EventTransport.webhook,
+                    support=EventSupportLevel.supported,
+                    operation_id="listItems",
+                )
+            ]
+        }
+    )
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("event_support").passed is False
+    assert "webhook" in report.get_result("event_support").details.lower()
+
+
+# ---------------------------------------------------------------------------
+# SSE/WebSocket descriptor missing operation_id (lines 284-285)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sse_descriptor_missing_operation_id_fails() -> None:
+    ir = _build_ir().model_copy(
+        update={
+            "event_descriptors": [
+                EventDescriptor(
+                    id="streamEvent",
+                    name="streamEvent",
+                    transport=EventTransport.sse,
+                    support=EventSupportLevel.supported,
+                )
+            ]
+        }
+    )
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("event_support").passed is False
+    assert "missing_operation_id" in report.get_result("event_support").details

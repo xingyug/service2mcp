@@ -15,26 +15,11 @@ const STAGES: { key: CompilationStage; label: string }[] = [
   { key: "enhance", label: "Enhance" },
   { key: "validate_ir", label: "Validate IR" },
   { key: "generate", label: "Generate" },
-  { key: "build", label: "Build" },
   { key: "deploy", label: "Deploy" },
   { key: "validate_runtime", label: "Validate Runtime" },
   { key: "route", label: "Route" },
   { key: "register", label: "Register" },
 ];
-
-/** Map a CompilationStatus to the stage that is currently executing. */
-const statusToActiveStage: Partial<Record<CompilationStatus, CompilationStage>> = {
-  DETECTING: "detect",
-  EXTRACTING: "extract",
-  ENHANCING: "enhance",
-  VALIDATING_IR: "validate_ir",
-  GENERATING: "generate",
-  BUILDING: "build",
-  DEPLOYING: "deploy",
-  VALIDATING_RUNTIME: "validate_runtime",
-  ROUTING: "route",
-  REGISTERING: "register",
-};
 
 type StageState = "completed" | "active" | "failed" | "pending";
 
@@ -45,16 +30,26 @@ function getStageState(
   failedStage?: CompilationStage,
 ): StageState {
   const stageIndex = STAGES.findIndex((s) => s.key === stageKey);
-  const activeStage = statusToActiveStage[status] ?? currentStage;
-  const activeIndex = activeStage
-    ? STAGES.findIndex((s) => s.key === activeStage)
-    : -1;
-
-  if (failedStage === stageKey && (status === "FAILED" || status === "ROLLING_BACK" || status === "ROLLED_BACK")) {
-    return "failed";
+  if (status === "succeeded") {
+    return "completed";
   }
 
-  if (status === "PUBLISHED") return "completed";
+  if (
+    failedStage &&
+    (status === "failed" || status === "rolled_back")
+  ) {
+    const failedIndex = STAGES.findIndex((s) => s.key === failedStage);
+    if (stageIndex < failedIndex) {
+      return "completed";
+    }
+    if (stageKey === failedStage) {
+      return "failed";
+    }
+    return "pending";
+  }
+
+  const activeStage = currentStage;
+  const activeIndex = activeStage ? STAGES.findIndex((s) => s.key === activeStage) : -1;
 
   if (activeIndex >= 0) {
     if (stageIndex < activeIndex) return "completed";

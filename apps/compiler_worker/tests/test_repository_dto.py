@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from apps.compiler_worker.models import (
     CompilationEventType,
     CompilationStage,
@@ -104,3 +106,84 @@ class TestToEventRecord:
         record = _store._to_event_record(event)  # type: ignore[arg-type]
         assert record.event_type == CompilationEventType.STAGE_FAILED
         assert record.error_detail == "something broke"
+
+
+class TestCreateJobIntegrityError:
+    """Test that create_job() handles IntegrityError by rolling back and re-raising."""
+
+    @pytest.mark.asyncio
+    async def test_create_job_integrity_error_no_allow_existing(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from sqlalchemy.exc import IntegrityError
+
+        from apps.compiler_worker.models import CompilationRequest
+
+        request = CompilationRequest(
+            service_name="test-svc",
+            source_url="https://example.com/api.yaml",
+            source_hash="sha256:abc",
+        )
+
+        fake_session = AsyncMock()
+        fake_session.get = AsyncMock(return_value=None)
+        fake_session.add = MagicMock()
+        fake_session.commit = AsyncMock(
+            side_effect=IntegrityError("dup", params=None, orig=Exception("duplicate key"))
+        )
+        fake_session.rollback = AsyncMock()
+
+        # Build an async context manager that yields fake_session
+        async_ctx = AsyncMock()
+        async_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+        async_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        fake_factory = MagicMock(return_value=async_ctx)
+
+        store = SQLAlchemyCompilationJobStore(session_factory=fake_factory)
+
+        with pytest.raises(IntegrityError):
+            await store.create_job(request)
+
+        fake_session.rollback.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_job_integrity_error_allow_existing_returns_id(self) -> None:
+        """When allow_existing=True and job exists after rollback, return its id."""
+        import uuid as _uuid
+        from unittest.mock import AsyncMock, MagicMock
+
+        from sqlalchemy.exc import IntegrityError
+
+        from apps.compiler_worker.models import CompilationRequest
+
+        job_id = _uuid.uuid4()
+        request = CompilationRequest(
+            service_name="test-svc",
+            source_url="https://example.com/api.yaml",
+            source_hash="sha256:abc",
+            job_id=job_id,
+        )
+
+        existing_job = SimpleNamespace(id=job_id)
+
+        fake_session = AsyncMock()
+        # First get() returns None (pre-insert check), second returns existing_job (post-rollback)
+        fake_session.get = AsyncMock(side_effect=[None, existing_job])
+        fake_session.add = MagicMock()
+        fake_session.commit = AsyncMock(
+            side_effect=IntegrityError("dup", params=None, orig=Exception("duplicate key"))
+        )
+        fake_session.rollback = AsyncMock()
+
+        async_ctx = AsyncMock()
+        async_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+        async_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        fake_factory = MagicMock(return_value=async_ctx)
+
+        store = SQLAlchemyCompilationJobStore(session_factory=fake_factory)
+
+        result = await store.create_job(request)
+        assert result == job_id
+        fake_session.rollback.assert_awaited_once()

@@ -9,7 +9,7 @@ import json
 import os
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -58,8 +58,9 @@ class AuthnService:
         username: str,
         name: str,
         email: str | None = None,
+        commit: bool = True,
     ) -> PATCreateResponse:
-        user = await self._get_or_create_user(username=username, email=email)
+        user = await self._get_or_create_user(username=username, email=email, commit=commit)
         plaintext_token = _generate_pat()
         record = PersonalAccessToken(
             user_id=user.id,
@@ -67,7 +68,9 @@ class AuthnService:
             name=name,
         )
         self._session.add(record)
-        await self._session.commit()
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
         await self._session.refresh(record)
         return PATCreateResponse(
             id=record.id,
@@ -97,7 +100,33 @@ class AuthnService:
             for pat, user in result.all()
         ]
 
-    async def revoke_pat(self, pat_id: UUID) -> PATResponse | None:
+    async def get_pat(self, pat_id: UUID) -> PATResponse | None:
+        """Return PAT metadata by ID without mutating it."""
+
+        result = await self._session.execute(
+            select(PersonalAccessToken, User)
+            .join(User, PersonalAccessToken.user_id == User.id)
+            .where(PersonalAccessToken.id == pat_id)
+        )
+        row = result.first()
+        if row is None:
+            return None
+
+        pat, user = row
+        return PATResponse(
+            id=pat.id,
+            username=user.username,
+            name=pat.name,
+            created_at=pat.created_at,
+            revoked_at=pat.revoked_at,
+        )
+
+    async def revoke_pat(
+        self,
+        pat_id: UUID,
+        *,
+        commit: bool = True,
+    ) -> PATResponse | None:
         result = await self._session.execute(
             select(PersonalAccessToken, User)
             .join(User, PersonalAccessToken.user_id == User.id)
@@ -110,7 +139,9 @@ class AuthnService:
         pat, user = row
         if pat.revoked_at is None:
             pat.revoked_at = datetime.now(UTC)
-            await self._session.commit()
+            await self._session.flush()
+            if commit:
+                await self._session.commit()
             await self._session.refresh(pat)
 
         return PATResponse(
@@ -204,19 +235,29 @@ class AuthnService:
             claims=claims,
         )
 
-    async def _get_or_create_user(self, *, username: str, email: str | None) -> User:
+    async def _get_or_create_user(
+        self,
+        *,
+        username: str,
+        email: str | None,
+        commit: bool = True,
+    ) -> User:
         result = await self._session.execute(select(User).where(User.username == username))
         user = result.scalar_one_or_none()
         if user is not None:
             if email and user.email != email:
                 user.email = email
-                await self._session.commit()
+                await self._session.flush()
+                if commit:
+                    await self._session.commit()
                 await self._session.refresh(user)
             return user
 
         user = User(username=username, email=email)
         self._session.add(user)
-        await self._session.commit()
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
         await self._session.refresh(user)
         return user
 
@@ -235,6 +276,39 @@ def load_jwt_settings() -> JWTSettings:
     return JWTSettings(secret=secret, issuer=issuer, audience=audience)
 
 
+def build_service_jwt(
+    *,
+    subject: str = "tool-compiler-control-plane",
+    roles: list[str] | None = None,
+    jwt_settings: JWTSettings | None = None,
+    lifetime_seconds: int = 300,
+) -> str:
+    """Mint a short-lived HS256 JWT for internal control-plane calls."""
+
+    settings = jwt_settings or load_jwt_settings()
+    now = datetime.now(UTC)
+    claims: dict[str, object] = {
+        "sub": subject,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=lifetime_seconds)).timestamp()),
+        "roles": roles or ["admin"],
+    }
+    if settings.issuer is not None:
+        claims["iss"] = settings.issuer
+    if settings.audience is not None:
+        claims["aud"] = settings.audience
+
+    header_segment = _b64encode_json({"alg": "HS256", "typ": "JWT"})
+    payload_segment = _b64encode_json(claims)
+    signature = hmac.new(
+        settings.secret.encode("utf-8"),
+        f"{header_segment}.{payload_segment}".encode(),
+        hashlib.sha256,
+    ).digest()
+    signature_segment = base64.urlsafe_b64encode(signature).decode("utf-8").rstrip("=")
+    return f"{header_segment}.{payload_segment}.{signature_segment}"
+
+
 def _generate_pat() -> str:
     return f"{_PAT_PREFIX}{secrets.token_urlsafe(32)}"
 
@@ -251,6 +325,16 @@ def hash_token_value(token: str) -> str:
 
 def _b64decode_json(segment: str) -> str:
     return _b64decode_bytes(segment).decode("utf-8")
+
+
+def _b64encode_json(payload: dict[str, object]) -> str:
+    return (
+        base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        )
+        .decode("utf-8")
+        .rstrip("=")
+    )
 
 
 def _b64decode_bytes(segment: str) -> bytes:

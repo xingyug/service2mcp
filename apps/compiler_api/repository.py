@@ -73,6 +73,12 @@ class CompilationRepository:
             return None
         return self._to_job_response(job)
 
+    async def list_jobs(self, *, limit: int = 1000) -> list[CompilationJobResponse]:
+        result = await self._session.scalars(
+            select(CompilationJob).order_by(desc(CompilationJob.created_at)).limit(limit)
+        )
+        return [self._to_job_response(job) for job in result.all()]
+
     async def list_events(
         self,
         job_id: UUID,
@@ -143,6 +149,31 @@ class ServiceCatalogRepository:
             services=[self._to_service_summary(version) for version in versions]
         )
 
+    async def get_service(
+        self,
+        service_id: str,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
+    ) -> ServiceSummaryResponse | None:
+        query = (
+            select(ServiceVersion)
+            .where(ServiceVersion.is_active.is_(True))
+            .where(ServiceVersion.service_id == service_id)
+        )
+        if tenant is not None:
+            query = query.where(ServiceVersion.tenant == tenant)
+        if environment is not None:
+            query = query.where(ServiceVersion.environment == environment)
+
+        version = cast(
+            ServiceVersion | None,
+            await self._session.scalar(query.limit(1)),
+        )
+        if version is None:
+            return None
+        return self._to_service_summary(version)
+
     @staticmethod
     def _to_service_summary(version: ServiceVersion) -> ServiceSummaryResponse:
         service_ir = ServiceIR.model_validate(version.ir_json)
@@ -167,14 +198,22 @@ class ArtifactRegistryRepository:
         self._session = session
 
     async def create_version(self, payload: ArtifactVersionCreate) -> ArtifactVersionResponse:
-        existing_versions = await self.list_versions(payload.service_id)
+        existing_versions = await self.list_versions(
+            payload.service_id,
+            tenant=payload.tenant,
+            environment=payload.environment,
+        )
         if payload.is_active is not None:
             is_active = payload.is_active
         else:
             is_active = not existing_versions.versions
 
         if is_active:
-            await self._deactivate_service_versions(payload.service_id)
+            await self._deactivate_service_versions(
+                payload.service_id,
+                tenant=payload.tenant,
+                environment=payload.environment,
+            )
 
         version = ServiceVersion(
             service_id=payload.service_id,
@@ -253,8 +292,16 @@ class ArtifactRegistryRepository:
         service_id: str,
         version_number: int,
         payload: ArtifactVersionUpdate,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
     ) -> ArtifactVersionResponse | None:
-        record = await self._get_version_record(service_id, version_number)
+        record = await self._get_version_record(
+            service_id,
+            version_number,
+            tenant=tenant,
+            environment=environment,
+        )
         if record is None:
             return None
 
@@ -291,37 +338,87 @@ class ArtifactRegistryRepository:
         self,
         service_id: str,
         version_number: int,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
+        commit: bool = True,
     ) -> ArtifactVersionResponse | None:
-        record = await self._get_version_record(service_id, version_number)
+        record = await self._get_version_record(
+            service_id,
+            version_number,
+            tenant=tenant,
+            environment=environment,
+        )
         if record is None:
             return None
 
-        await self._deactivate_service_versions(service_id)
+        await self._deactivate_service_versions(
+            service_id,
+            tenant=record.tenant,
+            environment=record.environment,
+        )
         record.is_active = True
-        await self._session.commit()
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
         await self._session.refresh(record)
         return self._to_response(record)
 
-    async def delete_version(self, service_id: str, version_number: int) -> bool:
-        record = await self._get_version_record(service_id, version_number)
+    async def delete_version(
+        self,
+        service_id: str,
+        version_number: int,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
+        commit: bool = True,
+    ) -> bool:
+        record = await self._get_version_record(
+            service_id,
+            version_number,
+            tenant=tenant,
+            environment=environment,
+        )
         if record is None:
             return False
 
         was_active = record.is_active
+        record_tenant = record.tenant
+        record_environment = record.environment
         await self._session.delete(record)
         await self._session.flush()
 
         if was_active:
-            replacement = await self._session.scalar(
+            replacement_query = (
                 select(ServiceVersion)
                 .where(ServiceVersion.service_id == service_id)
+            )
+            if record_tenant is not None:
+                replacement_query = replacement_query.where(
+                    ServiceVersion.tenant == record_tenant,
+                )
+            else:
+                replacement_query = replacement_query.where(
+                    ServiceVersion.tenant.is_(None),
+                )
+            if record_environment is not None:
+                replacement_query = replacement_query.where(
+                    ServiceVersion.environment == record_environment,
+                )
+            else:
+                replacement_query = replacement_query.where(
+                    ServiceVersion.environment.is_(None),
+                )
+            replacement = await self._session.scalar(
+                replacement_query
                 .order_by(desc(ServiceVersion.version_number))
                 .limit(1)
             )
             if replacement is not None:
                 replacement.is_active = True
 
-        await self._session.commit()
+        if commit:
+            await self._session.commit()
         return True
 
     async def diff_versions(
@@ -372,19 +469,41 @@ class ArtifactRegistryRepository:
             ],
         )
 
-    async def _deactivate_service_versions(self, service_id: str) -> None:
+    async def _deactivate_service_versions(
+        self,
+        service_id: str,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
+    ) -> None:
         # Lock active versions first to prevent concurrent activation race
-        await self._session.scalars(
+        lock_query = (
             select(ServiceVersion.id)
             .where(ServiceVersion.service_id == service_id)
             .where(ServiceVersion.is_active.is_(True))
-            .with_for_update()
         )
-        await self._session.execute(
+        deactivate_query = (
             update(ServiceVersion)
             .where(ServiceVersion.service_id == service_id)
-            .values(is_active=False)
         )
+        if tenant is not None:
+            lock_query = lock_query.where(ServiceVersion.tenant == tenant)
+            deactivate_query = deactivate_query.where(ServiceVersion.tenant == tenant)
+        else:
+            lock_query = lock_query.where(ServiceVersion.tenant.is_(None))
+            deactivate_query = deactivate_query.where(ServiceVersion.tenant.is_(None))
+        if environment is not None:
+            lock_query = lock_query.where(ServiceVersion.environment == environment)
+            deactivate_query = deactivate_query.where(
+                ServiceVersion.environment == environment,
+            )
+        else:
+            lock_query = lock_query.where(ServiceVersion.environment.is_(None))
+            deactivate_query = deactivate_query.where(
+                ServiceVersion.environment.is_(None),
+            )
+        await self._session.scalars(lock_query.with_for_update())
+        await self._session.execute(deactivate_query.values(is_active=False))
 
     async def _get_version_record(
         self,

@@ -1,21 +1,11 @@
 // === Compilation Types ===
 
 export type CompilationStatus =
-  | "PENDING"
-  | "DETECTING"
-  | "EXTRACTING"
-  | "ENHANCING"
-  | "VALIDATING_IR"
-  | "GENERATING"
-  | "BUILDING"
-  | "DEPLOYING"
-  | "VALIDATING_RUNTIME"
-  | "ROUTING"
-  | "REGISTERING"
-  | "PUBLISHED"
-  | "FAILED"
-  | "ROLLING_BACK"
-  | "ROLLED_BACK";
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "rolled_back";
 
 export type CompilationStage =
   | "detect"
@@ -23,7 +13,6 @@ export type CompilationStage =
   | "enhance"
   | "validate_ir"
   | "generate"
-  | "build"
   | "deploy"
   | "validate_runtime"
   | "route"
@@ -33,9 +22,14 @@ export type CompilationEventType =
   | "stage_started"
   | "stage_completed"
   | "stage_failed"
+  | "stage_retrying"
   | "job_started"
   | "job_completed"
-  | "job_failed";
+  | "job_failed"
+  | "job_rolled_back"
+  | "rollback_started"
+  | "rollback_succeeded"
+  | "rollback_failed";
 
 export interface CompilationCreateRequest {
   source_url?: string;
@@ -43,11 +37,19 @@ export interface CompilationCreateRequest {
   created_by: string;
   service_name?: string;
   options?: CompilationOptions;
-  auth_config?: AuthConfig;
 }
 
 export interface CompilationOptions {
-  force_protocol?: "openapi" | "rest" | "graphql" | "sql" | "grpc" | "soap";
+  force_protocol?:
+    | "openapi"
+    | "rest"
+    | "graphql"
+    | "sql"
+    | "grpc"
+    | "jsonrpc"
+    | "odata"
+    | "scim"
+    | "soap";
   runtime_mode?: "generic" | "codegen";
   skip_enhancement?: boolean;
   tenant?: string;
@@ -57,6 +59,7 @@ export interface CompilationOptions {
 export interface CompilationJobResponse {
   job_id: string;
   status: CompilationStatus;
+  protocol?: string;
   current_stage?: CompilationStage;
   failed_stage?: CompilationStage;
   progress_pct?: number;
@@ -84,6 +87,7 @@ export interface ServiceSummary {
   service_id: string;
   name: string;
   protocol: string;
+  tool_count?: number;
   active_version?: number;
   version_count: number;
   last_compiled?: string;
@@ -227,11 +231,11 @@ export interface TokenValidationRequest {
 
 export interface TokenPrincipal {
   subject: string;
-  issuer: string;
-  audience: string;
+  token_type: string;
+  claims: Record<string, unknown>;
+  username: string;
   email?: string;
   roles?: string[];
-  expires_at?: string;
 }
 
 export interface PATCreateRequest {
@@ -294,6 +298,7 @@ export interface PolicyEvaluationRequest {
   subject_id: string;
   action: string;
   resource_id: string;
+  risk_level?: RiskLevel;
 }
 
 export interface PolicyEvaluationResponse {
@@ -320,19 +325,40 @@ export interface AuditLogListResponse {
 // === Gateway Types ===
 
 export interface ReconcileResponse {
-  synced: number;
-  deleted: number;
-  errors: number;
+  consumers_synced: number;
+  consumers_deleted: number;
+  policy_bindings_synced: number;
+  policy_bindings_deleted: number;
+  service_routes_synced: number;
+  service_routes_deleted: number;
+}
+
+export interface GatewayRouteDocument {
+  route_id: string;
+  route_type: "default" | "version";
+  service_id: string;
+  service_name: string;
+  namespace: string;
+  target_service: Record<string, unknown>;
+  version_number?: number;
+  switch_strategy?: string;
+  match?: Record<string, unknown>;
+}
+
+export type GatewayPreviousRoutes = Record<string, GatewayRouteDocument>;
+
+export interface GatewayRouteListResponse {
+  routes: GatewayRouteDocument[];
 }
 
 export interface ServiceRouteRequest {
-  service_id: string;
-  version_number: number;
   route_config: Record<string, unknown>;
+  previous_routes?: GatewayPreviousRoutes;
 }
 
 export interface ServiceRouteResponse {
-  service_id: string;
-  status: string;
-  message?: string;
+  route_ids: string[];
+  service_routes_synced: number;
+  service_routes_deleted: number;
+  previous_routes: GatewayPreviousRoutes;
 }

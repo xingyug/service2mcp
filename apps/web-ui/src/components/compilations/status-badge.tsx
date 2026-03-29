@@ -1,70 +1,30 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { formatCompilationStatus } from "@/lib/compilation-status";
 import type { CompilationStatus } from "@/types/api";
 
 const statusConfig: Record<
   CompilationStatus,
   { label: string; className: string }
 > = {
-  PENDING: {
+  pending: {
     label: "Pending",
     className: "bg-muted text-muted-foreground",
   },
-  DETECTING: {
-    label: "Detecting",
+  running: {
+    label: "Running",
     className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
   },
-  EXTRACTING: {
-    label: "Extracting",
-    className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  },
-  ENHANCING: {
-    label: "Enhancing",
-    className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  },
-  VALIDATING_IR: {
-    label: "Validating IR",
-    className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  },
-  GENERATING: {
-    label: "Generating",
-    className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  },
-  BUILDING: {
-    label: "Building",
-    className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  },
-  DEPLOYING: {
-    label: "Deploying",
-    className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  },
-  VALIDATING_RUNTIME: {
-    label: "Validating Runtime",
-    className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  },
-  ROUTING: {
-    label: "Routing",
-    className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  },
-  REGISTERING: {
-    label: "Registering",
-    className: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300",
-  },
-  PUBLISHED: {
-    label: "Published",
+  succeeded: {
+    label: "Succeeded",
     className: "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
   },
-  FAILED: {
+  failed: {
     label: "Failed",
     className: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
   },
-  ROLLING_BACK: {
-    label: "Rolling Back",
-    className:
-      "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300",
-  },
-  ROLLED_BACK: {
+  rolled_back: {
     label: "Rolled Back",
     className:
       "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300",
@@ -78,7 +38,10 @@ export function StatusBadge({
   status: CompilationStatus;
   className?: string;
 }) {
-  const config = statusConfig[status];
+  const config = statusConfig[status] ?? {
+    label: formatCompilationStatus(status),
+    className: "bg-muted text-muted-foreground",
+  };
   return (
     <span
       className={cn(

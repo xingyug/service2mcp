@@ -115,6 +115,10 @@ class GatewayBindingService:
             "previous_routes": {},
         }
 
+    async def list_service_routes(self) -> list[dict[str, Any]]:
+        routes = await self._client.list_routes()
+        return [routes[route_id].document for route_id in sorted(routes)]
+
     async def reconcile(self, session: AsyncSession) -> dict[str, int]:
         active_pat_rows = await session.execute(
             select(PersonalAccessToken, User)

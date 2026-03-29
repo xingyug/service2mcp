@@ -19,8 +19,9 @@ import {
   useRetryCompilation,
   useRollbackCompilation,
 } from "@/hooks/use-api";
+import { isCompilationInProgress } from "@/lib/compilation-status";
 import { useCompilationEvents } from "@/lib/hooks/use-sse";
-import type { CompilationStage, CompilationStatus } from "@/types/api";
+import type { CompilationStage } from "@/types/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,21 +32,6 @@ import { StageTimeline } from "@/components/compilations/stage-timeline";
 import { EventLog } from "@/components/compilations/event-log";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-const IN_PROGRESS: Set<CompilationStatus> = new Set([
-  "PENDING",
-  "DETECTING",
-  "EXTRACTING",
-  "ENHANCING",
-  "VALIDATING_IR",
-  "GENERATING",
-  "BUILDING",
-  "DEPLOYING",
-  "VALIDATING_RUNTIME",
-  "ROUTING",
-  "REGISTERING",
-  "ROLLING_BACK",
-]);
 
 function formatDate(iso?: string) {
   if (!iso) return "—";
@@ -82,16 +68,13 @@ export default function CompilationDetailPage({
     CompilationStage | undefined
   >();
 
-  const isRunning = (status?: CompilationStatus) =>
-    status ? IN_PROGRESS.has(status) : false;
-
   const { data: job, isLoading } = useCompilation(jobId, {
     refetchInterval: (query) =>
-      isRunning(query.state.data?.status) ? 5_000 : false,
+      isCompilationInProgress(query.state.data?.status) ? 5_000 : false,
   });
 
   const { events, isConnected, error: sseError } = useCompilationEvents(
-    job && isRunning(job.status) ? jobId : null,
+    job && isCompilationInProgress(job.status) ? jobId : null,
   );
 
   const retryMutation = useRetryCompilation();
@@ -181,7 +164,7 @@ export default function CompilationDetailPage({
         </div>
 
         <div className="flex gap-2">
-          {job.status === "FAILED" && (
+          {job.status === "failed" && (
             <Button
               size="sm"
               variant="outline"
@@ -192,7 +175,7 @@ export default function CompilationDetailPage({
               Retry{job.failed_stage ? ` from ${job.failed_stage}` : ""}
             </Button>
           )}
-          {job.status === "PUBLISHED" && (
+          {job.status === "succeeded" && (
             <Button
               size="sm"
               variant="destructive"
@@ -254,7 +237,7 @@ export default function CompilationDetailPage({
       </Card>
 
       {/* ── Error Section ───────────────────────────────────────────────── */}
-      {job.status === "FAILED" && job.error_message && (
+      {job.status === "failed" && job.error_message && (
         <Card className="border-red-200 dark:border-red-900/40">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-red-600 dark:text-red-400">
@@ -287,7 +270,7 @@ export default function CompilationDetailPage({
       )}
 
       {/* ── Artifacts Section ───────────────────────────────────────────── */}
-      {job.status === "PUBLISHED" && job.artifacts && (
+      {job.status === "succeeded" && job.artifacts && (
         <Card>
           <CardHeader>
             <CardTitle>Artifacts</CardTitle>

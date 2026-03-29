@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Upload, AlertCircle } from "lucide-react";
@@ -125,42 +125,6 @@ function deriveServiceName(url: string): string {
   }
 }
 
-function buildAuthConfig(form: WizardFormData): AuthConfig | undefined {
-  switch (form.authType) {
-    case "none":
-      return undefined;
-    case "bearer":
-      return { type: "bearer", runtime_secret_ref: form.bearerSecretRef };
-    case "basic":
-      return {
-        type: "basic",
-        username: form.basicUsername,
-        password_secret_ref: form.basicPasswordRef,
-      };
-    case "api_key":
-      return {
-        type: "api_key",
-        header_name: form.apiKeyHeaderName,
-        runtime_secret_ref: form.apiKeySecretRef,
-      };
-    case "custom_header":
-      return {
-        type: "custom_header",
-        header_name: form.customHeaderName,
-        runtime_secret_ref: form.customHeaderValueRef,
-      };
-    case "oauth2":
-      return {
-        type: "oauth2",
-        token_url: form.oauth2TokenUrl,
-        client_id: form.oauth2ClientId,
-        client_secret_ref: form.oauth2ClientSecretRef,
-      };
-    default:
-      return undefined;
-  }
-}
-
 function buildRequest(form: WizardFormData): CompilationCreateRequest {
   const options: CompilationOptions = {
     runtime_mode: form.runtimeMode,
@@ -186,9 +150,6 @@ function buildRequest(form: WizardFormData): CompilationCreateRequest {
   }
 
   if (form.serviceName) req.service_name = form.serviceName;
-
-  const authConfig = buildAuthConfig(form);
-  if (authConfig) req.auth_config = authConfig;
 
   return req;
 }
@@ -246,7 +207,11 @@ function validateStep(step: number, form: WizardFormData): string | null {
 // Main Wizard
 // ---------------------------------------------------------------------------
 
-export function CompilationWizard() {
+export function CompilationWizard({
+  initialServiceName = "",
+}: {
+  initialServiceName?: string;
+}) {
   const router = useRouter();
   const username = useAuthStore((s) => s.user?.username ?? "");
   const createMutation = useCreateCompilation();
@@ -255,8 +220,18 @@ export function CompilationWizard() {
   const [form, setForm] = useState<WizardFormData>(() => ({
     ...INITIAL_FORM_DATA,
     createdBy: username || INITIAL_FORM_DATA.createdBy,
+    serviceName: initialServiceName || INITIAL_FORM_DATA.serviceName,
   }));
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!initialServiceName) {
+      return;
+    }
+    setForm((prev) =>
+      prev.serviceName.trim() ? prev : { ...prev, serviceName: initialServiceName },
+    );
+  }, [initialServiceName]);
 
   const updateField = useCallback(
     <K extends keyof WizardFormData>(field: K, value: WizardFormData[K]) => {

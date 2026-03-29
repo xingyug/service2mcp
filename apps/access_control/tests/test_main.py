@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from apps.access_control.main import (
     app_lifespan,
@@ -126,7 +127,9 @@ class TestHealthEndpoints:
                     and hasattr(route, "endpoint")
                 ):
                     result = await route.endpoint(session=mock_session)
-                    assert result == {"status": "not_ready"}
+                    assert isinstance(result, JSONResponse)
+                    assert result.status_code == 503
+                    assert result.body == b'{"status":"not_ready"}'
 
                     # Verify warning was logged
                     mock_logger.warning.assert_called_once()

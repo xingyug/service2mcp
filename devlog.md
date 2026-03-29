@@ -3607,3 +3607,154 @@ This is the core tension: Tool Compiler's value is automatic API → MCP compila
 ### Cleanup
 
 - `tool-compiler-v2-test-targets/scripts/smoke-gke-llm-e2e.sh` — Old 5-protocol script confirmed deletable by user; superseded by `tool-compiler-v2/scripts/smoke-gke-llm-e2e.sh` with 9-protocol real-target support.
+
+---
+
+## 2026-03-29 — Live Coverage Review Of The 11 Real-Target MCP Servers
+
+### Objective
+
+Audit the currently deployed `realr24all` MCP runtimes in place instead of compiling a fresh matrix: verify that each live runtime is callable, and measure how closely each runtime's tool set matches the actual upstream service surface.
+
+### Cluster State
+
+- Cleaned GKE down to one live set only: `tool-compiler-llm-e2e` now keeps the core control-plane deployments plus the 11 `*-realr24all-v1` MCP runtimes.
+- Deleted stale `realr*` jobs, deployments, services, configmaps, networkpolicies, and the older proof namespaces so the audit target is unambiguous.
+
+### Method
+
+- Queried each live runtime's `/tools` endpoint from inside `deployment/tool-compiler-compiler-api`.
+- Re-invoked one representative tool per runtime against the live upstream service.
+- Compared tool counts against protocol-native discovery where available:
+  - GraphQL introspection for Directus GraphQL
+  - authenticated OpenAPI operation counts for Directus OpenAPI
+  - Swagger operation counts for Gitea
+  - JSON-RPC `system.listMethods` for aria2
+  - gRPC reflection for OpenFGA
+  - OData `$metadata` for NorthBreeze
+  - WSDL operation list for SOAP CXF
+  - live SCIM endpoint probing plus `deploy/k8s/real-targets/README.md` for Jackson
+
+### Findings
+
+| Service | Protocol | MCP tools | Upstream live surface | Coverage judgment | Representative live call |
+|---------|----------|-----------|-----------------------|-------------------|--------------------------|
+| Directus GraphQL | graphql | 33 | 33 authenticated root query/mutation fields | ✅ Exact full | `products` → `200` |
+| Directus REST | rest | 2 | Full Directus REST API is much larger; current `source_url` is only `/items/products` | ⚠️ Partial, collection-scoped only | `get_product_id` → `200` |
+| Directus OpenAPI | openapi | 154 | 154 authenticated OpenAPI operations | ✅ Exact full | `readItemsProducts` → `200` |
+| Gitea OpenAPI | openapi | 406 | 406 Swagger operations | ✅ Exact full | `repoSearch` → `200` |
+| aria2 | jsonrpc | 3 | `system.listMethods` returned 36 methods | 🔴 Partial (`3 / 36`) | `aria2_getVersion` → `200` |
+| OpenFGA | grpc | 1 | Reflection exposed 19 OpenFGA service RPCs (`21` including gRPC health) | 🔴 Partial (`1 / 19`) | `ListStores` → `ok` |
+| NorthBreeze | odata | 17 | `$metadata`: 3 `EntitySet` + 1 `FunctionImport` + 1 `ActionImport` | ✅ Semantic full (`3*5 + 1 + 1 = 17`) | `list_products` → `200` |
+| PocketBase REST | rest | 2 | Full PocketBase API is much larger; current `source_url` is only `/api/collections/products/records` | ⚠️ Partial, collection-scoped only | `get_record_id` → `200` |
+| Jackson SCIM | scim | 10 | Current tenant base returns `200` for `/Users` and `/Groups`, but `404` for `/ServiceProviderConfig`, `/Schemas`, `/ResourceTypes` | ⚠️ High for visible live surface, not strict 1:1 endpoint parity | `list_users` → `200` |
+| SOAP CXF | soap | 3 | WSDL exposes exactly 3 operations | ✅ Exact full | `GetOrderStatus` → `200` |
+| PostgreSQL | sql | 22 | Rich schema exists, but generated tools are query/insert oriented rather than full DML coverage | ⚠️ Partial database capability coverage | `query_categories` → `ok` |
+
+### Important Nuance
+
+- All 11 live runtimes are usable: one representative tool invocation succeeded for every runtime.
+- That does **not** mean every generated tool has already been live-invoked. The green `realr24all` proof audited the safe subset only: **124 passed / 0 failed / 529 skipped / 653 generated**.
+- The large skip counts are expected policy behavior on mutation-heavy services:
+  - Directus OpenAPI: `33 passed / 121 skipped / 154 generated`
+  - Gitea OpenAPI: `49 passed / 357 skipped / 406 generated`
+  - Jackson SCIM: `2 passed / 8 skipped / 10 generated`
+  - SOAP CXF: `1 passed / 2 skipped / 3 generated`
+
+### Conclusions
+
+- The strongest protocol classes are now proven both structurally and behaviorally on live services: GraphQL, OpenAPI, OData, and SOAP.
+- The main remaining coverage gaps are no longer runtime correctness bugs; they are extractor/discovery scope gaps:
+  - REST runs are still constrained by narrow collection-level entry points.
+  - aria2 still lacks `system.listMethods` auto-discovery.
+  - OpenFGA still lacks reflection-driven RPC extraction.
+  - SQL still does not generate full UPDATE/DELETE coverage.
+- Jackson SCIM is narrower than the standard SCIM 2.0 discovery model in this deployment. The generated 10 tools cover the visible Users/Groups provisioning surface, but this should not be described as fully proving every possible SCIM endpoint variant.
+
+---
+
+## 2026-03-29 — Planned Track B-010: Real-Target Full Endpoint Coverage
+
+### Objective
+
+Define the next execution track after the green `realr24all` baseline: close the remaining gap between "all 11 runtimes are usable" and "the generated tools cover the full visible upstream surface of each real-target service."
+
+### Why this is the next track
+
+- The current platform is already green on runtime correctness for the non-LLM matrix: `11 / 11 passed`.
+- The remaining confidence gap is now mostly structural coverage, not basic runtime execution.
+- That gap is uneven by protocol:
+  - Already exact or near-exact: Directus GraphQL, Directus OpenAPI, Gitea OpenAPI, NorthBreeze OData, SOAP CXF
+  - Still structurally short: Directus REST, PocketBase REST, aria2 JSON-RPC, OpenFGA gRPC, PostgreSQL SQL
+  - Needs a deployment-aware parity definition: Jackson SCIM
+
+### Plan spec
+
+The formal backlog entry now lives in `docs/post-sdd-modular-expansion-plan.md` as **`B-010: Real-Target Full Endpoint Coverage`**.
+
+The core contract for `B-010` is:
+- keep LLM disabled
+- use the current `realr24all` 11-service matrix as the authoritative acceptance set
+- add a machine-readable coverage manifest/report for every service
+- distinguish clearly between:
+  - structural parity: generated tools match the upstream visible surface
+  - audited live-call parity: safe tools were actually invoked and passed
+
+### Ordered task list
+
+1. **B-010-T1: Coverage contract and manifest capture**
+- Add a reproducible upstream "truth" source per service: GraphQL introspection, OpenAPI/Swagger operation inventory, OData `$metadata`, WSDL, JSON-RPC `system.listMethods`, gRPC reflection, SQL catalog, SCIM live-surface probes.
+- Persist coverage deltas (`upstream_total`, `generated_total`, `missing_operations`, etc.) in machine-readable reports.
+
+2. **B-010-T2: REST whole-service source expansion**
+- Stop treating Directus REST and PocketBase REST as single-collection proofs.
+- Widen proof inputs to authenticated/broader roots and teach the REST extractor to discover collection registries and sibling collections from JSON API roots.
+
+3. **B-010-T3: Fold in REST auth / rate-limit / pagination hardening**
+- Execute the previously planned `B-008` REST work as part of endpoint-parity work:
+  - authenticated discovery
+  - 429 / `Retry-After` backoff
+  - pagination-aware traversal
+
+4. **B-010-T4: JSON-RPC full method discovery**
+- Add `system.listMethods` fallback discovery to `libs/extractors/jsonrpc.py`.
+- Remove the current aria2 dependence on a hard-coded 3-method proof definition.
+
+5. **B-010-T5: gRPC reflection-driven extraction**
+- Add reflection-backed extraction to `libs/extractors/grpc.py`.
+- Replace the current minimal OpenFGA proof definition with the reflected `OpenFGAService` method surface.
+
+6. **B-010-T6: SQL full semantic CRUD coverage**
+- Extend `libs/extractors/sql.py` beyond query + insert.
+- Tables should reach query/insert/update/delete coverage; views stay query-only; supported functions remain callable.
+
+7. **B-010-T7: SCIM live-surface parity contract**
+- Make SCIM coverage deployment-aware rather than spec-theoretical.
+- For Jackson, count only the tenant/product endpoints that are actually live and non-404; include PATCH only when the live deployment advertises/supports it.
+
+8. **B-010-T8: Regression locks for already-green protocols**
+- Add exact count/name regression checks so GraphQL, OpenAPI, OData, and SOAP cannot silently lose coverage while the partial protocols are being expanded.
+
+9. **B-010-T9: Targeted reruns and final matrix close-out**
+- Run narrow non-LLM reruns as each gap closes.
+- Finish with a fresh `PROTOCOL=all AUDIT_ALL_GENERATED_TOOLS=1` rerun and update `agent.md` / `devlog.md` with the final parity matrix.
+
+### Success criteria
+
+- Exact-parity protocols stay exact:
+  - Directus GraphQL `33 / 33`
+  - Directus OpenAPI `154 / 154`
+  - Gitea OpenAPI `406 / 406`
+  - NorthBreeze OData `17 / 17`
+  - SOAP CXF `3 / 3`
+- Currently partial protocols close to their intended live-service parity:
+  - Directus REST and PocketBase REST cover the full visible seeded REST surface instead of staying at `2` tools each
+  - aria2 tool count matches `system.listMethods`
+  - OpenFGA tool count matches reflected `OpenFGAService` RPCs
+  - SQL reaches the declared semantic surface for tables/views/functions
+  - Jackson SCIM matches the actual live tenant surface
+- Final non-LLM real-target rerun completes `11 / 11 passed` with zero failed audits and no unexplained structural gaps.
+
+### Planning note
+
+`B-008` is still conceptually valid, but it is no longer the best standalone "next up" milestone. Its REST auth/rate-limit/pagination items are now intentionally folded into `B-010-T2` and `B-010-T3` so the repository's next work is organized around the user-visible goal: full real-target endpoint coverage.

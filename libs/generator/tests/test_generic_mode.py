@@ -7,9 +7,17 @@ import gzip
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 from libs.generator import GenericManifestConfig, generate_generic_manifests
+from libs.generator.generic_mode import (
+    _parse_manifest,
+    _resource_name,
+    _sanitize_dns_label,
+    _versioned_resource_name,
+    render_generic_manifest_yaml,
+)
 from libs.ir import ServiceIR, deserialize_ir
 from libs.ir.models import (
     AuthConfig,
@@ -325,3 +333,90 @@ def test_generate_generic_manifests_enables_native_grpc_unary_runtime_when_requi
     env_entries = {item["name"]: item["value"] for item in container["env"]}
 
     assert env_entries["ENABLE_NATIVE_GRPC_UNARY"] == "true"
+
+
+# ---------------------------------------------------------------------------
+# GenericManifestConfig.__post_init__ validation (lines 52-66)
+# ---------------------------------------------------------------------------
+
+
+class TestGenericManifestConfigValidation:
+    def test_rejects_empty_runtime_image(self) -> None:
+        with pytest.raises(ValueError, match="runtime_image must not be empty"):
+            GenericManifestConfig(runtime_image="   ")
+
+    def test_rejects_empty_namespace(self) -> None:
+        with pytest.raises(ValueError, match="namespace must not be empty"):
+            GenericManifestConfig(runtime_image="img:latest", namespace="  ")
+
+    def test_rejects_replicas_less_than_one(self) -> None:
+        with pytest.raises(ValueError, match="replicas must be >= 1"):
+            GenericManifestConfig(runtime_image="img:latest", replicas=0)
+
+    def test_rejects_container_port_less_than_one(self) -> None:
+        with pytest.raises(ValueError, match="container_port must be >= 1"):
+            GenericManifestConfig(runtime_image="img:latest", container_port=0)
+
+    def test_rejects_service_port_less_than_one(self) -> None:
+        with pytest.raises(ValueError, match="service_port must be >= 1"):
+            GenericManifestConfig(runtime_image="img:latest", service_port=0)
+
+    def test_rejects_empty_service_id_when_provided(self) -> None:
+        with pytest.raises(ValueError, match="service_id must not be empty when provided"):
+            GenericManifestConfig(runtime_image="img:latest", service_id="  ")
+
+    def test_rejects_version_number_less_than_one(self) -> None:
+        with pytest.raises(ValueError, match="version_number must be >= 1 when provided"):
+            GenericManifestConfig(runtime_image="img:latest", version_number=0)
+
+    def test_rejects_empty_runtime_secret_name_when_provided(self) -> None:
+        with pytest.raises(ValueError, match="runtime_secret_name must not be empty when provided"):
+            GenericManifestConfig(runtime_image="img:latest", runtime_secret_name="  ")
+
+
+# ---------------------------------------------------------------------------
+# render_generic_manifest_yaml (line 176)
+# ---------------------------------------------------------------------------
+
+
+def test_render_generic_manifest_yaml_returns_yaml_string() -> None:
+    service_ir = _load_service_ir()
+    result = render_generic_manifest_yaml(
+        service_ir,
+        config=GenericManifestConfig(runtime_image="ghcr.io/example/generic-runtime:1.2.3"),
+    )
+    assert isinstance(result, str)
+    documents = list(yaml.safe_load_all(result))
+    kinds = [doc["kind"] for doc in documents]
+    assert kinds == ["ConfigMap", "Deployment", "Service", "NetworkPolicy"]
+
+
+# ---------------------------------------------------------------------------
+# _parse_manifest — non-dict YAML raises ValueError (line 197)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_manifest_rejects_non_dict_yaml() -> None:
+    with pytest.raises(ValueError, match="not a YAML mapping"):
+        _parse_manifest("- item1\n- item2")
+
+
+# ---------------------------------------------------------------------------
+# DNS label sanitization fallback to "service" (lines 234, 247, 266)
+# ---------------------------------------------------------------------------
+
+
+def test_sanitize_dns_label_falls_back_to_service_for_non_alnum_input() -> None:
+    assert _sanitize_dns_label("---") == "service"
+    assert _sanitize_dns_label("") == "service"
+
+
+def test_resource_name_falls_back_to_service_when_trimmed_base_is_empty() -> None:
+    long_suffix = "a" * 63
+    result = _resource_name("x", long_suffix)
+    assert result == f"service-{long_suffix}"
+
+
+def test_versioned_resource_name_falls_back_to_service_when_trimmed_base_is_empty() -> None:
+    result = _versioned_resource_name("---", 1)
+    assert result == "service-v1"

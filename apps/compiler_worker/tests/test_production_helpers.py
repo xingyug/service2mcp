@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -407,6 +407,10 @@ class TestEnhancementEnabled:
         with patch.dict(os.environ, {}, clear=True):
             assert _enhancement_enabled() is False
 
+    def test_skip_enhancement_option_disables_even_with_api_key(self) -> None:
+        with patch.dict(os.environ, {"LLM_API_KEY": "sk-test"}, clear=False):
+            assert _enhancement_enabled({"skip_enhancement": True}) is False
+
 
 class TestToolGroupingEnabled:
     def test_true(self) -> None:
@@ -516,6 +520,22 @@ class TestSourceConfigFromContext:
         )
         source = _source_config_from_context(ctx)
         assert source.hints == {}
+
+    def test_force_protocol_takes_precedence_over_legacy_protocol_option(self) -> None:
+        from uuid import UUID
+
+        from apps.compiler_worker.models import CompilationContext, CompilationRequest
+
+        ctx = CompilationContext(
+            job_id=UUID(_TEST_UUID),
+            request=CompilationRequest(
+                source_url="https://example.com/api.yaml",
+                options={"protocol": "rest", "force_protocol": "openapi"},
+            ),
+            payload={},
+        )
+        source = _source_config_from_context(ctx)
+        assert source.hints["protocol"] == "openapi"
 
 
 class TestApplyAuthOverride:
@@ -760,3 +780,119 @@ class TestApplyPostEnhancement:
 class TestReadServiceAccountNamespace:
     def test_not_on_k8s(self) -> None:
         assert _read_service_account_namespace() is None
+
+
+# --- _float_env ---
+
+
+class TestFloatEnv:
+    def test_returns_default_when_unset(self) -> None:
+        from apps.compiler_worker.activities.production import _float_env
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MY_TEST_FLOAT", None)
+            assert _float_env("MY_TEST_FLOAT", 42.0) == 42.0
+
+    def test_returns_parsed_value(self) -> None:
+        from apps.compiler_worker.activities.production import _float_env
+
+        with patch.dict(os.environ, {"MY_TEST_FLOAT": "3.14"}):
+            assert _float_env("MY_TEST_FLOAT", 0.0) == pytest.approx(3.14)
+
+    def test_returns_default_on_non_numeric(self) -> None:
+        from apps.compiler_worker.activities.production import _float_env
+
+        with patch.dict(os.environ, {"MY_TEST_FLOAT": "not-a-number"}):
+            assert _float_env("MY_TEST_FLOAT", 99.0) == 99.0
+
+
+# --- DeferredRoutePublisher ---
+
+
+class TestDeferredRoutePublisher:
+    @pytest.mark.asyncio
+    async def test_rollback_is_noop(self) -> None:
+        from apps.compiler_worker.activities.production import DeferredRoutePublisher
+
+        publisher = DeferredRoutePublisher()
+        # rollback should complete without raising
+        await publisher.rollback({"default_route": {"route_id": "r1"}}, None)
+
+
+# --- AccessControlRoutePublisher._post() edge cases ---
+
+
+class TestAccessControlRoutePublisherPost:
+    @pytest.mark.asyncio
+    async def test_non_json_response_raises(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from apps.compiler_worker.activities.production import AccessControlRoutePublisher
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = MagicMock(side_effect=ValueError("No JSON"))
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        publisher = AccessControlRoutePublisher(
+            base_url="http://fake",
+            client=mock_client,
+            auth_token="fake-token",
+        )
+
+        with pytest.raises(RuntimeError, match="non-JSON response"):
+            await publisher._post("/test", route_config={"key": "value"})
+
+    @pytest.mark.asyncio
+    async def test_non_dict_response_raises(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from apps.compiler_worker.activities.production import AccessControlRoutePublisher
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json = MagicMock(return_value=[])  # array, not dict
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        publisher = AccessControlRoutePublisher(
+            base_url="http://fake",
+            client=mock_client,
+            auth_token="fake-token",
+        )
+
+        with pytest.raises(RuntimeError, match="non-object response"):
+            await publisher._post("/test", route_config={"key": "value"})
+
+
+# --- KubernetesAPISession.from_in_cluster() ---
+
+
+class TestKubernetesAPISessionFromInCluster:
+    def test_missing_host_raises(self) -> None:
+        from apps.compiler_worker.activities.production import KubernetesAPISession
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("KUBERNETES_SERVICE_HOST", None)
+            with pytest.raises(RuntimeError, match="KUBERNETES_SERVICE_HOST"):
+                KubernetesAPISession.from_in_cluster(namespace="default")
+
+    def test_missing_token_or_cert_raises(self) -> None:
+        from unittest.mock import patch as mock_patch
+
+        from apps.compiler_worker.activities.production import KubernetesAPISession
+
+        with patch.dict(os.environ, {"KUBERNETES_SERVICE_HOST": "10.0.0.1", "KUBERNETES_SERVICE_PORT": "443"}):
+            with mock_patch("apps.compiler_worker.activities.production.Path") as MockPath:
+                # Make token_path.exists() return False
+                mock_token = MagicMock()
+                mock_token.exists.return_value = False
+                mock_cert = MagicMock()
+                mock_cert.exists.return_value = True
+                MockPath.side_effect = [mock_token, mock_cert]
+
+                with pytest.raises(RuntimeError, match="in-cluster service account token"):
+                    KubernetesAPISession.from_in_cluster(namespace="default")

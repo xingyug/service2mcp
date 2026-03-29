@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   Clock,
@@ -13,6 +14,7 @@ import {
   Code,
   ArrowRightLeft,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,6 +38,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useArtifactVersions, useService } from "@/hooks/use-api";
 import { artifactApi } from "@/lib/api-client";
+import { queryKeys } from "@/lib/query-keys";
 import { VersionDiffDialog } from "@/components/services/version-diff-dialog";
 import { IREditor } from "@/components/services/ir-editor";
 import type { ServiceIR } from "@/types/api";
@@ -55,6 +58,7 @@ function formatDate(iso: string): string {
 export default function VersionsPage() {
   const params = useParams<{ serviceId: string }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const serviceId = params.serviceId;
 
   const { data: service } = useService(serviceId);
@@ -71,16 +75,45 @@ export default function VersionsPage() {
     ? versions.find((v) => v.version_number === viewIrVersion)?.ir
     : undefined;
 
+  async function refreshVersionData() {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.artifacts.versions(serviceId),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.services.detail(serviceId),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.services.all,
+      }),
+    ]);
+  }
 
   async function handleDelete(version: number) {
     setDeleting(true);
     try {
-      await artifactApi.getVersion(serviceId, version);
-      // In a full implementation, this would call a delete API endpoint.
-      // For now we just close the dialog.
+      await artifactApi.deleteVersion(serviceId, version);
+      toast.success(`Deleted version v${version}.`);
+      await refreshVersionData();
+    } catch (error) {
+      toast.error(
+        `Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     } finally {
       setDeleting(false);
       setDeleteTarget(null);
+    }
+  }
+
+  async function handleActivate(version: number) {
+    try {
+      await artifactApi.activateVersion(serviceId, version);
+      toast.success(`Activated version v${version}.`);
+      await refreshVersionData();
+    } catch (error) {
+      toast.error(
+        `Activation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   }
 
@@ -171,7 +204,11 @@ export default function VersionsPage() {
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end gap-1">
                     {!v.is_active && (
-                      <Button variant="ghost" size="xs">
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => handleActivate(v.version_number)}
+                      >
                         <Radio className="mr-1 size-3" />
                         Activate
                       </Button>

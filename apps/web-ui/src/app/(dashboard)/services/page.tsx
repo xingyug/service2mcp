@@ -41,6 +41,9 @@ const PROTOCOLS = [
   "rest",
   "graphql",
   "grpc",
+  "jsonrpc",
+  "odata",
+  "scim",
   "soap",
   "sql",
 ] as const;

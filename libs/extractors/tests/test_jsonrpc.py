@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from libs.extractors.base import SourceConfig
-from libs.extractors.jsonrpc import JsonRpcExtractor
+from libs.extractors.jsonrpc import JsonRpcExtractor, _resolve_params_type
 from libs.ir.models import RiskLevel
 
 FIXTURES_DIR = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "jsonrpc_specs"
@@ -322,3 +322,79 @@ def test_auth_headers_no_auth() -> None:
     source = SourceConfig(file_content="{}")
     headers = JsonRpcExtractor._auth_headers(source)
     assert headers == {}
+
+
+# ── _default_openrpc_endpoint tests ───────────────────────────────────────
+
+
+def test_resolve_base_url_openrpc_falls_back_to_default_endpoint() -> None:
+    """Line 261: OpenRPC with source.url but no servers → _default_openrpc_endpoint."""
+    data: dict = {"openrpc": "1.0", "methods": []}
+    source = SourceConfig(url="https://example.com/openrpc.json")
+    url = JsonRpcExtractor._resolve_base_url(data, source, is_openrpc=True)
+    assert url == "https://example.com/rpc"
+
+
+def test_default_openrpc_endpoint_strips_json_suffix() -> None:
+    """Lines 268-279: strips /openrpc.json and appends /rpc."""
+    result = JsonRpcExtractor._default_openrpc_endpoint(
+        "https://example.com/api/openrpc.json"
+    )
+    assert result == "https://example.com/api/rpc"
+
+
+def test_default_openrpc_endpoint_strips_yaml_suffix() -> None:
+    """Lines 268-279: strips /openrpc.yaml and appends /rpc."""
+    result = JsonRpcExtractor._default_openrpc_endpoint(
+        "https://example.com/openrpc.yaml"
+    )
+    assert result == "https://example.com/rpc"
+
+
+def test_default_openrpc_endpoint_strips_yml_suffix() -> None:
+    """Lines 268-279: strips /openrpc.yml and appends /rpc."""
+    result = JsonRpcExtractor._default_openrpc_endpoint(
+        "https://example.com/openrpc.yml"
+    )
+    assert result == "https://example.com/rpc"
+
+
+def test_default_openrpc_endpoint_no_known_suffix() -> None:
+    """Line 279: no recognized suffix → returns source_url unchanged."""
+    result = JsonRpcExtractor._default_openrpc_endpoint(
+        "https://example.com/api/v1"
+    )
+    assert result == "https://example.com/api/v1"
+
+
+# ── _get_content returns None with no source ──────────────────────────────
+
+
+def test_get_content_returns_none_when_all_sources_empty() -> None:
+    """Line 302: _get_content returns None when source has no content, file, or URL."""
+    extractor = JsonRpcExtractor()
+    source = SourceConfig(file_content="placeholder")
+    # Bypass __post_init__ validation by overriding after construction
+    source.file_content = ""
+    source.file_path = None
+    source.url = None
+    content = extractor._get_content(source)
+    assert content is None
+
+
+# ── _resolve_params_type with paramStructure ──────────────────────────────
+
+
+def test_resolve_params_type_by_position() -> None:
+    """Line 321: paramStructure='by-position' → 'positional'."""
+    assert _resolve_params_type({"name": "m", "paramStructure": "by-position"}) == "positional"
+
+
+def test_resolve_params_type_by_name() -> None:
+    """Line 323: paramStructure='by-name' → 'named'."""
+    assert _resolve_params_type({"name": "m", "paramStructure": "by-name"}) == "named"
+
+
+def test_resolve_params_type_either() -> None:
+    """Line 323: paramStructure='either' → 'named'."""
+    assert _resolve_params_type({"name": "m", "paramStructure": "either"}) == "named"

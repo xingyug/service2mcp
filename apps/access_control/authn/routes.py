@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -22,10 +21,9 @@ from apps.access_control.gateway_binding.service import (
     GatewayBindingService,
     get_gateway_binding_service,
 )
+from apps.access_control.security import require_authenticated_caller, require_self_or_admin
 
 router = APIRouter(prefix="/api/v1/authn", tags=["authn"])
-
-_logger = logging.getLogger(__name__)
 
 
 def get_jwt_settings(request: Request) -> JWTSettings:
@@ -60,18 +58,27 @@ async def validate_token(
 @router.post("/pats", response_model=PATCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_pat(
     payload: PATCreateRequest,
+    session: AsyncSession = Depends(get_db_session),
     service: AuthnService = Depends(get_authn_service),
     gateway_binding: GatewayBindingService = Depends(get_gateway_binding_service),
+    caller: TokenPrincipalResponse = Depends(require_authenticated_caller),
 ) -> PATCreateResponse:
-    created = await service.create_pat(
-        username=payload.username,
-        name=payload.name,
-        email=payload.email,
-    )
+    require_self_or_admin(caller, username=payload.username)
     try:
+        created = await service.create_pat(
+            username=payload.username,
+            name=payload.name,
+            email=payload.email,
+            commit=False,
+        )
         await gateway_binding.sync_pat_creation(created, created.token)
-    except Exception:
-        _logger.warning("Gateway sync failed after PAT creation %s", created.id, exc_info=True)
+        await session.commit()
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gateway sync failed after PAT creation: {exc}",
+        ) from exc
     return created
 
 
@@ -79,15 +86,19 @@ async def create_pat(
 async def list_pats(
     username: str,
     service: AuthnService = Depends(get_authn_service),
+    caller: TokenPrincipalResponse = Depends(require_authenticated_caller),
 ) -> PATListResponse:
+    require_self_or_admin(caller, username=username)
     return PATListResponse(items=await service.list_pats(username=username))
 
 
 @router.post("/pats/{pat_id}/revoke", response_model=PATResponse)
 async def revoke_pat(
     pat_id: str,
+    session: AsyncSession = Depends(get_db_session),
     service: AuthnService = Depends(get_authn_service),
     gateway_binding: GatewayBindingService = Depends(get_gateway_binding_service),
+    caller: TokenPrincipalResponse = Depends(require_authenticated_caller),
 ) -> PATResponse:
     try:
         from uuid import UUID
@@ -99,11 +110,21 @@ async def revoke_pat(
             detail="Invalid PAT ID.",
         ) from exc
 
-    revoked = await service.revoke_pat(parsed_pat_id)
+    existing = await service.get_pat(parsed_pat_id)
+    if existing is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PAT not found.")
+    require_self_or_admin(caller, username=existing.username)
+
+    revoked = await service.revoke_pat(parsed_pat_id, commit=False)
     if revoked is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PAT not found.")
     try:
         await gateway_binding.sync_pat_revocation(revoked.id)
-    except Exception:
-        _logger.warning("Gateway sync failed after PAT revocation %s", revoked.id, exc_info=True)
+        await session.commit()
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gateway sync failed after PAT revocation: {exc}",
+        ) from exc
     return revoked

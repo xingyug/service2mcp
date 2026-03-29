@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+
+import { workflowApi, type WorkflowResponse } from "@/lib/api-client";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,11 +27,12 @@ export interface WorkflowRecord {
   serviceId: string;
   versionNumber: number;
   state: WorkflowState;
+  reviewNotes: { operation_notes?: Record<string, string>; overall_note?: string } | null;
   history: WorkflowHistoryEntry[];
 }
 
 // ---------------------------------------------------------------------------
-// Valid transitions
+// Valid transitions (kept for UI-side gating)
 // ---------------------------------------------------------------------------
 
 export const validTransitions: Record<WorkflowState, WorkflowState[]> = {
@@ -44,87 +46,111 @@ export const validTransitions: Record<WorkflowState, WorkflowState[]> = {
 };
 
 // ---------------------------------------------------------------------------
-// Store
+// Helpers
 // ---------------------------------------------------------------------------
 
 function workflowKey(serviceId: string, version: number): string {
   return `${serviceId}-v${version}`;
 }
 
+function toRecord(resp: WorkflowResponse): WorkflowRecord {
+  return {
+    serviceId: resp.service_id,
+    versionNumber: resp.version_number,
+    state: resp.state as WorkflowState,
+    reviewNotes: resp.review_notes,
+    history: (resp.history ?? []).map((h) => ({
+      from: h.from as WorkflowState,
+      to: h.to as WorkflowState,
+      actor: h.actor,
+      comment: h.comment,
+      timestamp: h.timestamp,
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Store
+// ---------------------------------------------------------------------------
+
 interface WorkflowStore {
   workflows: Record<string, WorkflowRecord>;
+  loading: Record<string, boolean>;
+
   getWorkflow: (serviceId: string, version: number) => WorkflowRecord | undefined;
-  getOrCreateWorkflow: (serviceId: string, version: number) => WorkflowRecord;
+
+  /** Fetch (or create) the workflow from the backend and cache it. */
+  loadWorkflow: (serviceId: string, version: number) => Promise<WorkflowRecord>;
+
+  /** Persist a state transition via the backend. */
   transition: (
     serviceId: string,
     version: number,
     to: WorkflowState,
     actor: string,
     comment?: string,
-  ) => void;
+  ) => Promise<WorkflowRecord>;
+
+  /** Persist review notes via the backend. */
+  saveNotes: (
+    serviceId: string,
+    version: number,
+    notes: Record<string, string>,
+    overallNote?: string,
+  ) => Promise<WorkflowRecord>;
 }
 
-export const useWorkflowStore = create<WorkflowStore>()(
-  persist(
-    (set, get) => ({
-      workflows: {},
+export const useWorkflowStore = create<WorkflowStore>()((set, get) => ({
+  workflows: {},
+  loading: {},
 
-      getWorkflow: (serviceId, version) => {
-        const key = workflowKey(serviceId, version);
-        return get().workflows[key];
-      },
+  getWorkflow: (serviceId, version) => {
+    const key = workflowKey(serviceId, version);
+    return get().workflows[key];
+  },
 
-      getOrCreateWorkflow: (serviceId, version) => {
-        const key = workflowKey(serviceId, version);
-        const existing = get().workflows[key];
-        if (existing) return existing;
+  loadWorkflow: async (serviceId, version) => {
+    const key = workflowKey(serviceId, version);
+    const existing = get().workflows[key];
+    if (existing) return existing;
 
-        const record: WorkflowRecord = {
-          serviceId,
-          versionNumber: version,
-          state: "draft",
-          history: [],
-        };
-        set((s) => ({
-          workflows: { ...s.workflows, [key]: record },
-        }));
-        return record;
-      },
+    set((s) => ({ loading: { ...s.loading, [key]: true } }));
+    try {
+      const resp = await workflowApi.get(serviceId, version);
+      const record = toRecord(resp);
+      set((s) => ({
+        workflows: { ...s.workflows, [key]: record },
+        loading: { ...s.loading, [key]: false },
+      }));
+      return record;
+    } catch {
+      set((s) => ({ loading: { ...s.loading, [key]: false } }));
+      // Return a default draft record on failure so the UI still works
+      const fallback: WorkflowRecord = {
+        serviceId,
+        versionNumber: version,
+        state: "draft",
+        reviewNotes: null,
+        history: [],
+      };
+      set((s) => ({ workflows: { ...s.workflows, [key]: fallback } }));
+      return fallback;
+    }
+  },
 
-      transition: (serviceId, version, to, actor, comment) => {
-        const key = workflowKey(serviceId, version);
-        set((s) => {
-          const current = s.workflows[key] ?? {
-            serviceId,
-            versionNumber: version,
-            state: "draft" as WorkflowState,
-            history: [] as WorkflowHistoryEntry[],
-          };
+  transition: async (serviceId, version, to, actor, comment) => {
+    const key = workflowKey(serviceId, version);
+    const resp = await workflowApi.transition(serviceId, version, to, actor, comment);
+    const record = toRecord(resp);
+    set((s) => ({ workflows: { ...s.workflows, [key]: record } }));
+    return record;
+  },
 
-          const allowed = validTransitions[current.state];
-          if (!allowed.includes(to)) return s;
-
-          const entry: WorkflowHistoryEntry = {
-            from: current.state,
-            to,
-            actor,
-            comment,
-            timestamp: new Date().toISOString(),
-          };
-
-          return {
-            workflows: {
-              ...s.workflows,
-              [key]: {
-                ...current,
-                state: to,
-                history: [entry, ...current.history],
-              },
-            },
-          };
-        });
-      },
-    }),
-    { name: "workflow-storage" },
-  ),
-);
+  saveNotes: async (serviceId, version, notes, overallNote) => {
+    const key = workflowKey(serviceId, version);
+    const resp = await workflowApi.saveNotes(serviceId, version, notes, overallNote);
+    const record = toRecord(resp);
+    set((s) => ({ workflows: { ...s.workflows, [key]: record } }));
+    return record;
+  },
+}));

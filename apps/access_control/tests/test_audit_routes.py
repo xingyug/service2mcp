@@ -9,16 +9,17 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from apps.access_control.audit.routes import (
-    list_audit_logs,
-    require_authenticated_caller,
-)
+from apps.access_control.audit.routes import list_audit_logs
 from apps.access_control.authn.service import AuthenticationError
+from apps.access_control.security import require_authenticated_caller
+
+# The correct patch target: AuthnService is imported inside security.py
+_AUTHN_PATCH = "apps.access_control.security.AuthnService"
 
 
 class TestRequireAuthenticatedCaller:
     async def test_no_authorization_header(self):
-        """Test lines 32-36: missing Authorization header."""
+        """Missing Authorization header returns 401."""
         mock_request = MagicMock()
         mock_request.headers = {}
         mock_session = AsyncMock()
@@ -30,7 +31,7 @@ class TestRequireAuthenticatedCaller:
         assert exc_info.value.detail == "Authorization header is required."
 
     async def test_empty_authorization_header(self):
-        """Test lines 32-36: empty Authorization header."""
+        """Empty Authorization header returns 401."""
         mock_request = MagicMock()
         mock_request.headers = {"Authorization": ""}
         mock_session = AsyncMock()
@@ -42,17 +43,15 @@ class TestRequireAuthenticatedCaller:
         assert exc_info.value.detail == "Authorization header is required."
 
     async def test_no_bearer_token(self):
-        """Test lines 38-42: no Bearer token in Authorization header."""
+        """Non-Bearer Authorization header that fails JWT validation."""
         from apps.access_control.authn.service import JWTSettings
 
         mock_request = MagicMock()
-        mock_request.headers = {"Authorization": "Basic dXNlcjpwYXNz"}  # Not Bearer
+        mock_request.headers = {"Authorization": "Basic dXNlcjpwYXNz"}
         mock_request.app.state.jwt_settings = JWTSettings(secret="test")
         mock_session = AsyncMock()
 
-        # Since "Basic dXNlcjpwYXNz" after removeprefix("Bearer ") is still "Basic dXNlcjpwYXNz",
-        # it will try to validate as JWT and fail with JWT error
-        with patch("apps.access_control.audit.routes.AuthnService") as mock_authn_service:
+        with patch(_AUTHN_PATCH) as mock_authn_service:
             mock_service = AsyncMock()
             mock_service.validate_token.side_effect = AuthenticationError(
                 "JWT must contain three segments."
@@ -63,36 +62,22 @@ class TestRequireAuthenticatedCaller:
                 await require_authenticated_caller(mock_request, mock_session)
 
             assert exc_info.value.status_code == 401
-            # The actual error comes from JWT validation, not the Bearer check
             assert "JWT must contain three segments" in exc_info.value.detail
 
     async def test_empty_bearer_token(self):
-        """Test lines 38-42: empty Bearer token."""
-        from apps.access_control.authn.service import JWTSettings
-
+        """'Bearer ' with empty token value returns 401."""
         mock_request = MagicMock()
-        mock_request.headers = {"Authorization": "Bearer"}  # No token after Bearer
-        mock_request.app.state.jwt_settings = JWTSettings(secret="test")
+        mock_request.headers = {"Authorization": "Bearer "}
         mock_session = AsyncMock()
 
-        # "Bearer" after removeprefix("Bearer ") becomes "" which is empty
-        # However, let's check what actually happens
-        with patch("apps.access_control.audit.routes.AuthnService") as mock_authn_service:
-            mock_service = AsyncMock()
-            mock_service.validate_token.side_effect = AuthenticationError(
-                "JWT must contain three segments."
-            )
-            mock_authn_service.return_value = mock_service
+        with pytest.raises(HTTPException) as exc_info:
+            await require_authenticated_caller(mock_request, mock_session)
 
-            with pytest.raises(HTTPException) as exc_info:
-                await require_authenticated_caller(mock_request, mock_session)
-
-            assert exc_info.value.status_code == 401
-            # The actual implementation validates empty string as JWT
-            assert "JWT must contain three segments" in exc_info.value.detail
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail == "Bearer token is required."
 
     async def test_jwt_settings_not_configured(self):
-        """Test lines 43-48: JWT settings not configured."""
+        """Missing jwt_settings returns 500."""
         mock_request = MagicMock()
         mock_request.headers = {"Authorization": "Bearer valid_token"}
         mock_request.app.state = MagicMock()
@@ -106,7 +91,7 @@ class TestRequireAuthenticatedCaller:
         assert exc_info.value.detail == "JWT settings are not configured."
 
     async def test_authentication_error(self):
-        """Test lines 52-56: AuthenticationError converted to HTTP 401."""
+        """AuthenticationError is converted to HTTP 401."""
         from apps.access_control.authn.service import JWTSettings
 
         mock_request = MagicMock()
@@ -114,7 +99,7 @@ class TestRequireAuthenticatedCaller:
         mock_request.app.state.jwt_settings = JWTSettings(secret="test")
         mock_session = AsyncMock()
 
-        with patch("apps.access_control.audit.routes.AuthnService") as mock_authn_service:
+        with patch(_AUTHN_PATCH) as mock_authn_service:
             mock_service = AsyncMock()
             mock_service.validate_token.side_effect = AuthenticationError("Invalid token")
             mock_authn_service.return_value = mock_service
@@ -126,7 +111,7 @@ class TestRequireAuthenticatedCaller:
             assert exc_info.value.detail == "Invalid token"
 
     async def test_successful_authentication(self):
-        """Test successful authentication flow."""
+        """Successful authentication returns the principal."""
         from apps.access_control.authn.models import TokenPrincipalResponse
         from apps.access_control.authn.service import JWTSettings
 
@@ -139,7 +124,7 @@ class TestRequireAuthenticatedCaller:
             subject="alice", token_type="jwt", claims={"sub": "alice"}
         )
 
-        with patch("apps.access_control.audit.routes.AuthnService") as mock_authn_service:
+        with patch(_AUTHN_PATCH) as mock_authn_service:
             mock_service = AsyncMock()
             mock_service.validate_token.return_value = expected_response
             mock_authn_service.return_value = mock_service

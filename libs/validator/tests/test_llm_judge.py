@@ -269,3 +269,75 @@ class TestLLMJudge:
         assert result.tools_evaluated == 1
         assert result.scores[0].accuracy == 1.0
         assert result.scores[0].completeness == 0.0
+
+
+# ── Additional coverage tests ──────────────────────────────────────────────
+
+
+class TestParseJudgeResponseEdgeCases:
+    """Tests for _parse_judge_response edge cases (lines 204-246)."""
+
+    def _make_judge(self, response: str) -> tuple[LLMJudge, MockJudgeLLMClient]:
+        client = MockJudgeLLMClient(response=response)
+        judge = LLMJudge(client)
+        return judge, client
+
+    def test_markdown_fence_without_closing_backticks(self) -> None:
+        """Line 205: opening ``` but no closing ``` should still parse."""
+        ir = _make_service_ir(1)
+        scores_json = json.dumps(
+            [
+                {
+                    "operation_id": "op_0",
+                    "accuracy": 0.8,
+                    "completeness": 0.7,
+                    "clarity": 0.9,
+                    "feedback": "ok",
+                }
+            ]
+        )
+        # Fence with opening but NO closing backticks
+        fenced = f"```json\n{scores_json}"
+        judge, _ = self._make_judge(fenced)
+
+        result = judge.evaluate(ir)
+        assert result.tools_evaluated == 1
+        assert result.scores[0].accuracy == 0.8
+
+    def test_non_array_json_returns_empty(self) -> None:
+        """Lines 210-211: JSON object {} instead of array → empty list."""
+        ir = _make_service_ir(1)
+        judge, _ = self._make_judge('{"not": "an array"}')
+
+        result = judge.evaluate(ir)
+        assert result.tools_evaluated == 0
+
+    def test_non_numeric_score_defaults_to_half(self) -> None:
+        """Lines 225-226: non-numeric score values default to 0.5."""
+        ir = _make_service_ir(1)
+        response = json.dumps(
+            [
+                {
+                    "operation_id": "op_0",
+                    "accuracy": "high",
+                    "completeness": "medium",
+                    "clarity": "low",
+                    "feedback": "text scores",
+                }
+            ]
+        )
+        judge, _ = self._make_judge(response)
+
+        result = judge.evaluate(ir)
+        assert result.tools_evaluated == 1
+        assert result.scores[0].accuracy == 0.5
+        assert result.scores[0].completeness == 0.5
+        assert result.scores[0].clarity == 0.5
+
+    def test_malformed_json_returns_empty(self) -> None:
+        """Lines 244-246: malformed JSON → JSONDecodeError caught, return []."""
+        ir = _make_service_ir(1)
+        judge, _ = self._make_judge("{invalid json content!!}")
+
+        result = judge.evaluate(ir)
+        assert result.tools_evaluated == 0

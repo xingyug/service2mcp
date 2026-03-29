@@ -25,6 +25,7 @@ class AuditLogService:
         action: str,
         resource: str | None = None,
         detail: dict[str, Any] | None = None,
+        commit: bool = True,
     ) -> AuditLogEntryResponse:
         entry = AuditLog(
             actor=actor,
@@ -33,7 +34,9 @@ class AuditLogService:
             detail=detail,
         )
         self._session.add(entry)
-        await self._session.commit()
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
         await self._session.refresh(entry)
         return self._to_response(entry)
 

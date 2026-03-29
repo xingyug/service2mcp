@@ -33,55 +33,46 @@ const STATUS_CATEGORIES: {
   match: (s: CompilationStatus) => boolean;
 }[] = [
   {
-    key: "published",
-    label: "Published",
+    key: "succeeded",
+    label: "Succeeded",
     color: "bg-green-500",
-    match: (s) => s === "PUBLISHED",
+    match: (s) => s === "succeeded",
   },
   {
     key: "failed",
     label: "Failed",
     color: "bg-red-500",
-    match: (s) => s === "FAILED",
+    match: (s) => s === "failed",
   },
   {
     key: "in_progress",
     label: "In Progress",
     color: "bg-blue-500",
-    match: (s) =>
-      ![
-        "PUBLISHED",
-        "FAILED",
-        "PENDING",
-        "ROLLED_BACK",
-        "ROLLING_BACK",
-      ].includes(s),
+    match: (s) => s === "running",
   },
   {
     key: "pending",
     label: "Pending",
     color: "bg-gray-400",
-    match: (s) => s === "PENDING",
+    match: (s) => s === "pending",
   },
   {
     key: "rolled_back",
     label: "Rolled Back",
     color: "bg-yellow-500",
-    match: (s) => s === "ROLLED_BACK" || s === "ROLLING_BACK",
+    match: (s) => s === "rolled_back",
   },
 ];
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function buildProtocolDistribution() {
-  // We don't have protocol on CompilationJobResponse, but we can derive it
-  // from the source_url or options – for now we'll count by status distribution.
-  // Actually the compilations don't have protocol in the list endpoint.
-  // We'll use a stub approach – group by the first letter of job_id as placeholder,
-  // but in practice the dashboard should be fed by service data.
-  // Re-read: the spec says "All data derived from the compilations list API"
-  // Since CompilationJobResponse has no protocol field, we return empty.
-  return new Map<string, number>();
+function buildProtocolDistribution(compilations: CompilationJobResponse[]) {
+  const counts = new Map<string, number>();
+  for (const compilation of compilations) {
+    const protocol = compilation.protocol ?? "unknown";
+    counts.set(protocol, (counts.get(protocol) ?? 0) + 1);
+  }
+  return counts;
 }
 
 function buildStatusDistribution(compilations: CompilationJobResponse[]) {
@@ -125,7 +116,7 @@ export function CompilationMetrics() {
   const { protocolDist, statusDist, trend, maxTrend, totalCompilations } =
     useMemo(() => {
       const items = compilationsData ?? [];
-      const pd = buildProtocolDistribution();
+      const pd = buildProtocolDistribution(items);
       const sd = buildStatusDistribution(items);
       const t = buildDailyTrend(items);
       const mx = Math.max(...t.map((d) => d.count), 1);

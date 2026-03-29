@@ -939,3 +939,96 @@ def test_apply_enhancements_handles_invalid_confidence():
     enhanced_op = new_ir.operations[0]
     assert enhanced_op.confidence == 0.7  # Default
     assert enhanced_op.params[0].confidence == 0.7  # Default
+
+
+# ── Additional coverage tests ──────────────────────────────────────────────
+
+
+def test_getenv_bool_returns_false_for_false_values():
+    """Test _getenv_bool returns False when env var is set to false/no/0/off (line 99)."""
+    import os
+
+    from libs.enhancer.enhancer import _getenv_bool
+
+    for false_value in ("false", "no", "0", "off", "False", "NO", "OFF"):
+        os.environ["TEST_BOOL_FALSE"] = false_value
+        result = _getenv_bool("TEST_BOOL_FALSE", default=True)
+        assert result is False, f"Expected False for '{false_value}', got {result}"
+
+    # Cleanup
+    os.environ.pop("TEST_BOOL_FALSE", None)
+
+
+def test_select_operations_picks_op_with_short_param_description():
+    """Test _select_operations selects ops with description >=20 but param description <10 (lines 403-404)."""
+    from libs.enhancer.enhancer import EnhancerConfig, IREnhancer
+
+    # Operation has a long enough description (>= 20 chars) but a param with short description (< 10)
+    op = Operation(
+        id="op_with_short_param",
+        name="GetUser",
+        description="This operation retrieves user data from the backend service",
+        method="GET",
+        path="/users/{id}",
+        params=[
+            Param(name="id", type="integer", required=True, description="short", confidence=0.9),
+        ],
+        risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=0.9),
+        source=SourceType.extractor,
+        confidence=0.9,
+        enabled=True,
+    )
+    ir = ServiceIR(
+        source_hash="hash1",
+        protocol="rest",
+        service_name="test-api",
+        base_url="https://api.example.com",
+        operations=[op],
+    )
+
+    client = MockLLMClient()
+    config = EnhancerConfig(skip_if_description_exists=True)
+    enhancer = IREnhancer(client=client, config=config)
+
+    selected = enhancer._select_operations(ir)
+    assert len(selected) == 1
+    assert selected[0].id == "op_with_short_param"
+
+
+def test_batch_operations_splits_correctly():
+    """Test _batch_operations splits > batch_size operations into multiple batches (lines 157-164)."""
+    from libs.enhancer.enhancer import EnhancerConfig, IREnhancer
+
+    ir = make_raw_ir(7)
+
+    # Use response that covers all 7 ops so enhance actually completes
+    response_json = make_llm_response(ir.operations)
+    client = MockLLMClient(response=response_json)
+    config = EnhancerConfig(skip_if_description_exists=False, batch_size=3)
+    enhancer = IREnhancer(client=client, config=config)
+
+    result = enhancer.enhance(ir)
+
+    # 7 ops with batch_size=3 → 3 batches (3 + 3 + 1)
+    assert len(client.calls) == 3
+    assert result.operations_enhanced > 0
+
+
+def test_enhance_batch_skips_when_token_budget_exhausted():
+    """Test _enhance_batch returns {} when token budget is already exceeded (lines 442-443)."""
+    from libs.enhancer.enhancer import EnhancerConfig, IREnhancer
+
+    ir = make_raw_ir(2)
+    client = MockLLMClient(response=make_llm_response(ir.operations))
+    config = EnhancerConfig(skip_if_description_exists=False, max_tokens_per_job=10)
+    enhancer = IREnhancer(client=client, config=config)
+
+    # Artificially exhaust the token budget before calling _enhance_batch
+    enhancer.token_usage.add(input_tokens=100, output_tokens=100)
+
+    batch = list(ir.operations)
+    result = enhancer._enhance_batch(ir, batch)
+
+    assert result == {}
+    # Should NOT have called the LLM
+    assert len(client.calls) == 0

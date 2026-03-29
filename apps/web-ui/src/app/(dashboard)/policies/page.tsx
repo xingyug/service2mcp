@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "next/navigation";
 import {
   Shield,
   Plus,
@@ -258,12 +259,14 @@ function PolicyEvalSection() {
 // ── Main Component ──────────────────────────────────────────────────────────
 
 export default function PoliciesPage() {
+  const searchParams = useSearchParams();
+  const initialResourceId = searchParams.get("resource_id") ?? "";
   const queryClient = useQueryClient();
 
   // Filters
   const [filterSubjectType, setFilterSubjectType] = useState<string>("all");
   const [filterSubjectId, setFilterSubjectId] = useState("");
-  const [filterResourceId, setFilterResourceId] = useState("");
+  const [filterResourceId, setFilterResourceId] = useState(initialResourceId);
 
   // Form dialog
   const [formOpen, setFormOpen] = useState(false);

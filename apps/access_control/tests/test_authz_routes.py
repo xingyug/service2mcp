@@ -2,24 +2,92 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 
+from apps.access_control.authn.models import TokenPrincipalResponse
 from apps.access_control.authz.models import (
+    PolicyCreateRequest,
+    PolicyEvaluationRequest,
     PolicyUpdateRequest,
 )
 from apps.access_control.authz.routes import (
+    create_policy,
     delete_policy,
+    evaluate_policy,
     get_policy,
+    list_policies,
     update_policy,
 )
 
 
 class TestCreatePolicy:
-    pass
+    async def test_create_policy_requires_admin(self):
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        audit_log_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="alice",
+            token_type="jwt",
+            claims={"sub": "alice"},
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await create_policy(
+                PolicyCreateRequest(
+                    subject_type="user",
+                    subject_id="alice",
+                    resource_id="svc-1",
+                    action_pattern="get*",
+                    decision="allow",
+                ),
+                session,
+                service_mock,
+                gateway_binding_mock,
+                audit_log_mock,
+                caller,
+            )
+
+        assert exc_info.value.status_code == 403
+
+    async def test_create_policy_gateway_failure_rolls_back(self):
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        audit_log_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="admin",
+            token_type="jwt",
+            claims={"sub": "admin", "roles": ["admin"]},
+        )
+        created = MagicMock(id=uuid4(), resource_id="svc-1")
+        created.model_dump.return_value = {"id": str(created.id)}
+        service_mock.create_policy.return_value = created
+        gateway_binding_mock.sync_policy.side_effect = RuntimeError("gateway down")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await create_policy(
+                PolicyCreateRequest(
+                    subject_type="user",
+                    subject_id="alice",
+                    resource_id="svc-1",
+                    action_pattern="get*",
+                    decision="allow",
+                ),
+                session,
+                service_mock,
+                gateway_binding_mock,
+                audit_log_mock,
+                caller,
+            )
+
+        assert exc_info.value.status_code == 502
+        assert "gateway down" in exc_info.value.detail
+        session.rollback.assert_awaited_once()
 
 
 class TestGetPolicy:
@@ -27,11 +95,16 @@ class TestGetPolicy:
         """Test lines 82-84: policy not found error."""
         service_mock = AsyncMock()
         service_mock.get_policy.return_value = None
+        caller = TokenPrincipalResponse(
+            subject="alice",
+            token_type="jwt",
+            claims={"sub": "alice"},
+        )
 
         policy_id = uuid4()
 
         with pytest.raises(HTTPException) as exc_info:
-            await get_policy(policy_id, service_mock)
+            await get_policy(policy_id, service_mock, caller)
 
         assert exc_info.value.status_code == 404
         assert exc_info.value.detail == "Policy not found."
@@ -40,9 +113,15 @@ class TestGetPolicy:
 class TestUpdatePolicy:
     async def test_policy_not_found(self):
         """Test lines 96-97: policy not found during update."""
+        session = AsyncMock()
         service_mock = AsyncMock()
         gateway_binding_mock = AsyncMock()
         audit_log_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="admin",
+            token_type="jwt",
+            claims={"sub": "admin", "roles": ["admin"]},
+        )
 
         service_mock.update_policy.return_value = None
 
@@ -55,35 +134,89 @@ class TestUpdatePolicy:
 
         with pytest.raises(HTTPException) as exc_info:
             await update_policy(
-                policy_id, payload, service_mock, gateway_binding_mock, audit_log_mock
+                policy_id,
+                payload,
+                session,
+                service_mock,
+                gateway_binding_mock,
+                audit_log_mock,
+                caller,
             )
 
         assert exc_info.value.status_code == 404
         assert exc_info.value.detail == "Policy not found."
 
+    async def test_policy_update_gateway_failure_rolls_back(self):
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        audit_log_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="admin",
+            token_type="jwt",
+            claims={"sub": "admin", "roles": ["admin"]},
+        )
+        updated = MagicMock(resource_id="svc-1")
+        updated.model_dump.return_value = {"id": "policy-1"}
+        service_mock.update_policy.return_value = updated
+        gateway_binding_mock.sync_policy.side_effect = RuntimeError("gateway down")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await update_policy(
+                uuid4(),
+                PolicyUpdateRequest(decision="allow"),
+                session,
+                service_mock,
+                gateway_binding_mock,
+                audit_log_mock,
+                caller,
+            )
+
+        assert exc_info.value.status_code == 502
+        assert "gateway down" in exc_info.value.detail
+        session.rollback.assert_awaited_once()
+
 
 class TestDeletePolicy:
     async def test_policy_not_found(self):
         """Test lines 119-125: policy not found during delete."""
+        session = AsyncMock()
         service_mock = AsyncMock()
         gateway_binding_mock = AsyncMock()
         audit_log_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="admin",
+            token_type="jwt",
+            claims={"sub": "admin", "roles": ["admin"]},
+        )
 
         service_mock.delete_policy.return_value = None
 
         policy_id = uuid4()
 
         with pytest.raises(HTTPException) as exc_info:
-            await delete_policy(policy_id, service_mock, gateway_binding_mock, audit_log_mock)
+            await delete_policy(
+                policy_id,
+                session,
+                service_mock,
+                gateway_binding_mock,
+                audit_log_mock,
+                caller,
+            )
 
         assert exc_info.value.status_code == 404
         assert exc_info.value.detail == "Policy not found."
 
-    async def test_gateway_delete_failure_warning_logged(self):
-        """Test lines 121-125: gateway delete exception handling."""
+    async def test_gateway_delete_failure_rolls_back(self):
         service_mock = AsyncMock()
+        session = AsyncMock()
         gateway_binding_mock = AsyncMock()
         audit_log_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="admin",
+            token_type="jwt",
+            claims={"sub": "admin", "roles": ["admin"]},
+        )
 
         # Mock policy object (what service.delete_policy returns)
         from types import SimpleNamespace
@@ -96,24 +229,241 @@ class TestDeletePolicy:
 
         policy_id = deleted_policy.id
 
-        # Call with mock logger to verify warning
-        with patch("apps.access_control.authz.routes._logger") as mock_logger:
-            await delete_policy(policy_id, service_mock, gateway_binding_mock, audit_log_mock)
-
-            # Verify warning was logged
-            mock_logger.warning.assert_called_once()
-            assert "Gateway delete failed after policy deletion" in str(
-                mock_logger.warning.call_args
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_policy(
+                policy_id,
+                session,
+                service_mock,
+                gateway_binding_mock,
+                audit_log_mock,
+                caller,
             )
-            assert str(policy_id) in str(mock_logger.warning.call_args)
 
-        # Verify audit log still called despite gateway failure
-        audit_log_mock.append_entry.assert_called_once_with(
-            actor="system",
-            action="policy.deleted",
-            resource="svc-1",
-            detail={"policy_id": str(policy_id)},
+        assert exc_info.value.status_code == 502
+        assert "Gateway delete error" in exc_info.value.detail
+        gateway_binding_mock.delete_policy.assert_called_once_with(policy_id)
+        audit_log_mock.append_entry.assert_not_called()
+        session.rollback.assert_awaited_once()
+
+
+class TestListPolicies:
+    async def test_list_policies_requires_authenticated_caller(self):
+        service_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="alice",
+            token_type="jwt",
+            claims={"sub": "alice"},
         )
 
-        # Verify gateway delete was attempted
-        gateway_binding_mock.delete_policy.assert_called_once_with(policy_id)
+        await list_policies(service=service_mock, _caller=caller)
+
+        service_mock.list_policies.assert_awaited_once()
+
+
+class TestEvaluatePolicy:
+    async def test_evaluate_policy_requires_authenticated_caller(self):
+        service_mock = AsyncMock()
+        service_mock.evaluate.return_value = MagicMock()
+        caller = TokenPrincipalResponse(
+            subject="alice",
+            token_type="jwt",
+            claims={"sub": "alice"},
+        )
+
+        payload = PolicyEvaluationRequest(
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action="getItem",
+            risk_level="safe",
+        )
+
+        await evaluate_policy(payload, service_mock, caller)
+
+        service_mock.evaluate.assert_awaited_once_with(payload)
+
+
+# ---------- Additional tests to cover uncovered lines ----------
+
+
+def _admin_caller() -> TokenPrincipalResponse:
+    return TokenPrincipalResponse(
+        subject="admin",
+        token_type="jwt",
+        claims={"sub": "admin", "roles": ["admin"]},
+    )
+
+
+class TestCreatePolicySuccess:
+    """Lines 56-63: successful create → gateway sync → audit → commit → return."""
+
+    async def test_create_policy_success(self):
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        audit_log_mock = AsyncMock()
+        caller = _admin_caller()
+
+        created = MagicMock(id=uuid4(), resource_id="svc-1")
+        created.model_dump.return_value = {"id": str(created.id)}
+        service_mock.create_policy.return_value = created
+
+        payload = PolicyCreateRequest(
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action_pattern="get*",
+            decision="allow",
+        )
+
+        result = await create_policy(
+            payload, session, service_mock, gateway_binding_mock, audit_log_mock, caller
+        )
+
+        assert result is created
+        service_mock.create_policy.assert_awaited_once()
+        gateway_binding_mock.sync_policy.assert_awaited_once_with(created)
+        audit_log_mock.append_entry.assert_awaited_once()
+        session.commit.assert_awaited_once()
+        session.rollback.assert_not_awaited()
+
+    async def test_create_policy_audit_failure_rolls_back(self):
+        """When audit_log raises after gateway sync, should rollback and raise 502."""
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        audit_log_mock = AsyncMock()
+        caller = _admin_caller()
+
+        created = MagicMock(id=uuid4(), resource_id="svc-1")
+        created.model_dump.return_value = {"id": str(created.id)}
+        service_mock.create_policy.return_value = created
+        audit_log_mock.append_entry.side_effect = RuntimeError("audit failed")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await create_policy(
+                PolicyCreateRequest(
+                    subject_type="user",
+                    subject_id="alice",
+                    resource_id="svc-1",
+                    action_pattern="*",
+                    decision="allow",
+                ),
+                session,
+                service_mock,
+                gateway_binding_mock,
+                audit_log_mock,
+                caller,
+            )
+
+        assert exc_info.value.status_code == 502
+        session.rollback.assert_awaited_once()
+
+
+class TestUpdatePolicySuccess:
+    """Line 99: successful update path — gateway sync + commit."""
+
+    async def test_update_policy_success(self):
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        audit_log_mock = AsyncMock()
+        caller = _admin_caller()
+
+        updated = MagicMock(resource_id="svc-1")
+        updated.model_dump.return_value = {"id": "policy-1"}
+        service_mock.update_policy.return_value = updated
+
+        policy_id = uuid4()
+        payload = PolicyUpdateRequest(decision="deny")
+
+        result = await update_policy(
+            policy_id, payload, session, service_mock, gateway_binding_mock, audit_log_mock, caller
+        )
+
+        assert result is updated
+        gateway_binding_mock.sync_policy.assert_awaited_once_with(updated)
+        audit_log_mock.append_entry.assert_awaited_once()
+        session.commit.assert_awaited_once()
+        session.rollback.assert_not_awaited()
+
+    async def test_update_policy_audit_failure_rolls_back(self):
+        """When audit_log raises after gateway sync, should rollback and raise 502."""
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        audit_log_mock = AsyncMock()
+        caller = _admin_caller()
+
+        updated = MagicMock(resource_id="svc-1")
+        updated.model_dump.return_value = {"id": "policy-1"}
+        service_mock.update_policy.return_value = updated
+        audit_log_mock.append_entry.side_effect = RuntimeError("audit broke")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await update_policy(
+                uuid4(),
+                PolicyUpdateRequest(decision="allow"),
+                session,
+                service_mock,
+                gateway_binding_mock,
+                audit_log_mock,
+                caller,
+            )
+
+        assert exc_info.value.status_code == 502
+        session.rollback.assert_awaited_once()
+
+
+class TestDeletePolicySuccess:
+    """Lines 119-126, 133, 151-158: successful delete → gateway delete → audit → commit → 204."""
+
+    async def test_delete_policy_success(self):
+        from types import SimpleNamespace
+
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        audit_log_mock = AsyncMock()
+        caller = _admin_caller()
+
+        policy_id = uuid4()
+        deleted_policy = SimpleNamespace(id=policy_id, resource_id="svc-1")
+        service_mock.delete_policy.return_value = deleted_policy
+
+        result = await delete_policy(
+            policy_id, session, service_mock, gateway_binding_mock, audit_log_mock, caller
+        )
+
+        assert result is None  # 204 returns None
+        gateway_binding_mock.delete_policy.assert_awaited_once_with(policy_id)
+        audit_log_mock.append_entry.assert_awaited_once()
+        # Verify audit entry details
+        call_kwargs = audit_log_mock.append_entry.call_args.kwargs
+        assert call_kwargs["action"] == "policy.deleted"
+        assert call_kwargs["detail"] == {"policy_id": str(policy_id)}
+        session.commit.assert_awaited_once()
+        session.rollback.assert_not_awaited()
+
+    async def test_delete_policy_audit_failure_rolls_back(self):
+        """When audit_log raises after gateway delete, should rollback and raise 502."""
+        from types import SimpleNamespace
+
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        audit_log_mock = AsyncMock()
+        caller = _admin_caller()
+
+        policy_id = uuid4()
+        deleted_policy = SimpleNamespace(id=policy_id, resource_id="svc-1")
+        service_mock.delete_policy.return_value = deleted_policy
+        audit_log_mock.append_entry.side_effect = RuntimeError("audit exploded")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_policy(
+                policy_id, session, service_mock, gateway_binding_mock, audit_log_mock, caller
+            )
+
+        assert exc_info.value.status_code == 502
+        session.rollback.assert_awaited_once()

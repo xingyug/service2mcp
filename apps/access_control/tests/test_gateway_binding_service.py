@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -260,8 +261,300 @@ class TestResolveGatewayBindingService:
 # Additional tests to cover uncovered lines in gateway_binding/service.py
 
 
+class TestListServiceRoutes:
+    @pytest.mark.asyncio
+    async def test_empty(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        result = await svc.list_service_routes()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_sorted_documents(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        await client.upsert_route(route_id="z-route", document={"name": "z"})
+        await client.upsert_route(route_id="a-route", document={"name": "a"})
+        await client.upsert_route(route_id="m-route", document={"name": "m"})
+        result = await svc.list_service_routes()
+        assert result == [{"name": "a"}, {"name": "m"}, {"name": "z"}]
+
+
+def _mock_session(
+    pats_users: list | None = None,
+    policies: list | None = None,
+    service_versions: list | None = None,
+) -> AsyncMock:
+    """Build a mock AsyncSession for reconcile tests."""
+    session = AsyncMock()
+
+    pat_result = MagicMock()
+    pat_result.all.return_value = pats_users or []
+    session.execute.return_value = pat_result
+
+    policy_scalars = MagicMock()
+    policy_scalars.all.return_value = policies or []
+    sv_scalars = MagicMock()
+    sv_scalars.all.return_value = service_versions or []
+    session.scalars = AsyncMock(side_effect=[policy_scalars, sv_scalars])
+
+    return session
+
+
+_ZERO_STATS = {
+    "consumers_synced": 0,
+    "consumers_deleted": 0,
+    "policy_bindings_synced": 0,
+    "policy_bindings_deleted": 0,
+    "service_routes_synced": 0,
+    "service_routes_deleted": 0,
+}
+
+
 class TestReconcile:
-    pass
+    @pytest.mark.asyncio
+    async def test_empty_state(self) -> None:
+        """No data in DB, no data in gateway → all zeros."""
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session())
+        assert result == _ZERO_STATS
+
+    @pytest.mark.asyncio
+    async def test_syncs_missing_consumers(self) -> None:
+        pat_id, user_id = uuid4(), uuid4()
+        pat = SimpleNamespace(
+            id=pat_id, user_id=user_id, token_hash="hash123",
+            name="my-pat", created_at=datetime.now(UTC), revoked_at=None,
+        )
+        user = SimpleNamespace(id=user_id, username="alice")
+
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(pats_users=[(pat, user)]))
+
+        assert result["consumers_synced"] == 1
+        assert result["consumers_deleted"] == 0
+        consumers = await client.list_consumers()
+        assert f"pat-{pat_id}" in consumers
+
+    @pytest.mark.asyncio
+    async def test_deletes_orphan_consumers(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_consumer(
+            consumer_id="pat-orphan", username="ghost",
+            credential="old_hash", metadata={},
+        )
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session())
+
+        assert result["consumers_deleted"] == 1
+        consumers = await client.list_consumers()
+        assert "pat-orphan" not in consumers
+
+    @pytest.mark.asyncio
+    async def test_resyncs_credential_mismatch(self) -> None:
+        pat_id, user_id = uuid4(), uuid4()
+        pat = SimpleNamespace(
+            id=pat_id, user_id=user_id, token_hash="new_hash",
+            name="my-pat", created_at=datetime.now(UTC), revoked_at=None,
+        )
+        user = SimpleNamespace(id=user_id, username="alice")
+
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_consumer(
+            consumer_id=f"pat-{pat_id}", username="alice",
+            credential="old_hash", metadata={},
+        )
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(pats_users=[(pat, user)]))
+
+        assert result["consumers_synced"] == 1
+        assert result["consumers_deleted"] == 0
+        consumer = (await client.list_consumers())[f"pat-{pat_id}"]
+        assert consumer.credential == "new_hash"
+
+    @pytest.mark.asyncio
+    async def test_consumer_already_in_sync(self) -> None:
+        pat_id, user_id = uuid4(), uuid4()
+        now = datetime.now(UTC)
+        pat = SimpleNamespace(
+            id=pat_id, user_id=user_id, token_hash="same_hash",
+            name="my-pat", created_at=now, revoked_at=None,
+        )
+        user = SimpleNamespace(id=user_id, username="alice")
+
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_consumer(
+            consumer_id=f"pat-{pat_id}", username="alice",
+            credential="same_hash",
+            metadata={"username": "alice", "pat_name": "my-pat", "created_at": now.isoformat()},
+        )
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(pats_users=[(pat, user)]))
+
+        assert result["consumers_synced"] == 0
+        assert result["consumers_deleted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_syncs_missing_policy_bindings(self) -> None:
+        policy_id = uuid4()
+        policy = SimpleNamespace(
+            id=policy_id, subject_type="user", subject_id="alice",
+            resource_id="svc-1", action_pattern="*", risk_threshold="safe",
+            decision="allow", created_by="admin", created_at=datetime.now(UTC),
+        )
+
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(policies=[policy]))
+
+        assert result["policy_bindings_synced"] == 1
+        assert result["policy_bindings_deleted"] == 0
+        bindings = await client.list_policy_bindings()
+        assert f"policy-{policy_id}" in bindings
+
+    @pytest.mark.asyncio
+    async def test_deletes_orphan_policy_bindings(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_policy_binding(
+            binding_id="policy-orphan", document={"old": True},
+        )
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session())
+
+        assert result["policy_bindings_deleted"] == 1
+        bindings = await client.list_policy_bindings()
+        assert "policy-orphan" not in bindings
+
+    @pytest.mark.asyncio
+    async def test_resyncs_policy_document_mismatch(self) -> None:
+        policy_id = uuid4()
+        policy = SimpleNamespace(
+            id=policy_id, subject_type="user", subject_id="alice",
+            resource_id="svc-1", action_pattern="*", risk_threshold="safe",
+            decision="allow", created_by="admin", created_at=datetime.now(UTC),
+        )
+
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_policy_binding(
+            binding_id=f"policy-{policy_id}", document={"stale": True},
+        )
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(policies=[policy]))
+
+        assert result["policy_bindings_synced"] == 1
+        assert result["policy_bindings_deleted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_syncs_missing_routes(self) -> None:
+        sv = SimpleNamespace(route_config=_route_config(), is_active=True)
+
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(service_versions=[sv]))
+
+        assert result["service_routes_synced"] == 2
+        assert result["service_routes_deleted"] == 0
+        routes = await client.list_routes()
+        assert len(routes) == 2
+
+    @pytest.mark.asyncio
+    async def test_deletes_orphan_routes(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_route(route_id="orphan-route", document={"stale": True})
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session())
+
+        assert result["service_routes_deleted"] == 1
+        routes = await client.list_routes()
+        assert "orphan-route" not in routes
+
+    @pytest.mark.asyncio
+    async def test_resyncs_route_document_mismatch(self) -> None:
+        sv = SimpleNamespace(route_config=_route_config(), is_active=True)
+        expected_docs = _service_route_documents(
+            sv.route_config, include_default=True, include_version=True,
+        )
+        route_id = next(iter(expected_docs))
+
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_route(route_id=route_id, document={"stale": True})
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(service_versions=[sv]))
+
+        assert result["service_routes_synced"] == 2
+        updated = (await client.list_routes())[route_id]
+        assert updated.document == expected_docs[route_id]
+
+    @pytest.mark.asyncio
+    async def test_skips_non_dict_route_config(self) -> None:
+        sv = SimpleNamespace(route_config="not-a-dict", is_active=True)
+
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(service_versions=[sv]))
+
+        assert result["service_routes_synced"] == 0
+        assert result["service_routes_deleted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_inactive_version_omits_default_route(self) -> None:
+        sv = SimpleNamespace(route_config=_route_config(), is_active=False)
+
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(service_versions=[sv]))
+
+        assert result["service_routes_synced"] == 1
+        routes = await client.list_routes()
+        route_ids = list(routes.keys())
+        assert all("version" in rid for rid in route_ids)
+
+    @pytest.mark.asyncio
+    async def test_full_reconcile_mixed(self) -> None:
+        """Mix of create, update, and delete across all resource types."""
+        pat_id, user_id = uuid4(), uuid4()
+        pat = SimpleNamespace(
+            id=pat_id, user_id=user_id, token_hash="hash123",
+            name="my-pat", created_at=datetime.now(UTC), revoked_at=None,
+        )
+        user = SimpleNamespace(id=user_id, username="alice")
+
+        policy_id = uuid4()
+        policy = SimpleNamespace(
+            id=policy_id, subject_type="user", subject_id="alice",
+            resource_id="svc-1", action_pattern="*", risk_threshold="safe",
+            decision="allow", created_by="admin", created_at=datetime.now(UTC),
+        )
+
+        sv = SimpleNamespace(route_config=_route_config(), is_active=True)
+
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_consumer(
+            consumer_id="pat-orphan", username="ghost",
+            credential="old", metadata={},
+        )
+        await client.upsert_policy_binding(
+            binding_id="policy-orphan", document={"old": True},
+        )
+        await client.upsert_route(route_id="orphan-route", document={"old": True})
+
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(
+            _mock_session(
+                pats_users=[(pat, user)],
+                policies=[policy],
+                service_versions=[sv],
+            )
+        )
+
+        assert result["consumers_synced"] == 1
+        assert result["consumers_deleted"] == 1
+        assert result["policy_bindings_synced"] == 1
+        assert result["policy_bindings_deleted"] == 1
+        assert result["service_routes_synced"] == 2
+        assert result["service_routes_deleted"] == 1
 
 
 class TestDisposeGatewayBindingService:

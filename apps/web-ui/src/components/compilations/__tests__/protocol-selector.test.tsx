@@ -10,6 +10,9 @@ const ALL_PROTOCOL_LABELS = [
   "GraphQL",
   "SQL",
   "gRPC",
+  "JSON-RPC",
+  "OData",
+  "SCIM",
   "SOAP",
 ];
 
@@ -20,6 +23,9 @@ const ALL_PROTOCOL_DESCRIPTIONS = [
   "GraphQL schema or endpoint",
   "SQL database interface",
   "Protocol Buffers / gRPC service",
+  "JSON-RPC / OpenRPC service",
+  "OData service endpoint",
+  "SCIM identity provisioning API",
   "SOAP / WSDL web service",
 ];
 
@@ -74,6 +80,33 @@ describe("ProtocolSelector", () => {
     expect(handleChange).toHaveBeenCalledWith("grpc");
   });
 
+  it("calls onChange with 'jsonrpc' for JSON-RPC", async () => {
+    const user = userEvent.setup();
+    const handleChange = vi.fn();
+
+    render(<ProtocolSelector value="" onChange={handleChange} />);
+    await user.click(screen.getByText("JSON-RPC"));
+    expect(handleChange).toHaveBeenCalledWith("jsonrpc");
+  });
+
+  it("calls onChange with 'odata' for OData", async () => {
+    const user = userEvent.setup();
+    const handleChange = vi.fn();
+
+    render(<ProtocolSelector value="" onChange={handleChange} />);
+    await user.click(screen.getByText("OData"));
+    expect(handleChange).toHaveBeenCalledWith("odata");
+  });
+
+  it("calls onChange with 'scim' for SCIM", async () => {
+    const user = userEvent.setup();
+    const handleChange = vi.fn();
+
+    render(<ProtocolSelector value="" onChange={handleChange} />);
+    await user.click(screen.getByText("SCIM"));
+    expect(handleChange).toHaveBeenCalledWith("scim");
+  });
+
   it("highlights the selected protocol with primary styling", () => {
     const { container } = render(
       <ProtocolSelector value="openapi" onChange={vi.fn()} />,
@@ -109,12 +142,12 @@ describe("ProtocolSelector", () => {
     expect(autoDetectButton?.className).toMatch(/border-primary/);
   });
 
-  it("renders exactly 7 protocol buttons", () => {
+  it("renders exactly 10 protocol buttons", () => {
     const { container } = render(
       <ProtocolSelector value="" onChange={vi.fn()} />,
     );
     const buttons = container.querySelectorAll("button");
-    expect(buttons.length).toBe(7);
+    expect(buttons.length).toBe(10);
   });
 
   it("renders within a grid layout", () => {

@@ -17,6 +17,7 @@ from mcp.client.streamable_http import streamable_http_client
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from apps.access_control.authn.service import build_service_jwt
 from apps.compiler_api.repository import ArtifactRegistryRepository
 from apps.compiler_worker.activities.pipeline import ActivityRegistry
 from apps.compiler_worker.models import (
@@ -39,7 +40,12 @@ from libs.extractors import (
     SQLExtractor,
 )
 from libs.extractors.base import ExtractorProtocol, SourceConfig, TypeDetector
-from libs.generator import GeneratedManifestSet, GenericManifestConfig, generate_generic_manifests
+from libs.generator import (
+    GeneratedManifestSet,
+    GenericManifestConfig,
+    generate_generic_manifests,
+)
+from libs.generator.codegen_mode import CodegenManifestConfig, generate_codegen_manifests
 from libs.ir import ServiceIR, serialize_ir
 from libs.ir.models import (
     AuthConfig,
@@ -196,6 +202,7 @@ class AccessControlRoutePublisher:
     base_url: str
     timeout_seconds: float = _DEFAULT_ROUTE_PUBLISH_TIMEOUT_SECONDS
     client: httpx.AsyncClient | None = None
+    auth_token: str | None = None
 
     async def publish(self, route_config: dict[str, Any]) -> dict[str, Any] | None:
         payload = await self._post(
@@ -238,6 +245,7 @@ class AccessControlRoutePublisher:
                     "route_config": route_config,
                     "previous_routes": previous_routes or {},
                 },
+                headers=self._headers,
             )
             response.raise_for_status()
             try:
@@ -252,6 +260,11 @@ class AccessControlRoutePublisher:
         finally:
             if owns_client:
                 await client.aclose()
+
+    @property
+    def _headers(self) -> dict[str, str]:
+        token = self.auth_token or build_service_jwt()
+        return {"Authorization": f"Bearer {token}"}
 
 
 @dataclass
@@ -569,7 +582,7 @@ def create_default_activity_registry(
 
     async def enhance_stage(context: CompilationContext) -> StageExecutionResult:
         service_ir = ServiceIR.model_validate(context.payload["service_ir"])
-        if not _enhancement_enabled():
+        if not _enhancement_enabled(context.request.options):
             # Still apply deterministic intent derivation even without LLM.
             service_ir = _apply_post_enhancement(service_ir)
             return _stage_result(
@@ -634,16 +647,29 @@ def create_default_activity_registry(
 
     async def generate_stage(context: CompilationContext) -> StageExecutionResult:
         service_ir = ServiceIR.model_validate(context.payload["service_ir"])
-        manifest_set = generate_generic_manifests(
-            service_ir,
-            config=GenericManifestConfig(
-                runtime_image=resolved_settings.runtime_image,
-                service_id=str(context.payload["service_id"]),
-                version_number=int(context.payload["version_number"]),
-                namespace=resolved_settings.namespace,
-                image_pull_policy=resolved_settings.image_pull_policy,
-            ),
-        )
+        runtime_mode = context.request.options.get("runtime_mode", "generic")
+        if runtime_mode == "codegen":
+            manifest_set = generate_codegen_manifests(
+                service_ir,
+                config=CodegenManifestConfig(
+                    runtime_image=resolved_settings.runtime_image,
+                    service_id=str(context.payload["service_id"]),
+                    version_number=int(context.payload["version_number"]),
+                    namespace=resolved_settings.namespace,
+                    image_pull_policy=resolved_settings.image_pull_policy,
+                ),
+            )
+        else:
+            manifest_set = generate_generic_manifests(
+                service_ir,
+                config=GenericManifestConfig(
+                    runtime_image=resolved_settings.runtime_image,
+                    service_id=str(context.payload["service_id"]),
+                    version_number=int(context.payload["version_number"]),
+                    namespace=resolved_settings.namespace,
+                    image_pull_policy=resolved_settings.image_pull_policy,
+                ),
+            )
         return _stage_result(
             context_updates={
                 "manifest_yaml": manifest_set.yaml,
@@ -862,7 +888,9 @@ def _source_config_from_context(context: CompilationContext) -> SourceConfig:
         if isinstance(raw_hints, Mapping)
         else {}
     )
-    protocol_hint = options.get("protocol")
+    protocol_hint = options.get("force_protocol")
+    if not isinstance(protocol_hint, str) or not protocol_hint:
+        protocol_hint = options.get("protocol")
     if isinstance(protocol_hint, str) and protocol_hint:
         hints.setdefault("protocol", protocol_hint)
 
@@ -964,7 +992,9 @@ async def _next_version_number(
     return int(current_max or 0) + 1
 
 
-def _enhancement_enabled() -> bool:
+def _enhancement_enabled(options: Mapping[str, Any] | None = None) -> bool:
+    if isinstance(options, Mapping) and options.get("skip_enhancement") is True:
+        return False
     if os.getenv("WORKER_ENABLE_LLM_ENHANCEMENT", "").lower() in {"1", "true", "yes"}:
         return True
     return bool(os.getenv("LLM_API_KEY") or os.getenv("VERTEX_PROJECT_ID"))

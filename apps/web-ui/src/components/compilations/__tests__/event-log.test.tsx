@@ -42,7 +42,7 @@ describe("EventLog", () => {
   it("filters events by stage when filterStage is provided", () => {
     const events: CompilationEvent[] = [
       makeEvent({ stage: "extract", detail: "Extract event" }),
-      makeEvent({ stage: "build", detail: "Build event" }),
+      makeEvent({ stage: "deploy", detail: "Deploy event" }),
       makeEvent({ stage: "extract", detail: "Another extract event" }),
     ];
 
@@ -57,7 +57,7 @@ describe("EventLog", () => {
 
     expect(screen.getByText("Extract event")).toBeInTheDocument();
     expect(screen.getByText("Another extract event")).toBeInTheDocument();
-    expect(screen.queryByText("Build event")).not.toBeInTheDocument();
+    expect(screen.queryByText("Deploy event")).not.toBeInTheDocument();
   });
 
   it("shows error message when error prop is set", () => {

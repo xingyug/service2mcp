@@ -721,6 +721,80 @@ Out of scope:
 - Marketing or launch activities
 - npm/PyPI package publication (the project is a platform, not a library)
 
+### B-010: Real-Target Full Endpoint Coverage
+
+Status: planned
+
+Scope:
+- Raise the current real-target baseline from "all 11 runtimes are live-usable" to "each runtime's generated tool set covers the full visible upstream service surface"
+- Keep the existing non-LLM `realr24all` green baseline intact while closing the remaining structural discovery gaps
+- Make the 11 live real-target services the canonical acceptance matrix for endpoint-coverage work
+
+Why this track exists:
+- The current `realr24all` matrix is operationally green (`11/11 passed`), but coverage still varies by protocol
+- Spec-first/introspection-first services are already at or near exact parity, while REST, JSON-RPC, gRPC, SQL, and parts of SCIM still have structural gaps
+- The next phase should therefore optimize for **coverage parity**, not just another proof of basic runtime correctness
+
+Success criteria:
+- A machine-readable coverage report exists for all 11 real-target services and records, per service: `upstream_total`, `generated_total`, `audited_total`, `passed`, `failed`, `skipped`, and any named `missing_operations`
+- Exact-parity protocols remain exact with zero regression:
+  - Directus GraphQL: `33 / 33`
+  - Directus OpenAPI: `154 / 154`
+  - Gitea OpenAPI: `406 / 406`
+  - NorthBreeze OData: `17 / 17` semantic parity against `$metadata`
+  - SOAP CXF: `3 / 3`
+- Partial protocols are closed to their intended live-service parity:
+  - Directus REST and PocketBase REST no longer stay collection-scoped at `2` tools each; they compile from widened roots and cover the full visible seeded REST surface
+  - aria2 tool count matches the live `system.listMethods` result
+  - OpenFGA tool count matches the reflected `openfga.v1.OpenFGAService` RPC count, excluding generic gRPC health endpoints unless deliberately modeled
+  - Jackson SCIM matches the actual live tenant surface: resource CRUD plus PATCH only when the live tenant advertises/supports it; discovery endpoints count only if they return non-404 in that tenant/product base
+  - SQL reaches the declared semantic surface: query/insert/update/delete for tables, query for views, callable wrappers for supported functions
+- A final non-LLM real-target rerun completes `11 / 11 passed` with zero failed audits and with no unexplained structural gaps in the coverage report
+
+Ordered execution plan:
+
+1. Lock the current truth source
+- Add a dedicated coverage manifest layer so every service has a reproducible upstream "truth" source:
+  - GraphQL introspection snapshots
+  - OpenAPI/Swagger operation inventories
+  - OData `$metadata` inventories
+  - SOAP WSDL operation inventories
+  - JSON-RPC `system.listMethods`
+  - gRPC reflection inventories
+  - SQL catalog inventories
+  - SCIM live-surface probe inventories
+- Do not rely on hand-written counts in docs as the authoritative source after this track starts
+
+2. Close the protocol-specific extraction gaps
+- Fix the protocols that still under-generate relative to their live service surface
+- Keep already-green exact-parity protocols on a regression leash with count and name-based assertions
+
+3. Expand proof and audit from "usable" to "coverage-complete"
+- Keep mutation skip policy where appropriate, but require structure parity and safe-path live proof for every service
+- Separate "full structure parity" from "all tools live-invoked" in reporting so future claims stay precise
+
+Tasks:
+- **B-010-T1: Coverage contract and manifest capture** — Add a machine-readable `CoverageExpectation` / `CoverageReport` path in the proof/audit layer. Persist per-service upstream operation inventories and compare them with generated tool inventories by name/count. Candidate write set: `libs/validator/audit.py`, `apps/proof_runner/live_llm_e2e.py`, `scripts/smoke-gke-llm-e2e.sh`, plus a new manifest location under `deploy/k8s/real-targets/`.
+- **B-010-T2: REST whole-service source expansion** — Replace the current collection-only proof sources for Directus REST and PocketBase REST with broader authenticated roots. Extend `RESTExtractor` so it can discover collection registries and top-level collection paths from JSON API roots instead of stopping at one seed collection. Candidate write set: `libs/extractors/rest.py`, `apps/proof_runner/live_llm_e2e.py`, `deploy/k8s/real-targets/README.md`, proof-case definitions.
+- **B-010-T3: Fold in auth / rate-limit / pagination hardening for REST discovery** — Execute the planned `B-008` REST hardening work as part of this endpoint-parity track instead of as a disconnected side quest. That means authenticated crawling, 429 backoff, and pagination-following must land before calling REST coverage "complete". Candidate write set: `libs/extractors/rest.py`, `libs/extractors/tests/test_rest.py`, `tests/integration/`.
+- **B-010-T4: JSON-RPC full method discovery** — Add `system.listMethods` fallback discovery in `jsonrpc.py` so aria2 no longer depends on the hand-written 3-method proof fixture. Generate tool definitions for the complete live method list and keep any unsupported signature ambiguity explicit in metadata instead of silently dropping methods. Candidate write set: `libs/extractors/jsonrpc.py`, `libs/extractors/tests/test_jsonrpc.py`, proof-case definitions.
+- **B-010-T5: gRPC reflection-driven extraction** — Add reflection-backed service/method discovery to `grpc.py` and generate the full OpenFGAService RPC surface from reflection instead of the minimal hand-authored proto stub. Exclude generic health service methods unless they are intentionally promoted into MCP tools. Candidate write set: `libs/extractors/grpc.py`, `apps/proof_runner/live_llm_e2e.py`, `tests/integration/test_mcp_runtime_grpc_unary.py`, `libs/extractors/tests/test_grpc.py`.
+- **B-010-T6: SQL full semantic CRUD coverage** — Extend `sql.py` beyond query + insert so tables emit update/delete operations, views keep query-only semantics, and supported functions stay callable. Define SQL coverage against the extractor's declared semantic surface rather than raw wire-protocol "all possible SQL". Candidate write set: `libs/extractors/sql.py`, `apps/mcp_runtime/sql.py`, `tests/integration/test_mcp_runtime_sql.py`, `libs/extractors/tests/test_sql.py`.
+- **B-010-T7: SCIM live-surface parity contract** — Teach the SCIM proof/audit path to distinguish standard SCIM discovery endpoints from the narrower tenant-specific Jackson deployment actually running in GKE. Count only the live non-404 tenant surface as required parity, and include PATCH only when the live service advertises/supports it. Candidate write set: `libs/extractors/scim.py`, `apps/proof_runner/live_llm_e2e.py`, `libs/extractors/tests/test_scim.py`, coverage-manifest code.
+- **B-010-T8: Exact-parity regression locks for already-green protocols** — Add count/name regression assertions so Directus GraphQL, Directus OpenAPI, Gitea OpenAPI, NorthBreeze OData, and SOAP CXF cannot silently lose coverage while the partial protocols are being expanded. Candidate write set: proof/audit tests, protocol extractor tests, and real-target manifests.
+- **B-010-T9: Targeted live reruns and final matrix close-out** — Run narrow non-LLM reruns as each protocol gap closes (`rest`, `jsonrpc`, `grpc`, `scim`, `sql`), then a final `PROTOCOL=all AUDIT_ALL_GENERATED_TOOLS=1` live rerun. Update `agent.md` and `devlog.md` with the final per-service coverage matrix and explicitly distinguish structural parity from audited live-call parity.
+
+Dependencies:
+- Uses the current `realr24all` green baseline as the starting point
+- Consumes the `B-008` REST auth/rate-limit/pagination work inside this broader endpoint-coverage track rather than treating it as an isolated milestone
+- Should be completed before `B-009` open-source export so the public snapshot reflects the stronger coverage story
+
+Out of scope:
+- Re-enabling LLM enhancer/judge paths for this track; all acceptance should be met with `ENABLE_LLM_ENHANCEMENT=0` and `ENABLE_LLM_JUDGE=0`
+- Browser-rendered SPA crawling or headless browser discovery
+- Vendor-specific bespoke plugins for APIs outside the 11-service real-target matrix
+- Claiming "all tools have been live-invoked" when the proof policy still intentionally skips destructive/stateful tools
+
 ## Delivery Shape For Each Module
 
 Every module should ship in three passes:

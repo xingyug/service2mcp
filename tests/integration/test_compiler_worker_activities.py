@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 from uuid import uuid4
 
 import httpx
@@ -19,7 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
-from apps.access_control.authn.service import JWTSettings
+from apps.access_control.authn.service import JWTSettings, build_service_jwt
 from apps.access_control.gateway_binding.client import HTTPGatewayAdminClient
 from apps.access_control.main import create_app as create_access_control_app
 from apps.compiler_api.repository import ArtifactRegistryRepository
@@ -141,6 +145,41 @@ def _build_native_grpc_unary_ir() -> ServiceIR:
                 grpc_unary=GrpcUnaryRuntimeConfig(
                     rpc_path="/catalog.v1.InventoryService/LookupInventory"
                 ),
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.safe,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                    writes_state=False,
+                    destructive=False,
+                    external_side_effect=False,
+                    idempotent=True,
+                ),
+                enabled=True,
+            )
+        ],
+    )
+
+
+def _build_minimal_http_ir(
+    *,
+    protocol: str,
+    service_name: str = "forced-protocol-service",
+) -> ServiceIR:
+    return ServiceIR(
+        source_hash="2" * 64,
+        protocol=protocol,
+        service_name=service_name,
+        service_description=f"{protocol} worker fixture",
+        base_url="https://example.com",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="listItems",
+                name="List Items",
+                description="List items.",
+                method="GET",
+                path="/items",
+                params=[],
                 risk=RiskMetadata(
                     risk_level=RiskLevel.safe,
                     confidence=1.0,
@@ -415,7 +454,8 @@ class RuntimeDeploymentHarness:
     async def deploy_from_manifest(self, manifest_payload: dict[str, Any]) -> DeploymentResult:
         config_map = cast(dict[str, Any], manifest_payload["config_map"])
         service = cast(dict[str, Any], manifest_payload["service"])
-        service_ir = ServiceIR.model_validate(json.loads(config_map["data"]["service-ir.json"]))
+        compressed_ir = base64.b64decode(config_map["binaryData"]["service-ir.json.gz"])
+        service_ir = ServiceIR.model_validate(json.loads(gzip.decompress(compressed_ir)))
         revision = str(service["metadata"]["name"])
         ir_path = self._tmp_path / f"{revision}.json"
         ir_path.write_text(serialize_ir(service_ir), encoding="utf-8")
@@ -500,6 +540,56 @@ class FlakyRuntimeTransport(httpx.AsyncBaseTransport):
 
     async def aclose(self) -> None:
         await self._transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_deployment_harness_reads_gzipped_service_ir_from_binary_data(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, str] = {}
+
+    async def upstream_handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"id": "1", "status": "ok"}, request=request)
+
+    manifest_set = generate_generic_manifests(
+        _build_rest_discovery_ir(),
+        config=GenericManifestConfig(
+            runtime_image="tool-compiler/mcp-runtime:test",
+            service_id="rest-discovery-runtime",
+            version_number=1,
+            namespace="test-ns",
+        ),
+    )
+    harness = RuntimeDeploymentHarness(
+        tmp_path=tmp_path,
+        upstream_handler=upstream_handler,
+    )
+
+    try:
+        deployment = await harness.deploy_from_manifest(
+            {
+                "config_map": manifest_set.config_map,
+                "deployment": manifest_set.deployment,
+                "service": manifest_set.service,
+                "network_policy": manifest_set.network_policy,
+                "route_config": manifest_set.route_config,
+                "yaml": manifest_set.yaml,
+            }
+        )
+        _, structured = await harness.current().app.state.runtime_state.mcp_server.call_tool(
+            "get_products_product_id",
+            {"product_id": "1"},
+        )
+    finally:
+        await harness.aclose()
+
+    assert deployment.deployment_revision == str(manifest_set.service["metadata"]["name"])
+    assert captured["method"] == "GET"
+    assert captured["url"].startswith("https://catalog.example.test/catalog/products/1")
+    assert structured["status"] == "ok"
+    assert structured["result"] == {"id": "1", "status": "ok"}
 
 
 def test_build_sample_invocations_uses_discovery_defaults_for_rest_protocol() -> None:
@@ -795,6 +885,83 @@ async def test_default_activity_registry_allows_supported_native_grpc_stream_ir(
 
 
 @pytest.mark.asyncio
+async def test_default_activity_registry_extract_stage_uses_force_protocol_hint(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    registry = create_default_activity_registry(session_factory=session_factory)
+
+    class _DummyExtractor:
+        def __init__(self, protocol_name: str) -> None:
+            self.protocol_name = protocol_name
+
+        def extract(self, source: Any) -> ServiceIR:
+            assert source.hints["protocol"] == "openapi"
+            return _build_minimal_http_ir(protocol=self.protocol_name)
+
+        def close(self) -> None:
+            return None
+
+    request = CompilationRequest(
+        source_url="https://example.com/spec.txt",
+        source_content="not-a-real-spec",
+        service_name="forced-protocol-service",
+        options={"force_protocol": "openapi"},
+    )
+    context = CompilationContext(
+        job_id=request.job_id or uuid4(),
+        request=request,
+        payload={},
+    )
+
+    with (
+        patch(
+            "apps.compiler_worker.activities.production._build_extractors",
+            return_value=[_DummyExtractor("rest"), _DummyExtractor("openapi")],
+        ),
+        patch(
+            "apps.compiler_worker.activities.production.TypeDetector.detect",
+            side_effect=AssertionError("type detection should not run when force_protocol is set"),
+        ),
+    ):
+        result = await registry.run_stage(CompilationStage.EXTRACT, context)
+
+    assert result.protocol == "openapi"
+    assert result.context_updates["service_ir"]["protocol"] == "openapi"
+    assert result.context_updates["service_id"] == "forced-protocol-service"
+
+
+@pytest.mark.asyncio
+async def test_default_activity_registry_enhance_stage_respects_skip_enhancement_option(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    registry = create_default_activity_registry(session_factory=session_factory)
+    service_ir = _build_minimal_http_ir(protocol="openapi", service_name="skip-enhancement")
+    request = CompilationRequest(
+        service_name="skip-enhancement",
+        options={"skip_enhancement": True},
+    )
+    context = CompilationContext(
+        job_id=request.job_id or uuid4(),
+        request=request,
+        payload={"service_ir": service_ir.model_dump(mode="json")},
+        protocol=service_ir.protocol,
+        service_name=service_ir.service_name,
+    )
+
+    with (
+        patch.dict(os.environ, {"LLM_API_KEY": "sk-test"}, clear=False),
+        patch(
+            "apps.compiler_worker.activities.production.IREnhancer.enhance",
+            side_effect=AssertionError("enhancer should be skipped"),
+        ),
+    ):
+        result = await registry.run_stage(CompilationStage.ENHANCE, context)
+
+    assert result.context_updates["token_usage"]["model"] == "disabled"
+    assert result.event_detail["mode"] == "passthrough"
+
+
+@pytest.mark.asyncio
 async def test_generate_stage_enables_native_grpc_stream_in_runtime_manifest(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -975,9 +1142,10 @@ async def test_default_activity_registry_publishes_routes_via_access_control(
         transport=gateway_admin_transport,
         base_url="http://gateway-admin",
     ) as gateway_admin_http_client:
+        jwt_settings = JWTSettings(secret="test-secret")
         access_control_app = create_access_control_app(
             session_factory=session_factory,
-            jwt_settings=JWTSettings(secret="test-secret"),
+            jwt_settings=jwt_settings,
             gateway_admin_client=HTTPGatewayAdminClient(
                 base_url="http://gateway-admin",
                 client=gateway_admin_http_client,
@@ -1002,6 +1170,7 @@ async def test_default_activity_registry_publishes_routes_via_access_control(
                     route_publisher=AccessControlRoutePublisher(
                         base_url="http://access-control",
                         client=access_control_http_client,
+                        auth_token=build_service_jwt(jwt_settings=jwt_settings),
                     ),
                     runtime_http_client_factory=deployment_harness.runtime_http_client_factory,
                     tool_invoker_factory=deployment_harness.tool_invoker_factory,
@@ -1067,9 +1236,10 @@ async def test_route_rollback_restores_previous_active_route_when_register_fails
         transport=gateway_admin_transport,
         base_url="http://gateway-admin",
     ) as gateway_admin_http_client:
+        jwt_settings = JWTSettings(secret="test-secret")
         access_control_app = create_access_control_app(
             session_factory=session_factory,
-            jwt_settings=JWTSettings(secret="test-secret"),
+            jwt_settings=jwt_settings,
             gateway_admin_client=HTTPGatewayAdminClient(
                 base_url="http://gateway-admin",
                 client=gateway_admin_http_client,
@@ -1096,6 +1266,7 @@ async def test_route_rollback_restores_previous_active_route_when_register_fails
                     route_publisher=AccessControlRoutePublisher(
                         base_url="http://access-control",
                         client=access_control_http_client,
+                        auth_token=build_service_jwt(jwt_settings=jwt_settings),
                     ),
                     runtime_http_client_factory=deployment_harness.runtime_http_client_factory,
                     tool_invoker_factory=deployment_harness.tool_invoker_factory,
@@ -1109,6 +1280,7 @@ async def test_route_rollback_restores_previous_active_route_when_register_fails
                 route_publisher=AccessControlRoutePublisher(
                     base_url="http://access-control",
                     client=access_control_http_client,
+                    auth_token=build_service_jwt(jwt_settings=jwt_settings),
                 ),
                 runtime_http_client_factory=deployment_harness.runtime_http_client_factory,
                 tool_invoker_factory=deployment_harness.tool_invoker_factory,

@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   RefreshCw,
@@ -16,7 +17,7 @@ import {
   Radio,
   RotateCcw,
 } from "lucide-react";
-
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -54,6 +55,8 @@ import { IREditor } from "@/components/services/ir-editor";
 import { VersionDiffDialog } from "@/components/services/version-diff-dialog";
 import { ReviewStatusBadge } from "@/components/review/review-status-badge";
 import { useService, useArtifactVersions } from "@/hooks/use-api";
+import { artifactApi, gatewayApi } from "@/lib/api-client";
+import { queryKeys } from "@/lib/query-keys";
 import type { Operation, ServiceIR } from "@/types/api";
 
 // ---------------------------------------------------------------------------
@@ -168,20 +171,62 @@ function ToolsTab({ operations }: { operations: Operation[] }) {
 // ---------------------------------------------------------------------------
 
 function VersionsTab({ serviceId }: { serviceId: string }) {
+  const queryClient = useQueryClient();
   const { data, isLoading } = useArtifactVersions(serviceId);
   const versions = data?.versions ?? [];
 
   const [deleteTarget, setDeleteTarget] = React.useState<number | null>(null);
   const [deleting, setDeleting] = React.useState(false);
+  const [activatingVersion, setActivatingVersion] = React.useState<number | null>(
+    null,
+  );
+
+  async function refreshVersionData() {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.artifacts.versions(serviceId),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.services.detail(serviceId),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.services.all,
+      }),
+    ]);
+  }
 
   async function handleDelete() {
+    if (deleteTarget === null) {
+      return;
+    }
+
     setDeleting(true);
     try {
-      // Placeholder — call a real delete API when available
-      await new Promise((r) => setTimeout(r, 500));
+      await artifactApi.deleteVersion(serviceId, deleteTarget);
+      toast.success(`Deleted version v${deleteTarget}.`);
+      await refreshVersionData();
+    } catch (error) {
+      toast.error(
+        `Delete failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     } finally {
       setDeleting(false);
       setDeleteTarget(null);
+    }
+  }
+
+  async function handleActivate(versionNumber: number) {
+    setActivatingVersion(versionNumber);
+    try {
+      await artifactApi.activateVersion(serviceId, versionNumber);
+      toast.success(`Activated version v${versionNumber}.`);
+      await refreshVersionData();
+    } catch (error) {
+      toast.error(
+        `Activation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setActivatingVersion(null);
     }
   }
 
@@ -250,9 +295,16 @@ function VersionsTab({ serviceId }: { serviceId: string }) {
               <TableCell className="text-right">
                 <div className="flex items-center justify-end gap-1">
                   {!v.is_active && (
-                    <Button variant="ghost" size="xs">
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      disabled={activatingVersion === v.version_number}
+                      onClick={() => handleActivate(v.version_number)}
+                    >
                       <Radio className="mr-1 size-3" />
-                      Activate
+                      {activatingVersion === v.version_number
+                        ? "Activating…"
+                        : "Activate"}
                     </Button>
                   )}
                   <VersionDiffDialog
@@ -344,10 +396,62 @@ function IRTab({ serviceId }: { serviceId: string }) {
 // Tab: Gateway
 // ---------------------------------------------------------------------------
 
-function GatewayTab({ serviceId }: { serviceId: string }) {
+function GatewayTab({
+  serviceId,
+  onShowVersions,
+}: {
+  serviceId: string;
+  onShowVersions: () => void;
+}) {
   const { data, isLoading } = useArtifactVersions(serviceId);
   const activeVersion = data?.versions?.find((v) => v.is_active);
   const routeConfig = activeVersion?.route_config;
+  const [syncing, setSyncing] = React.useState(false);
+  const [reconciling, setReconciling] = React.useState(false);
+
+  async function handleSync() {
+    if (!routeConfig) {
+      toast.error("No active route configuration is available for this service.");
+      onShowVersions();
+      return;
+    }
+
+    setSyncing(true);
+    try {
+      const result = await gatewayApi.syncRoutes({
+        route_config: routeConfig,
+        previous_routes: {},
+      });
+      toast.success(`Synced ${result.service_routes_synced} gateway route(s).`);
+    } catch (error) {
+      toast.error(
+        `Gateway sync failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function handleReconcile() {
+    setReconciling(true);
+    try {
+      const result = await gatewayApi.reconcile();
+      const totalChanged =
+        result.consumers_synced +
+        result.consumers_deleted +
+        result.policy_bindings_synced +
+        result.policy_bindings_deleted +
+        result.service_routes_synced +
+        result.service_routes_deleted;
+      toast.success(`Reconciled ${totalChanged} gateway resource(s).`);
+    } catch (error) {
+      toast.error(
+        `Gateway reconcile failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setReconciling(false);
+    }
+  }
 
   if (isLoading) {
     return <Skeleton className="h-48 w-full" />;
@@ -363,13 +467,18 @@ function GatewayTab({ serviceId }: { serviceId: string }) {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" onClick={handleSync} disabled={syncing}>
             <RefreshCw className="mr-1 size-4" />
-            Sync
+            {syncing ? "Syncing…" : "Sync"}
           </Button>
-          <Button variant="outline" size="sm">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleReconcile}
+            disabled={reconciling}
+          >
             <RotateCcw className="mr-1 size-4" />
-            Reconcile
+            {reconciling ? "Reconciling…" : "Reconcile"}
           </Button>
         </div>
       </div>
@@ -395,7 +504,7 @@ function GatewayTab({ serviceId }: { serviceId: string }) {
           <p className="text-muted-foreground">
             No route configuration found for this service.
           </p>
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" onClick={onShowVersions}>
             <RefreshCw className="mr-1 size-4" />
             Sync Routes
           </Button>
@@ -413,6 +522,7 @@ export default function ServiceDetailPage() {
   const params = useParams<{ serviceId: string }>();
   const router = useRouter();
   const serviceId = params.serviceId;
+  const [activeTab, setActiveTab] = React.useState("tools");
 
   const { data: service, isLoading, error } = useService(serviceId);
   const { data: versionsData } = useArtifactVersions(serviceId);
@@ -476,15 +586,35 @@ export default function ServiceDetailPage() {
           )}
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              router.push(
+                `/compilations/new?service_name=${encodeURIComponent(service.name)}`,
+              )
+            }
+          >
             <RefreshCw className="mr-1 size-4" />
             Recompile
           </Button>
-          <Button variant="outline" size="sm">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setActiveTab("ir")}
+          >
             <Code className="mr-1 size-4" />
             View IR
           </Button>
-          <Button variant="outline" size="sm">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              router.push(
+                `/policies?resource_id=${encodeURIComponent(serviceId)}`,
+              )
+            }
+          >
             <Shield className="mr-1 size-4" />
             Manage Access
           </Button>
@@ -492,7 +622,7 @@ export default function ServiceDetailPage() {
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="tools">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="tools">
             Tools ({operations.length})
@@ -515,7 +645,10 @@ export default function ServiceDetailPage() {
         </TabsContent>
 
         <TabsContent value="gateway" className="mt-4">
-          <GatewayTab serviceId={serviceId} />
+          <GatewayTab
+            serviceId={serviceId}
+            onShowVersions={() => setActiveTab("versions")}
+          />
         </TabsContent>
       </Tabs>
     </div>

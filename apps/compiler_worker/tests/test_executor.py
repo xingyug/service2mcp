@@ -98,3 +98,57 @@ class TestResolveCompilationExecutor:
             os.environ.pop("DATABASE_URL", None)
             with pytest.raises(RuntimeError, match="DATABASE_URL"):
                 resolve_compilation_executor()
+
+
+class TestDatabaseWorkflowCompilationExecutor:
+    def test_get_engine_creates_and_caches(self) -> None:
+        executor = DatabaseWorkflowCompilationExecutor(
+            database_url="postgresql+asyncpg://u:p@h/db"
+        )
+        with patch(
+            "apps.compiler_worker.executor.create_async_engine"
+        ) as mock_create:
+            sentinel_engine = object()
+            mock_create.return_value = sentinel_engine
+
+            engine1 = executor._get_engine()
+            engine2 = executor._get_engine()
+
+        mock_create.assert_called_once_with(
+            "postgresql+asyncpg://u:p@h/db", pool_pre_ping=True
+        )
+        assert engine1 is sentinel_engine
+        assert engine2 is sentinel_engine
+
+    @pytest.mark.asyncio
+    async def test_execute_builds_workflow_and_runs(self) -> None:
+        mock_engine = AsyncMock()
+        mock_workflow_instance = AsyncMock()
+        req = _request()
+
+        with (
+            patch(
+                "apps.compiler_worker.executor.create_async_engine",
+                return_value=mock_engine,
+            ),
+            patch(
+                "apps.compiler_worker.executor.async_sessionmaker",
+            ) as mock_sm,
+            patch(
+                "apps.compiler_worker.executor.SQLAlchemyCompilationJobStore",
+            ) as mock_store_cls,
+            patch(
+                "apps.compiler_worker.executor.CompilationWorkflow",
+            ) as mock_wf_cls,
+            patch(
+                "apps.compiler_worker.executor.create_default_activity_registry",
+            ) as mock_registry,
+        ):
+            mock_wf_cls.return_value = mock_workflow_instance
+            executor = DatabaseWorkflowCompilationExecutor(
+                database_url="postgresql+asyncpg://u:p@h/db"
+            )
+            await executor.execute(req)
+
+            mock_wf_cls.assert_called_once()
+            mock_workflow_instance.run.assert_awaited_once_with(req)

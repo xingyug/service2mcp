@@ -48,6 +48,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://toolcompiler:toolcompiler@postgres:5432/toolcompiler
       WORKFLOW_ENGINE: celery
       REDIS_URL: redis://redis:6379/0
+      ACCESS_CONTROL_URL: http://access-control:8001
+      ACCESS_CONTROL_JWT_SECRET: dev-secret
       PYTHONUNBUFFERED: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
     volumes:
@@ -156,6 +158,7 @@ services:
       MCP_RUNTIME_IMAGE: tool-compiler/mcp-runtime:latest
       ROUTE_PUBLISH_MODE: access-control
       ACCESS_CONTROL_URL: http://access-control:8001
+      ACCESS_CONTROL_JWT_SECRET: dev-secret
       CELERY_WORKER_CONCURRENCY: "1"
       CELERY_WORKER_POOL: solo
       PYTHONUNBUFFERED: "1"

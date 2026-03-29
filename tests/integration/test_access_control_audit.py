@@ -26,7 +26,12 @@ from libs.db_models import Base
 _TEST_JWT_SECRET = "test-secret"
 
 
-def _make_test_jwt(subject: str = "test-user", secret: str = _TEST_JWT_SECRET) -> str:
+def _make_test_jwt(
+    subject: str = "test-user",
+    secret: str = _TEST_JWT_SECRET,
+    *,
+    roles: list[str] | None = None,
+) -> str:
     """Create a minimal HS256 JWT for integration tests."""
 
     def _b64(data: bytes) -> str:
@@ -34,7 +39,10 @@ def _make_test_jwt(subject: str = "test-user", secret: str = _TEST_JWT_SECRET) -
 
     header = _b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
     now = int(time.time())
-    payload = _b64(json.dumps({"sub": subject, "iat": now, "exp": now + 3600}).encode())
+    payload_body: dict[str, object] = {"sub": subject, "iat": now, "exp": now + 3600}
+    if roles is not None:
+        payload_body["roles"] = roles
+    payload = _b64(json.dumps(payload_body).encode())
     signing_input = f"{header}.{payload}".encode()
     signature = _b64(hmac.new(secret.encode(), signing_input, hashlib.sha256).digest())
     return f"{header}.{payload}.{signature}"
@@ -120,13 +128,14 @@ async def test_policy_change_creates_audit_log_entry(
             "decision": "allow",
             "created_by": "admin-user",
         },
+        headers={"Authorization": f"Bearer {_make_test_jwt('admin-user', roles=['admin'])}"},
     )
     assert created.status_code == 201
 
     logs = await access_control_client.get(
         "/api/v1/audit/logs",
         params={"actor": "admin-user"},
-        headers={"Authorization": f"Bearer {_make_test_jwt()}"},
+        headers={"Authorization": f"Bearer {_make_test_jwt('admin-user')}"},
     )
     assert logs.status_code == 200
     assert logs.json()["items"][0]["action"] == "policy.created"

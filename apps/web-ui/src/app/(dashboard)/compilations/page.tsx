@@ -15,6 +15,11 @@ import {
 import { toast } from "sonner";
 
 import { useCompilations, useRetryCompilation, useRollbackCompilation } from "@/hooks/use-api";
+import {
+  ALL_COMPILATION_STATUSES,
+  formatCompilationStatus,
+  IN_PROGRESS_COMPILATION_STATUSES,
+} from "@/lib/compilation-status";
 import type { CompilationJobResponse, CompilationStatus } from "@/types/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -36,39 +41,6 @@ import {
 import { StatusBadge } from "@/components/compilations/status-badge";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-const ALL_STATUSES: CompilationStatus[] = [
-  "PENDING",
-  "DETECTING",
-  "EXTRACTING",
-  "ENHANCING",
-  "VALIDATING_IR",
-  "GENERATING",
-  "BUILDING",
-  "DEPLOYING",
-  "VALIDATING_RUNTIME",
-  "ROUTING",
-  "REGISTERING",
-  "PUBLISHED",
-  "FAILED",
-  "ROLLING_BACK",
-  "ROLLED_BACK",
-];
-
-const IN_PROGRESS_STATUSES = new Set<CompilationStatus>([
-  "PENDING",
-  "DETECTING",
-  "EXTRACTING",
-  "ENHANCING",
-  "VALIDATING_IR",
-  "GENERATING",
-  "BUILDING",
-  "DEPLOYING",
-  "VALIDATING_RUNTIME",
-  "ROUTING",
-  "REGISTERING",
-  "ROLLING_BACK",
-]);
 
 type DateRange = "24h" | "7d" | "30d" | "all";
 
@@ -112,7 +84,7 @@ export default function CompilationsPage() {
   const [filterNow, setFilterNow] = useState(Date.now);
 
   const hasRunningJobs = (data?: CompilationJobResponse[]) =>
-    data?.some((j) => IN_PROGRESS_STATUSES.has(j.status));
+    data?.some((j) => IN_PROGRESS_COMPILATION_STATUSES.has(j.status));
 
   const { data: jobs, isLoading, refetch } = useCompilations({
     refetchInterval: (query) =>
@@ -213,16 +185,16 @@ export default function CompilationsPage() {
               "hover:bg-muted dark:border-input dark:bg-input/30",
             )}
           >
-            Status: {statusFilter === "ALL" ? "All" : statusFilter}
+            Status: {statusFilter === "ALL" ? "All" : formatCompilationStatus(statusFilter)}
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start">
             <DropdownMenuItem onClick={() => { setStatusFilter("ALL"); setPage(0); }}>
               All
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            {ALL_STATUSES.map((s) => (
+            {ALL_COMPILATION_STATUSES.map((s) => (
               <DropdownMenuItem key={s} onClick={() => { setStatusFilter(s); setPage(0); }}>
-                {s}
+                {formatCompilationStatus(s)}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -323,7 +295,7 @@ export default function CompilationsPage() {
                     <td className="px-3 py-2">
                       {job.current_stage ? (
                         <span className="flex items-center gap-1.5 text-xs">
-                          {IN_PROGRESS_STATUSES.has(job.status) && (
+                          {IN_PROGRESS_COMPILATION_STATUSES.has(job.status) && (
                             <span className="inline-block size-1.5 animate-pulse rounded-full bg-blue-500" />
                           )}
                           {job.current_stage}
@@ -350,7 +322,7 @@ export default function CompilationsPage() {
                       </TooltipProvider>
                     </td>
                     <td className="px-3 py-2 text-xs">
-                      {!job.completed_at && IN_PROGRESS_STATUSES.has(job.status) ? (
+                      {!job.completed_at && IN_PROGRESS_COMPILATION_STATUSES.has(job.status) ? (
                         <span className="italic text-muted-foreground">
                           running
                         </span>
@@ -371,13 +343,13 @@ export default function CompilationsPage() {
                             <Eye className="mr-1.5 size-3.5" />
                             View
                           </DropdownMenuItem>
-                          {job.status === "FAILED" && (
+                          {job.status === "failed" && (
                             <DropdownMenuItem onClick={() => handleRetry(job)}>
                               <RotateCcw className="mr-1.5 size-3.5" />
                               Retry
                             </DropdownMenuItem>
                           )}
-                          {job.status === "PUBLISHED" && (
+                          {job.status === "succeeded" && (
                             <DropdownMenuItem
                               variant="destructive"
                               onClick={() => handleRollback(job)}

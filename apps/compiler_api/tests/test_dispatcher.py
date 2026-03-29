@@ -120,3 +120,50 @@ class TestConfigureAndGetDispatcher:
         mock_request = StarletteRequest(scope)
         resolved = get_compilation_dispatcher(mock_request)
         assert resolved is dispatcher
+
+
+class TestCeleryCompilationDispatcher:
+    @pytest.mark.asyncio
+    async def test_enqueue_raises_when_task_not_registered(self) -> None:
+        from unittest.mock import MagicMock
+
+        from apps.compiler_api.dispatcher import CeleryCompilationDispatcher
+
+        fake_celery = MagicMock()
+        fake_celery.tasks = {}  # no tasks registered
+
+        dispatcher = CeleryCompilationDispatcher(
+            celery_app=fake_celery,
+            task_name="nonexistent.task",
+            queue_name="default",
+        )
+        with pytest.raises(RuntimeError, match="nonexistent.task is not registered"):
+            await dispatcher.enqueue(_request())
+
+
+class TestGetDispatcherFallback:
+    def test_fallback_creates_and_caches_dispatcher(self) -> None:
+        """get_compilation_dispatcher() with no preset state falls back to _resolve_default_dispatcher()."""
+        app = FastAPI()
+        # Do NOT call configure_compilation_dispatcher — state is empty
+
+        from starlette.requests import Request as StarletteRequest
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/test",
+            "headers": [],
+            "query_string": b"",
+            "app": app,
+        }
+        mock_request = StarletteRequest(scope)
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("WORKFLOW_ENGINE", None)
+            dispatcher = get_compilation_dispatcher(mock_request)
+
+        assert isinstance(dispatcher, InMemoryCompilationDispatcher)
+        # Second call should return same cached instance
+        dispatcher2 = get_compilation_dispatcher(mock_request)
+        assert dispatcher2 is dispatcher

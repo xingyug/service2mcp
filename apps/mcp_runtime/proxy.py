@@ -58,6 +58,7 @@ _TEXTUAL_CONTENT_TYPES = (
 )
 _SUPPORTED_STREAM_TRANSPORTS = {EventTransport.sse, EventTransport.websocket}
 _SOAP_ENVELOPE_NS = "http://schemas.xmlsoap.org/soap/envelope/"
+_DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS = 15.0
 
 
 class GrpcStreamExecutor(Protocol):
@@ -1096,7 +1097,12 @@ class RuntimeProxy:
                 params=query_params or None,
             )
 
-            status_value = _extract_async_status_value(async_job, poll_response)
+            try:
+                status_value = _extract_async_status_value(async_job, poll_response)
+            except _InvalidJsonPayloadError as exc:
+                raise ToolError(
+                    f"Async poll for operation {operation_id} received invalid JSON: {exc}"
+                ) from exc
             normalized_status = status_value.lower() if status_value is not None else None
             if normalized_status in success_states or normalized_status in failure_states:
                 return poll_response
@@ -1167,7 +1173,7 @@ class RuntimeProxy:
             idle_timeout = _descriptor_positive_float(
                 descriptor,
                 "idle_timeout_seconds",
-                default=1.0,
+                default=_DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
             )
             events, termination_reason = await _collect_sse_events(
                 response,
@@ -1214,7 +1220,7 @@ class RuntimeProxy:
         idle_timeout = _descriptor_positive_float(
             descriptor,
             "idle_timeout_seconds",
-            default=1.0,
+            default=_DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
         )
         websocket_url = _to_websocket_url(url, query_params)
 
@@ -1613,7 +1619,12 @@ def _normalize_websocket_message(value: Any) -> str | bytes:
         return value
     if isinstance(value, dict):
         if "bytes_base64" in value and isinstance(value["bytes_base64"], str):
-            return base64.b64decode(value["bytes_base64"])
+            try:
+                return base64.b64decode(value["bytes_base64"], validate=True)
+            except ValueError as exc:
+                raise ToolError(
+                    "WebSocket bytes_base64 contains invalid base64 data."
+                ) from exc
         if "text" in value and isinstance(value["text"], str):
             return value["text"]
         if "json" in value:
@@ -1674,7 +1685,7 @@ def _parse_stream_payload(payload: str) -> Any:
 
 def _to_websocket_url(url: str, query_params: dict[str, Any]) -> str:
     parts = urlsplit(url)
-    scheme = "wss" if parts.scheme == "https" else "ws"
+    scheme = "wss" if parts.scheme in ("https", "wss") else "ws"
     normalized_query = urlencode(
         sorted((str(key), _normalize_query_value(value)) for key, value in query_params.items())
     )
@@ -1848,13 +1859,55 @@ def _coerce_xml_text(text: str | None) -> Any:
     return stripped
 
 
+def _split_escaped_dot_path(path: str) -> list[str]:
+    r"""Split a dot-delimited path, treating ``\.`` as a literal dot.
+
+    >>> _split_escaped_dot_path(r"Address\.City")
+    ['Address.City']
+    >>> _split_escaped_dot_path("user.name")
+    ['user', 'name']
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    i = 0
+    while i < len(path):
+        if path[i] == "\\" and i + 1 < len(path) and path[i + 1] == ".":
+            current.append(".")
+            i += 2
+        elif path[i] == ".":
+            segments.append("".join(current))
+            current = []
+            i += 1
+        else:
+            current.append(path[i])
+            i += 1
+    segments.append("".join(current))
+    return segments
+
+
+def _has_unescaped_dot(path: str) -> bool:
+    r"""Return True if *path* contains at least one unescaped dot."""
+    i = 0
+    while i < len(path):
+        if path[i] == "\\" and i + 1 < len(path) and path[i + 1] == ".":
+            i += 2
+        elif path[i] == ".":
+            return True
+        else:
+            i += 1
+    return False
+
+
 def _apply_field_filter(payload: Any, field_filter: list[str] | None) -> Any:
-    """Filter response fields by allowlist.
+    r"""Filter response fields by allowlist.
 
     Supports three path styles:
     - ``"name"`` — top-level key
     - ``"user.name"`` — nested key via dot notation
     - ``"items[].id"`` — key inside each element of a top-level array
+
+    Use ``\.`` to represent a literal dot inside a field name
+    (e.g. ``r"Address\.City"`` selects the key ``Address.City``).
     """
     if not field_filter:
         return payload
@@ -1868,14 +1921,13 @@ def _apply_field_filter(payload: Any, field_filter: list[str] | None) -> Any:
         if "[]." in path:
             root, rest = path.split("[].", 1)
             array_paths.setdefault(root, []).append(rest)
-        elif "." in path:
-            # Note: dot-split means field names containing literal dots (e.g. OData
-            # "Address.City") are misinterpreted as nested paths.  A future escaping
-            # convention (e.g. backslash-dot) could solve this.
-            root, rest = path.split(".", 1)
-            nested_paths.append((root, rest.split(".")))
+        elif _has_unescaped_dot(path):
+            segments = _split_escaped_dot_path(path)
+            root = segments[0]
+            nested_paths.append((root, segments[1:]))
         else:
-            top_keys.add(path)
+            # Either a plain key or a key that only contains escaped dots.
+            top_keys.add(_split_escaped_dot_path(path)[0])
 
     if isinstance(payload, dict):
         return _filter_dict(payload, top_keys, nested_paths, array_paths)
@@ -1980,6 +2032,22 @@ def _apply_array_limit(payload: Any, max_items: int | None) -> Any:
     return payload
 
 
+def _truncate_utf8_prefix(payload_bytes: bytes, max_bytes: int) -> tuple[str, bool]:
+    """Return the largest valid UTF-8 prefix not exceeding ``max_bytes`` bytes."""
+
+    candidate = payload_bytes[:max_bytes]
+    try:
+        return candidate.decode("utf-8"), False
+    except UnicodeDecodeError:
+        end = len(candidate)
+        while end > 0:
+            try:
+                return candidate[:end].decode("utf-8"), True
+            except UnicodeDecodeError:
+                end -= 1
+        return "", True
+
+
 def _apply_truncation(payload: Any, strategy: ResponseStrategy) -> tuple[Any, bool]:
     if strategy.max_response_bytes is None or strategy.max_response_bytes <= 0:
         return payload, False
@@ -1992,12 +2060,18 @@ def _apply_truncation(payload: Any, strategy: ResponseStrategy) -> tuple[Any, bo
     if strategy.truncation_policy == TruncationPolicy.none:
         return payload, False
 
-    truncated = payload_bytes[: strategy.max_response_bytes].decode("utf-8", errors="ignore")
-    return {
+    truncated, utf8_boundary_trimmed = _truncate_utf8_prefix(
+        payload_bytes,
+        strategy.max_response_bytes,
+    )
+    result = {
         "content": truncated,
         "original_type": type(payload).__name__,
         "truncated": True,
-    }, True
+    }
+    if utf8_boundary_trimmed:
+        result["utf8_boundary_trimmed"] = True
+    return result, True
 
 
 def _unwrap_graphql_payload(payload: Any, operation: Operation) -> Any:
@@ -2310,14 +2384,28 @@ def _extract_async_status_value(async_job: AsyncJobConfig, response: httpx.Respo
     return None
 
 
+class _InvalidJsonPayloadError(Exception):
+    """Raised when a response claims JSON content-type but the body is not valid JSON."""
+
+
 def _maybe_parse_json_payload(response: httpx.Response) -> Any | None:
+    """Parse a JSON response body.
+
+    Returns ``None`` when the content-type is not JSON.
+    Raises :class:`_InvalidJsonPayloadError` when the content-type indicates JSON
+    but the body cannot be decoded — callers should treat this as a protocol
+    error rather than silently degrading.
+    """
     content_type = response.headers.get("content-type", "")
     if "json" not in content_type:
         return None
     try:
         return response.json()
-    except ValueError:
-        return None
+    except ValueError as exc:
+        raise _InvalidJsonPayloadError(
+            f"Response declared content-type {content_type!r} "
+            f"but body is not valid JSON (HTTP {response.status_code})"
+        ) from exc
 
 
 def _extract_nested_value(payload: Any, dotted_path: str) -> Any | None:

@@ -56,8 +56,17 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { useServices } from "@/hooks/use-api";
-import { gatewayApi } from "@/lib/api-client";
+import { artifactApi, gatewayApi } from "@/lib/api-client";
+import {
+  buildDeploymentHistory,
+  buildPreviousRoutes,
+  findActiveArtifactVersion,
+  findArtifactVersion,
+  inferRouteStatus,
+} from "@/lib/gateway-route-config";
 import type {
+  ArtifactVersionResponse,
+  GatewayRouteDocument,
   ReconcileResponse,
   ServiceSummary,
 } from "@/types/api";
@@ -212,28 +221,50 @@ function ReconcileResults({
   result: ReconcileResponse | null;
 }) {
   if (!result) return null;
+  const stats = [
+    {
+      label: "Consumers Synced",
+      count: result.consumers_synced,
+      className: "text-green-600 dark:text-green-400",
+    },
+    {
+      label: "Consumers Deleted",
+      count: result.consumers_deleted,
+      className: "text-yellow-600 dark:text-yellow-400",
+    },
+    {
+      label: "Policies Synced",
+      count: result.policy_bindings_synced,
+      className: "text-green-600 dark:text-green-400",
+    },
+    {
+      label: "Policies Deleted",
+      count: result.policy_bindings_deleted,
+      className: "text-yellow-600 dark:text-yellow-400",
+    },
+    {
+      label: "Routes Synced",
+      count: result.service_routes_synced,
+      className: "text-green-600 dark:text-green-400",
+    },
+    {
+      label: "Routes Deleted",
+      count: result.service_routes_deleted,
+      className: "text-yellow-600 dark:text-yellow-400",
+    },
+  ];
   return (
     <Card className="animate-in fade-in-0 slide-in-from-top-2 border-blue-200 p-4 dark:border-blue-800">
       <h3 className="mb-3 text-sm font-semibold">Reconciliation Results</h3>
-      <div className="flex gap-6">
-        <div className="text-center">
-          <p className="text-2xl font-bold text-green-600 tabular-nums dark:text-green-400">
-            {result.synced}
-          </p>
-          <p className="text-xs text-muted-foreground">Synced</p>
-        </div>
-        <div className="text-center">
-          <p className="text-2xl font-bold text-yellow-600 tabular-nums dark:text-yellow-400">
-            {result.deleted}
-          </p>
-          <p className="text-xs text-muted-foreground">Deleted</p>
-        </div>
-        <div className="text-center">
-          <p className="text-2xl font-bold text-red-600 tabular-nums dark:text-red-400">
-            {result.errors}
-          </p>
-          <p className="text-xs text-muted-foreground">Errors</p>
-        </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {stats.map((stat) => (
+          <div key={stat.label} className="rounded-md bg-muted/40 p-3 text-center">
+            <p className={cn("text-2xl font-bold tabular-nums", stat.className)}>
+              {stat.count}
+            </p>
+            <p className="text-xs text-muted-foreground">{stat.label}</p>
+          </div>
+        ))}
       </div>
     </Card>
   );
@@ -330,39 +361,12 @@ function DeploymentHistory({ entries }: { entries: DeploymentEntry[] }) {
 export default function GatewayPage() {
   const { data: servicesData, isLoading, refetch } = useServices();
   const services = React.useMemo(() => servicesData?.services ?? [], [servicesData]);
-
-  // Simulate route status based on service data
-  const serviceRoutes: ServiceRoute[] = React.useMemo(
-    () =>
-      services.map((svc, i) => ({
-        service: svc,
-        status: (
-          svc.active_version
-            ? i % 5 === 0
-              ? "error"
-              : i % 3 === 0
-                ? "drifted"
-                : "synced"
-            : "error"
-        ) as RouteStatus,
-        lastSynced: svc.last_compiled,
-        routeConfig: svc.active_version
-          ? {
-              service_id: svc.service_id,
-              upstream: { type: "roundrobin", nodes: { "127.0.0.1:8080": 1 } },
-              uri: `/${svc.name.toLowerCase().replace(/\s+/g, "-")}/*`,
-              plugins: { "proxy-rewrite": { regex_uri: ["^/.*$", "/"] } },
-            }
-          : undefined,
-      })),
-    [services],
-  );
-
-  const counts = React.useMemo(() => {
-    const c = { synced: 0, drifted: 0, error: 0 };
-    for (const r of serviceRoutes) c[r.status]++;
-    return c;
-  }, [serviceRoutes]);
+  const [artifactVersionsByService, setArtifactVersionsByService] =
+    React.useState<Record<string, ArtifactVersionResponse[]>>({});
+  const [gatewayRoutesById, setGatewayRoutesById] = React.useState<
+    Record<string, GatewayRouteDocument>
+  >({});
+  const [gatewayRoutesLoadFailed, setGatewayRoutesLoadFailed] = React.useState(false);
 
   const [expandedRows, setExpandedRows] = React.useState<Set<string>>(
     new Set(),
@@ -379,45 +383,136 @@ export default function GatewayPage() {
   const [selectedVersion, setSelectedVersion] = React.useState("");
   const [actionLoading, setActionLoading] = React.useState(false);
 
-  // Deployment history (simulated)
-  const [deploymentHistory] = React.useState<DeploymentEntry[]>(() =>
-    services.length > 0
-      ? []
-      : [
-          {
-            id: "1",
-            timestamp: new Date(Date.now() - 3600_000).toISOString(),
-            serviceName: "petstore-api",
-            fromVersion: 2,
-            toVersion: 3,
-            action: "deploy",
-          },
-          {
-            id: "2",
-            timestamp: new Date(Date.now() - 7200_000).toISOString(),
-            serviceName: "weather-api",
-            fromVersion: 1,
-            toVersion: 2,
-            action: "deploy",
-          },
-          {
-            id: "3",
-            timestamp: new Date(Date.now() - 86400_000).toISOString(),
-            serviceName: "petstore-api",
-            fromVersion: 3,
-            toVersion: 2,
-            action: "rollback",
-          },
-          {
-            id: "4",
-            timestamp: new Date(Date.now() - 172800_000).toISOString(),
-            serviceName: "legacy-service",
-            fromVersion: 1,
-            toVersion: null,
-            action: "delete",
-          },
-        ],
+  const loadArtifactVersions = React.useCallback(
+    async (serviceList: ServiceSummary[]) => {
+      if (serviceList.length === 0) {
+        setArtifactVersionsByService({});
+        return;
+      }
+
+      const versions = await Promise.all(
+        serviceList.map(async (service) => {
+          try {
+            const response = await artifactApi.listVersions(service.service_id);
+            return [service.service_id, response.versions] as const;
+          } catch {
+            return [service.service_id, []] as const;
+          }
+        }),
+      );
+
+      setArtifactVersionsByService(Object.fromEntries(versions));
+    },
+    [],
   );
+
+  const loadGatewayRoutes = React.useCallback(async () => {
+    try {
+      const response = await gatewayApi.listRoutes();
+      setGatewayRoutesById(
+        Object.fromEntries(response.routes.map((route) => [route.route_id, route])),
+      );
+      setGatewayRoutesLoadFailed(false);
+    } catch {
+      setGatewayRoutesById({});
+      setGatewayRoutesLoadFailed(true);
+    }
+  }, []);
+
+  const refreshGatewayState = React.useCallback(async () => {
+    await Promise.all([
+      refetch(),
+      loadArtifactVersions(services),
+      loadGatewayRoutes(),
+    ]);
+  }, [loadArtifactVersions, loadGatewayRoutes, refetch, services]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    async function loadGatewayPageState() {
+      await Promise.all([
+        loadArtifactVersions(services),
+        loadGatewayRoutes(),
+      ]);
+
+      if (cancelled) {
+        return;
+      }
+    }
+
+    void loadGatewayPageState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadArtifactVersions, loadGatewayRoutes, services]);
+
+  const serviceRoutes: ServiceRoute[] = React.useMemo(
+    () =>
+      services.map((service) => {
+        const versions = artifactVersionsByService[service.service_id] ?? [];
+        const activeVersion = findActiveArtifactVersion(versions);
+
+        return {
+          service,
+          status: gatewayRoutesLoadFailed
+            ? "error"
+            : inferRouteStatus(activeVersion?.route_config, gatewayRoutesById),
+          lastSynced: activeVersion?.created_at ?? service.last_compiled,
+          routeConfig: activeVersion?.route_config,
+        };
+      }),
+    [artifactVersionsByService, gatewayRoutesById, gatewayRoutesLoadFailed, services],
+  );
+
+  const deploymentHistory = React.useMemo<DeploymentEntry[]>(
+    () => buildDeploymentHistory(services, artifactVersionsByService),
+    [artifactVersionsByService, services],
+  );
+
+  const counts = React.useMemo(() => {
+    const c = { synced: 0, drifted: 0, error: 0 };
+    for (const route of serviceRoutes) c[route.status]++;
+    return c;
+  }, [serviceRoutes]);
+
+  async function getArtifactVersionsForService(serviceId: string) {
+    const cached = artifactVersionsByService[serviceId];
+    if (cached) {
+      return cached;
+    }
+
+    const response = await artifactApi.listVersions(serviceId);
+    setArtifactVersionsByService((prev) => ({
+      ...prev,
+      [serviceId]: response.versions,
+    }));
+    return response.versions;
+  }
+
+  function defaultVersionForService(serviceId?: string): string {
+    if (!serviceId) {
+      return "1";
+    }
+
+    const service = services.find((item) => item.service_id === serviceId);
+    return String(service?.active_version ?? 1);
+  }
+
+  function rollbackVersionForService(serviceId?: string): string {
+    if (!serviceId) {
+      return "";
+    }
+
+    const service = services.find((item) => item.service_id === serviceId);
+    const activeVersion = service?.active_version;
+    if (!activeVersion || activeVersion <= 1) {
+      return "";
+    }
+
+    return String(activeVersion - 1);
+  }
 
   const toggleRow = (id: string) => {
     setExpandedRows((prev) => {
@@ -434,7 +529,7 @@ export default function GatewayPage() {
       const result = await gatewayApi.reconcile();
       setReconcileResult(result);
       toast.success("Reconciliation complete");
-      refetch();
+      await refreshGatewayState();
     } catch (err) {
       toast.error(
         `Reconciliation failed: ${err instanceof Error ? err.message : "Unknown error"}`,
@@ -448,14 +543,24 @@ export default function GatewayPage() {
     if (!selectedServiceId) return;
     setActionLoading(true);
     try {
-      await gatewayApi.setRoute({
-        service_id: selectedServiceId,
-        version_number: Number(selectedVersion) || 1,
-        route_config: {},
+      const versions = await getArtifactVersionsForService(selectedServiceId);
+      const versionNumber = Number(selectedVersion) || 1;
+      const targetVersion = findArtifactVersion(versions, versionNumber);
+      if (!targetVersion?.route_config) {
+        throw new Error(
+          `No route configuration found for ${selectedServiceId} version ${versionNumber}.`,
+        );
+      }
+
+      const result = await gatewayApi.syncRoutes({
+        route_config: targetVersion.route_config,
+        previous_routes: {},
       });
-      toast.success(`Routes synced for service ${selectedServiceId}`);
+      toast.success(
+        `Synced ${result.service_routes_synced} route(s) for ${selectedServiceId}.`,
+      );
       setSyncDialogOpen(false);
-      refetch();
+      await refreshGatewayState();
     } catch (err) {
       toast.error(
         `Sync failed: ${err instanceof Error ? err.message : "Unknown error"}`,
@@ -469,18 +574,37 @@ export default function GatewayPage() {
     if (!selectedServiceId) return;
     setActionLoading(true);
     try {
-      await gatewayApi.setRoute({
-        service_id: selectedServiceId,
-        version_number: Math.max(
-          1,
-          (services.find((s) => s.service_id === selectedServiceId)
-            ?.active_version ?? 1) - 1,
-        ),
-        route_config: {},
+      const versions = await getArtifactVersionsForService(selectedServiceId);
+      const currentVersion = findActiveArtifactVersion(versions);
+      if (!currentVersion?.route_config) {
+        throw new Error(
+          `No active route configuration found for ${selectedServiceId}.`,
+        );
+      }
+
+      const targetVersionNumber =
+        Number(selectedVersion) ||
+        Math.max(currentVersion.version_number - 1, 0);
+      if (targetVersionNumber < 1) {
+        throw new Error("No previous version is available to roll back to.");
+      }
+
+      const targetVersion = findArtifactVersion(versions, targetVersionNumber);
+      if (!targetVersion?.route_config) {
+        throw new Error(
+          `No route configuration found for ${selectedServiceId} version ${targetVersionNumber}.`,
+        );
+      }
+
+      const result = await gatewayApi.rollbackRoutes({
+        route_config: currentVersion.route_config,
+        previous_routes: buildPreviousRoutes(targetVersion.route_config),
       });
-      toast.success(`Rolled back routes for ${selectedServiceId}`);
+      toast.success(
+        `Rollback restored ${result.service_routes_synced} route(s) for ${selectedServiceId}.`,
+      );
       setRollbackDialogOpen(false);
-      refetch();
+      await refreshGatewayState();
     } catch (err) {
       toast.error(
         `Rollback failed: ${err instanceof Error ? err.message : "Unknown error"}`,
@@ -494,10 +618,23 @@ export default function GatewayPage() {
     if (!selectedServiceId) return;
     setActionLoading(true);
     try {
-      await gatewayApi.deleteRoute(selectedServiceId);
-      toast.success(`Routes deleted for ${selectedServiceId}`);
+      const versions = await getArtifactVersionsForService(selectedServiceId);
+      const activeVersion = findActiveArtifactVersion(versions);
+      if (!activeVersion?.route_config) {
+        throw new Error(
+          `No active route configuration found for ${selectedServiceId}.`,
+        );
+      }
+
+      const result = await gatewayApi.deleteRoutes({
+        route_config: activeVersion.route_config,
+        previous_routes: {},
+      });
+      toast.success(
+        `Deleted ${result.service_routes_deleted} route(s) for ${selectedServiceId}.`,
+      );
       setDeleteDialogOpen(false);
-      refetch();
+      await refreshGatewayState();
     } catch (err) {
       toast.error(
         `Delete failed: ${err instanceof Error ? err.message : "Unknown error"}`,
@@ -509,12 +646,13 @@ export default function GatewayPage() {
 
   const openSyncDialog = (serviceId?: string) => {
     setSelectedServiceId(serviceId ?? "");
-    setSelectedVersion("1");
+    setSelectedVersion(defaultVersionForService(serviceId));
     setSyncDialogOpen(true);
   };
 
   const openRollbackDialog = (serviceId?: string) => {
     setSelectedServiceId(serviceId ?? "");
+    setSelectedVersion(rollbackVersionForService(serviceId));
     setRollbackDialogOpen(true);
   };
 
@@ -540,7 +678,9 @@ export default function GatewayPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => refetch()}
+            onClick={() => {
+              void refreshGatewayState();
+            }}
             disabled={isLoading}
           >
             <RefreshCw
@@ -803,6 +943,17 @@ export default function GatewayPage() {
                 value={selectedServiceId}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   setSelectedServiceId(e.target.value)
+                }
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Target Version</label>
+              <Input
+                type="number"
+                placeholder="Previous version number"
+                value={selectedVersion}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setSelectedVersion(e.target.value)
                 }
               />
             </div>

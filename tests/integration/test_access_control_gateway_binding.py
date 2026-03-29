@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+import time
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
@@ -26,6 +31,7 @@ from libs.ir import ServiceIR
 from libs.registry_client.models import ArtifactVersionCreate
 
 IR_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "ir"
+_TEST_JWT_SECRET = "test-secret"
 
 
 def _to_asyncpg_url(connection_url: str) -> str:
@@ -36,6 +42,30 @@ def _to_asyncpg_url(connection_url: str) -> str:
     if connection_url.startswith("postgres://"):
         return connection_url.replace("postgres://", "postgresql+asyncpg://", 1)
     raise ValueError(f"Unsupported postgres connection URL: {connection_url}")
+
+
+def _make_test_jwt(
+    subject: str,
+    *,
+    roles: list[str] | None = None,
+    secret: str = _TEST_JWT_SECRET,
+) -> str:
+    def _b64(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    header = _b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    now = int(time.time())
+    payload_body: dict[str, object] = {"sub": subject, "iat": now, "exp": now + 3600}
+    if roles is not None:
+        payload_body["roles"] = roles
+    payload = _b64(json.dumps(payload_body).encode())
+    signing_input = f"{header}.{payload}".encode()
+    signature = _b64(hmac.new(secret.encode(), signing_input, hashlib.sha256).digest())
+    return f"{header}.{payload}.{signature}"
+
+
+def _auth_headers(subject: str, *, roles: list[str] | None = None) -> dict[str, str]:
+    return {"Authorization": f"Bearer {_make_test_jwt(subject, roles=roles)}"}
 
 
 @pytest.fixture(scope="module")
@@ -161,6 +191,7 @@ async def test_create_pat_creates_gateway_consumer(
     created = await http_client.post(
         "/api/v1/authn/pats",
         json={"username": "alice", "name": "CLI token"},
+        headers=_auth_headers("alice"),
     )
     assert created.status_code == 201
     pat_id = created.json()["id"]
@@ -176,13 +207,17 @@ async def test_revoke_pat_deletes_gateway_consumer(
     created = await http_client.post(
         "/api/v1/authn/pats",
         json={"username": "bob", "name": "CI token"},
+        headers=_auth_headers("bob"),
     )
     assert created.status_code == 201
     pat_id = created.json()["id"]
     consumer_id = f"pat-{pat_id}"
     assert consumer_id in gateway_client.consumers
 
-    revoked = await http_client.post(f"/api/v1/authn/pats/{pat_id}/revoke")
+    revoked = await http_client.post(
+        f"/api/v1/authn/pats/{pat_id}/revoke",
+        headers=_auth_headers("bob"),
+    )
     assert revoked.status_code == 200
     assert consumer_id not in gateway_client.consumers
 
@@ -195,6 +230,7 @@ async def test_reconcile_restores_drifted_consumer_and_policy_binding(
     created_pat = await http_client.post(
         "/api/v1/authn/pats",
         json={"username": "carol", "name": "Ops token"},
+        headers=_auth_headers("carol"),
     )
     assert created_pat.status_code == 201
     pat_id = created_pat.json()["id"]
@@ -210,6 +246,7 @@ async def test_reconcile_restores_drifted_consumer_and_policy_binding(
             "risk_threshold": "cautious",
             "decision": "allow",
         },
+        headers=_auth_headers("admin", roles=["admin"]),
     )
     assert created_policy.status_code == 201
     policy_id = created_policy.json()["id"]
@@ -219,7 +256,10 @@ async def test_reconcile_restores_drifted_consumer_and_policy_binding(
     gateway_client.consumers.pop(consumer_id, None)
     gateway_client.policy_bindings.pop(binding_id, None)
 
-    reconciled = await http_client.post("/api/v1/gateway-binding/reconcile")
+    reconciled = await http_client.post(
+        "/api/v1/gateway-binding/reconcile",
+        headers=_auth_headers("admin", roles=["admin"]),
+    )
     assert reconciled.status_code == 200
     assert reconciled.json()["consumers_synced"] >= 1
     assert reconciled.json()["policy_bindings_synced"] >= 1
@@ -254,6 +294,7 @@ async def test_sync_service_routes_and_reconcile_restores_drifted_gateway_route(
             sync_response = await access_control_client.post(
                 "/api/v1/gateway-binding/service-routes/sync",
                 json={"route_config": _route_config()},
+                headers=_auth_headers("admin", roles=["admin"]),
             )
             assert sync_response.status_code == 200
             assert sync_response.json()["service_routes_synced"] == 2
@@ -289,7 +330,10 @@ async def test_sync_service_routes_and_reconcile_restores_drifted_gateway_route(
             assert pinned_gateway_call.status_code == 200
             assert pinned_gateway_call.json()["service_name"] == "billing-runtime-v2"
 
-            reconciled = await access_control_client.post("/api/v1/gateway-binding/reconcile")
+            reconciled = await access_control_client.post(
+                "/api/v1/gateway-binding/reconcile",
+                headers=_auth_headers("admin", roles=["admin"]),
+            )
             assert reconciled.status_code == 200
             assert reconciled.json()["service_routes_synced"] >= 1
 
@@ -354,6 +398,7 @@ async def test_reconcile_updates_stable_route_target_across_rollout_and_rollback
             synced_v1 = await access_control_client.post(
                 "/api/v1/gateway-binding/service-routes/sync",
                 json={"route_config": route_v1},
+                headers=_auth_headers("admin", roles=["admin"]),
             )
             assert synced_v1.status_code == 200
 
@@ -381,7 +426,10 @@ async def test_reconcile_updates_stable_route_target_across_rollout_and_rollback
                     )
                 )
 
-            rolled_forward = await access_control_client.post("/api/v1/gateway-binding/reconcile")
+            rolled_forward = await access_control_client.post(
+                "/api/v1/gateway-binding/reconcile",
+                headers=_auth_headers("admin", roles=["admin"]),
+            )
             assert rolled_forward.status_code == 200
             assert rolled_forward.json()["service_routes_synced"] >= 1
 
@@ -424,7 +472,8 @@ async def test_reconcile_updates_stable_route_target_across_rollout_and_rollback
                 assert rolled_back is not None
 
             rollback_reconciled = await access_control_client.post(
-                "/api/v1/gateway-binding/reconcile"
+                "/api/v1/gateway-binding/reconcile",
+                headers=_auth_headers("admin", roles=["admin"]),
             )
             assert rollback_reconciled.status_code == 200
             assert rollback_reconciled.json()["service_routes_synced"] >= 1
@@ -453,3 +502,17 @@ async def test_reconcile_updates_stable_route_target_across_rollout_and_rollback
             )
             assert pinned_v2_after_rollback.status_code == 200
             assert pinned_v2_after_rollback.json()["service_name"] == "billing-runtime-v2"
+
+
+@pytest.mark.asyncio
+async def test_gateway_binding_routes_require_admin(
+    http_client: httpx.AsyncClient,
+) -> None:
+    unauthenticated = await http_client.post("/api/v1/gateway-binding/reconcile")
+    assert unauthenticated.status_code == 401
+
+    non_admin = await http_client.post(
+        "/api/v1/gateway-binding/reconcile",
+        headers=_auth_headers("alice"),
+    )
+    assert non_admin.status_code == 403

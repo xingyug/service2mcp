@@ -22,6 +22,7 @@ from apps.compiler_api.main import create_app as create_compiler_api_app
                 "/api/v1/compilations",
                 "/api/v1/compilations/{job_id}",
                 "/api/v1/services",
+                "/api/v1/services/{service_id}",
                 "/api/v1/artifacts",
             },
         ),

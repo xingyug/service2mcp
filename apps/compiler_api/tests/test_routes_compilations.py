@@ -15,6 +15,9 @@ from apps.compiler_api.routes.compilations import (
     _not_found,
     create_compilation,
     get_compilation,
+    list_compilations,
+    retry_compilation,
+    rollback_compilation,
     stream_compilation_events,
 )
 from apps.compiler_worker.models import CompilationStatus
@@ -118,7 +121,7 @@ class TestCreateCompilation:
                 await create_compilation(mock_payload, mock_session, mock_dispatcher)
 
             assert exc_info.value.status_code == 503
-            assert "dispatch failed" in exc_info.value.detail.lower()
+            assert exc_info.value.detail == "Compilation worker dispatch failed: Dispatch failed"
 
             # Verify job was deleted
             mock_repo.delete_job.assert_called_once_with(mock_job.id)
@@ -169,6 +172,27 @@ class TestGetCompilation:
                 await get_compilation(job_id, mock_session)
 
             assert exc_info.value.status_code == 404
+
+
+class TestListCompilations:
+    async def test_returns_repository_jobs(self) -> None:
+        mock_session = AsyncMock()
+        mock_jobs = [
+            MagicMock(spec=CompilationJobResponse),
+            MagicMock(spec=CompilationJobResponse),
+        ]
+
+        with patch(
+            "apps.compiler_api.routes.compilations.CompilationRepository"
+        ) as mock_repo_class:
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.list_jobs.return_value = mock_jobs
+
+            result = await list_compilations(mock_session)
+
+            assert result == mock_jobs
+            mock_repo.list_jobs.assert_called_once_with()
 
 
 class TestStreamCompilationEvents:
@@ -377,3 +401,302 @@ class TestStreamCompilationEvents:
                     break
 
             assert len(events) == 0
+
+
+class TestRetryCompilation:
+    """BUG-100: POST /api/v1/compilations/{jobId}/retry must exist."""
+
+    async def test_retry_creates_new_job(self) -> None:
+        mock_session = AsyncMock()
+        mock_dispatcher = AsyncMock()
+        original_id = uuid4()
+
+        original_job = MagicMock(spec=CompilationJobResponse)
+        original_job.source_url = "https://example.com/spec.yaml"
+        original_job.source_hash = "abc123"
+        original_job.created_by = "alice"
+        original_job.service_name = "pet-store"
+        original_job.options = {"force_protocol": "openapi"}
+        original_job.id = original_id
+
+        new_job = MagicMock(spec=CompilationJobResponse)
+        new_job.id = uuid4()
+        new_job.service_name = "pet-store"
+
+        with (
+            patch(
+                "apps.compiler_api.routes.compilations.CompilationRepository"
+            ) as mock_repo_class,
+            patch(
+                "apps.compiler_api.routes.compilations.AuditLogService"
+            ) as mock_audit_class,
+        ):
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.get_job.return_value = original_job
+            mock_repo.create_job.return_value = new_job
+
+            mock_audit = AsyncMock()
+            mock_audit_class.return_value = mock_audit
+
+            result = await retry_compilation(
+                original_id, "extract", mock_session, mock_dispatcher
+            )
+
+            assert result == new_job
+            mock_dispatcher.enqueue.assert_called_once()
+            mock_audit.append_entry.assert_called_once()
+            audit_call = mock_audit.append_entry.call_args
+            assert audit_call.kwargs["action"] == "compilation.retried"
+
+    async def test_retry_not_found(self) -> None:
+        mock_session = AsyncMock()
+        mock_dispatcher = AsyncMock()
+
+        with patch(
+            "apps.compiler_api.routes.compilations.CompilationRepository"
+        ) as mock_repo_class:
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.get_job.return_value = None
+
+            with pytest.raises(HTTPException) as exc_info:
+                await retry_compilation(
+                    uuid4(), None, mock_session, mock_dispatcher
+                )
+            assert exc_info.value.status_code == 404
+
+    async def test_retry_includes_from_stage(self) -> None:
+        mock_session = AsyncMock()
+        mock_dispatcher = AsyncMock()
+
+        original_job = MagicMock(spec=CompilationJobResponse)
+        original_job.source_url = "https://example.com/spec.yaml"
+        original_job.source_hash = None
+        original_job.created_by = "bob"
+        original_job.service_name = "svc"
+        original_job.options = {}
+        original_job.id = uuid4()
+
+        new_job = MagicMock(spec=CompilationJobResponse)
+        new_job.id = uuid4()
+        new_job.service_name = "svc"
+
+        with (
+            patch(
+                "apps.compiler_api.routes.compilations.CompilationRepository"
+            ) as mock_repo_class,
+            patch(
+                "apps.compiler_api.routes.compilations.AuditLogService"
+            ) as mock_audit_class,
+        ):
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.get_job.return_value = original_job
+            mock_repo.create_job.return_value = new_job
+
+            mock_audit = AsyncMock()
+            mock_audit_class.return_value = mock_audit
+
+            await retry_compilation(
+                original_job.id,
+                "validate_ir",
+                mock_session,
+                mock_dispatcher,
+            )
+
+            created_req = mock_repo.create_job.call_args[0][0]
+            assert created_req.options["from_stage"] == "validate_ir"
+
+    async def test_retry_dispatcher_failure_deletes_job(self) -> None:
+        mock_session = AsyncMock()
+        mock_dispatcher = AsyncMock()
+        mock_dispatcher.enqueue.side_effect = Exception("Dispatch failed")
+        original_id = uuid4()
+
+        original_job = MagicMock(spec=CompilationJobResponse)
+        original_job.source_url = "https://example.com/spec.yaml"
+        original_job.source_hash = "abc123"
+        original_job.created_by = "alice"
+        original_job.service_name = "pet-store"
+        original_job.options = {}
+        original_job.id = original_id
+
+        new_job = MagicMock(spec=CompilationJobResponse)
+        new_job.id = uuid4()
+        new_job.service_name = "pet-store"
+
+        with (
+            patch(
+                "apps.compiler_api.routes.compilations.CompilationRepository"
+            ) as mock_repo_class,
+            patch(
+                "apps.compiler_api.routes.compilations.AuditLogService"
+            ) as mock_audit_class,
+        ):
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.get_job.return_value = original_job
+            mock_repo.create_job.return_value = new_job
+
+            mock_audit = AsyncMock()
+            mock_audit_class.return_value = mock_audit
+
+            with pytest.raises(HTTPException) as exc_info:
+                await retry_compilation(
+                    original_id, None, mock_session, mock_dispatcher
+                )
+
+            assert exc_info.value.status_code == 503
+            assert "Dispatch failed" in exc_info.value.detail
+            mock_repo.delete_job.assert_called_once_with(new_job.id)
+
+
+class TestRollbackCompilation:
+    """BUG-101: POST /api/v1/compilations/{jobId}/rollback."""
+
+    async def test_rollback_creates_new_job(self) -> None:
+        mock_session = AsyncMock()
+        mock_dispatcher = AsyncMock()
+        original_id = uuid4()
+
+        original_job = MagicMock(spec=CompilationJobResponse)
+        original_job.source_url = "https://example.com/spec.yaml"
+        original_job.source_hash = "abc"
+        original_job.created_by = "alice"
+        original_job.service_name = "pet-store"
+        original_job.options = {}
+        original_job.id = original_id
+        original_job.status = CompilationStatus.SUCCEEDED.value
+
+        new_job = MagicMock(spec=CompilationJobResponse)
+        new_job.id = uuid4()
+        new_job.service_name = "pet-store"
+
+        with (
+            patch(
+                "apps.compiler_api.routes.compilations.CompilationRepository"
+            ) as mock_repo_class,
+            patch(
+                "apps.compiler_api.routes.compilations.AuditLogService"
+            ) as mock_audit_class,
+        ):
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.get_job.return_value = original_job
+            mock_repo.create_job.return_value = new_job
+
+            mock_audit = AsyncMock()
+            mock_audit_class.return_value = mock_audit
+
+            result = await rollback_compilation(
+                original_id, mock_session, mock_dispatcher
+            )
+
+            assert result == new_job
+            mock_dispatcher.enqueue.assert_called_once()
+            audit_kw = mock_audit.append_entry.call_args.kwargs
+            assert audit_kw["action"] == "compilation.rollback_requested"
+
+    async def test_rollback_not_found(self) -> None:
+        mock_session = AsyncMock()
+        mock_dispatcher = AsyncMock()
+
+        with patch(
+            "apps.compiler_api.routes.compilations.CompilationRepository"
+        ) as mock_repo_class:
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.get_job.return_value = None
+
+            with pytest.raises(HTTPException) as exc_info:
+                await rollback_compilation(
+                    uuid4(), mock_session, mock_dispatcher
+                )
+            assert exc_info.value.status_code == 404
+
+    async def test_rollback_rejects_non_succeeded(self) -> None:
+        mock_session = AsyncMock()
+        mock_dispatcher = AsyncMock()
+
+        original_job = MagicMock(spec=CompilationJobResponse)
+        original_job.status = CompilationStatus.FAILED.value
+
+        with patch(
+            "apps.compiler_api.routes.compilations.CompilationRepository"
+        ) as mock_repo_class:
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.get_job.return_value = original_job
+
+            with pytest.raises(HTTPException) as exc_info:
+                await rollback_compilation(
+                    uuid4(), mock_session, mock_dispatcher
+                )
+            assert exc_info.value.status_code == 409
+            assert "succeeded" in exc_info.value.detail
+
+    async def test_rollback_non_succeeded_returns_409(self) -> None:
+        mock_session = AsyncMock()
+        mock_dispatcher = AsyncMock()
+
+        original_job = MagicMock(spec=CompilationJobResponse)
+        original_job.status = CompilationStatus.PENDING.value
+
+        with patch(
+            "apps.compiler_api.routes.compilations.CompilationRepository"
+        ) as mock_repo_class:
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.get_job.return_value = original_job
+
+            with pytest.raises(HTTPException) as exc_info:
+                await rollback_compilation(
+                    uuid4(), mock_session, mock_dispatcher
+                )
+            assert exc_info.value.status_code == 409
+            assert "succeeded" in exc_info.value.detail
+
+    async def test_rollback_dispatcher_failure_deletes_job(self) -> None:
+        mock_session = AsyncMock()
+        mock_dispatcher = AsyncMock()
+        mock_dispatcher.enqueue.side_effect = Exception("Dispatch failed")
+        original_id = uuid4()
+
+        original_job = MagicMock(spec=CompilationJobResponse)
+        original_job.source_url = "https://example.com/spec.yaml"
+        original_job.source_hash = "abc"
+        original_job.created_by = "alice"
+        original_job.service_name = "pet-store"
+        original_job.options = {}
+        original_job.id = original_id
+        original_job.status = CompilationStatus.SUCCEEDED.value
+
+        new_job = MagicMock(spec=CompilationJobResponse)
+        new_job.id = uuid4()
+        new_job.service_name = "pet-store"
+
+        with (
+            patch(
+                "apps.compiler_api.routes.compilations.CompilationRepository"
+            ) as mock_repo_class,
+            patch(
+                "apps.compiler_api.routes.compilations.AuditLogService"
+            ) as mock_audit_class,
+        ):
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.get_job.return_value = original_job
+            mock_repo.create_job.return_value = new_job
+
+            mock_audit = AsyncMock()
+            mock_audit_class.return_value = mock_audit
+
+            with pytest.raises(HTTPException) as exc_info:
+                await rollback_compilation(
+                    original_id, mock_session, mock_dispatcher
+                )
+
+            assert exc_info.value.status_code == 503
+            assert "Dispatch failed" in exc_info.value.detail
+            mock_repo.delete_job.assert_called_once_with(new_job.id)

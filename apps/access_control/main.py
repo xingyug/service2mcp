@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -55,16 +56,16 @@ def create_app(
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/readyz")
+    @app.get("/readyz", response_model=None)
     async def readyz(
         session: AsyncSession = Depends(get_db_session),
-    ) -> dict[str, str]:
+    ) -> dict[str, str] | JSONResponse:
         try:
             await session.execute(sa_text("SELECT 1"))
             return {"status": "ok"}
         except Exception:
             _logger.warning("Readiness check failed: database unreachable", exc_info=True)
-            return {"status": "not_ready"}
+            return JSONResponse(status_code=503, content={"status": "not_ready"})
 
     return app
 

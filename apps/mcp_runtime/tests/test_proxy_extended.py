@@ -15,6 +15,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from apps.mcp_runtime.observability import RuntimeObservability
 from apps.mcp_runtime.proxy import (
+    _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
     PreparedRequestPayload,
     RuntimeProxy,
     _append_soap_argument,
@@ -872,6 +873,32 @@ class TestPollAsyncJob:
             result = await p._poll_async_job("op1", response, config)
         assert result is poll_resp
 
+    async def test_invalid_json_poll_raises_immediately(self) -> None:
+        """BUG-093: invalid JSON in poll response must raise immediately,
+        not silently loop until timeout."""
+        config = AsyncJobConfig(
+            initial_status_codes=[202],
+            status_url_source="location_header",
+            timeout_seconds=5.0,
+            poll_interval_seconds=0.001,
+        )
+        response = httpx.Response(
+            202,
+            text="",
+            headers={"Location": "https://api.example.com/status/1"},
+            request=_make_request(),
+        )
+        p = _proxy()
+        bad_json_resp = httpx.Response(
+            202,
+            text="this is not json",
+            headers={"content-type": "application/json"},
+            request=_make_request(),
+        )
+        with patch.object(p, "_send_request", return_value=bad_json_resp):
+            with pytest.raises(ToolError, match="invalid JSON"):
+                await p._poll_async_job("op1", response, config)
+
 
 # ===================================================================
 # _consume_sse_stream — lines 970, 979, 1005, 1011, 1046
@@ -891,6 +918,33 @@ class TestConsumeSSEStream:
         with pytest.raises(ToolError, match="missing method or path"):
             await p._consume_sse_stream(op, {}, d)
 
+    async def test_uses_extended_default_idle_timeout(self) -> None:
+        op = _op()
+        d = EventDescriptor(
+            id="d1",
+            name="D1",
+            transport=EventTransport.sse,
+            support=EventSupportLevel.supported,
+        )
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "text/event-stream"}
+        stream_ctx = AsyncMock()
+        stream_ctx.__aenter__.return_value = response
+        client = MagicMock()
+        client.stream.return_value = stream_ctx
+        p = _proxy(client=client)
+
+        with patch(
+            "apps.mcp_runtime.proxy._collect_sse_events",
+            new=AsyncMock(return_value=([], "completed")),
+        ) as collect_events:
+            await p._consume_sse_stream(op, {}, d)
+
+        assert collect_events.await_args.kwargs["idle_timeout_seconds"] == (
+            _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS
+        )
+
 
 # ===================================================================
 # _consume_websocket_stream — line 1046
@@ -909,6 +963,35 @@ class TestConsumeWebsocketStream:
         p = _proxy()
         with pytest.raises(ToolError, match="missing path metadata"):
             await p._consume_websocket_stream(op, {}, d)
+
+    async def test_uses_extended_default_idle_timeout(self) -> None:
+        op = _op(path="/stream")
+        d = EventDescriptor(
+            id="d1",
+            name="D1",
+            transport=EventTransport.websocket,
+            support=EventSupportLevel.supported,
+        )
+        websocket = AsyncMock()
+        websocket_ctx = AsyncMock()
+        websocket_ctx.__aenter__.return_value = websocket
+        p = _proxy()
+
+        with (
+            patch(
+                "apps.mcp_runtime.proxy.websockets.connect",
+                return_value=websocket_ctx,
+            ),
+            patch(
+                "apps.mcp_runtime.proxy._collect_websocket_messages",
+                new=AsyncMock(return_value=([], "completed")),
+            ) as collect_messages,
+        ):
+            await p._consume_websocket_stream(op, {}, d)
+
+        assert collect_messages.await_args.kwargs["idle_timeout_seconds"] == (
+            _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS
+        )
 
 
 # ===================================================================
@@ -1068,7 +1151,14 @@ class TestDescriptorHelpers:
             transport=EventTransport.sse,
             metadata={"idle_timeout_seconds": -1.0},
         )
-        assert _descriptor_positive_float(d, "idle_timeout_seconds", default=1.0) == 1.0
+        assert (
+            _descriptor_positive_float(
+                d,
+                "idle_timeout_seconds",
+                default=_DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
+            )
+            == _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS
+        )
 
     def test_positive_float_non_number_returns_default(self) -> None:
         d = EventDescriptor(
@@ -1077,7 +1167,14 @@ class TestDescriptorHelpers:
             transport=EventTransport.sse,
             metadata={"idle_timeout_seconds": "nope"},
         )
-        assert _descriptor_positive_float(d, "idle_timeout_seconds", default=1.0) == 1.0
+        assert (
+            _descriptor_positive_float(
+                d,
+                "idle_timeout_seconds",
+                default=_DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS,
+            )
+            == _DEFAULT_STREAM_IDLE_TIMEOUT_SECONDS
+        )
 
 
 # ===================================================================
@@ -1262,6 +1359,11 @@ class TestNormalizeWebsocketMessage:
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed == {"unknown": "val"}
+
+    def test_invalid_base64_raises_tool_error(self) -> None:
+        """BUG-099: bad base64 must raise ToolError, not silently decode."""
+        with pytest.raises(ToolError, match="invalid base64"):
+            _normalize_websocket_message({"bytes_base64": "not!valid!base64!!"})
 
 
 # ===================================================================
@@ -1499,6 +1601,22 @@ class TestApplyTruncationExtended:
         result, truncated = _apply_truncation("a" * 100, strategy)
         assert truncated is False
         assert result == "a" * 100
+
+    def test_utf8_boundary_trim_is_reported(self) -> None:
+        strategy = ResponseStrategy(
+            max_response_bytes=3,
+            truncation_policy=TruncationPolicy.truncate,
+        )
+
+        result, truncated = _apply_truncation("éé", strategy)
+
+        assert truncated is True
+        assert result == {
+            "content": "é",
+            "original_type": "str",
+            "truncated": True,
+            "utf8_boundary_trimmed": True,
+        }
 
 
 # ===================================================================
@@ -2063,14 +2181,15 @@ class TestMaybeParseJsonPayload:
         )
         assert _maybe_parse_json_payload(response) is None
 
-    def test_invalid_json_returns_none(self) -> None:
+    def test_invalid_json_raises_invalid_json_payload(self) -> None:
         response = httpx.Response(
             200,
             text="not valid json",
             headers={"content-type": "application/json"},
             request=_make_request(),
         )
-        assert _maybe_parse_json_payload(response) is None
+        with pytest.raises(Exception, match="not valid JSON"):
+            _maybe_parse_json_payload(response)
 
     def test_valid_json(self) -> None:
         response = httpx.Response(

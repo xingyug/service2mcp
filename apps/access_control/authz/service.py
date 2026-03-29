@@ -40,7 +40,12 @@ class AuthzService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create_policy(self, payload: PolicyCreateRequest) -> PolicyResponse:
+    async def create_policy(
+        self,
+        payload: PolicyCreateRequest,
+        *,
+        commit: bool = True,
+    ) -> PolicyResponse:
         policy = Policy(
             subject_type=payload.subject_type,
             subject_id=payload.subject_id,
@@ -51,7 +56,9 @@ class AuthzService:
             created_by=payload.created_by,
         )
         self._session.add(policy)
-        await self._session.commit()
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
         await self._session.refresh(policy)
         return self._to_response(policy)
 
@@ -83,6 +90,8 @@ class AuthzService:
         self,
         policy_id: UUID,
         payload: PolicyUpdateRequest,
+        *,
+        commit: bool = True,
     ) -> PolicyResponse | None:
         policy = await self._session.get(Policy, policy_id)
         if policy is None:
@@ -99,18 +108,27 @@ class AuthzService:
         if payload.created_by is not None:
             policy.created_by = payload.created_by
 
-        await self._session.commit()
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
         await self._session.refresh(policy)
         return self._to_response(policy)
 
-    async def delete_policy(self, policy_id: UUID) -> Policy | None:
+    async def delete_policy(
+        self,
+        policy_id: UUID,
+        *,
+        commit: bool = True,
+    ) -> Policy | None:
         """Delete a policy by ID, returning the deleted record or None."""
         policy = await self._session.get(Policy, policy_id)
         if policy is None:
             return None
 
         await self._session.delete(policy)
-        await self._session.commit()
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
         return policy
 
     async def evaluate(self, payload: PolicyEvaluationRequest) -> PolicyEvaluationResponse:

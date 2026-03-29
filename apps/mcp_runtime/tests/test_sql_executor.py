@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
 
 import pytest
@@ -303,3 +304,250 @@ class TestSQLRuntimeExecutorCoverage:
         # Test zero limit
         with pytest.raises(ToolError, match="requires limit > 0"):
             _resolve_limit(0, default_limit=50, max_limit=100, operation_id="test")
+
+
+def _make_service_ir() -> ServiceIR:
+    return ServiceIR(
+        service_id="test",
+        service_name="Test",
+        base_url="sqlite:///test.db",
+        source_hash="sha256:test",
+        protocol="sql",
+        operations=[],
+    )
+
+
+def _make_operation() -> Operation:
+    return Operation(
+        id="op1",
+        name="test_op",
+        method="sql",
+        path="/test",
+        description="test operation",
+        enabled=True,
+    )
+
+
+def _make_query_config(
+    *,
+    filterable_columns: list[str] | None = None,
+) -> SqlOperationConfig:
+    return SqlOperationConfig(
+        action=SqlOperationType.query,
+        relation_name="users",
+        schema_name="main",
+        relation_kind=SqlRelationKind.table,
+        filterable_columns=filterable_columns or ["id"],
+        insertable_columns=[],
+        default_limit=10,
+        max_limit=100,
+    )
+
+
+def _make_insert_config(
+    *,
+    insertable_columns: list[str] | None = None,
+) -> SqlOperationConfig:
+    return SqlOperationConfig(
+        action=SqlOperationType.insert,
+        relation_name="users",
+        schema_name="main",
+        relation_kind=SqlRelationKind.table,
+        filterable_columns=[],
+        insertable_columns=insertable_columns or ["name", "email"],
+        default_limit=10,
+        max_limit=100,
+    )
+
+
+class _AsyncContextManagerMock:
+    """Helper to create a mock async context manager."""
+
+    def __init__(self, return_value: Any) -> None:
+        self._return_value = return_value
+
+    async def __aenter__(self) -> Any:
+        return self._return_value
+
+    async def __aexit__(self, *args: Any) -> None:
+        pass
+
+
+class TestSQLRuntimeExecutorQuery:
+    """Tests covering query-path gaps: column not found, IN clause, dict filter, execute+fetch."""
+
+    @pytest.mark.asyncio
+    async def test_column_not_in_table_skips_filter(self) -> None:
+        """Line 72: column not found in table → skip filter."""
+        ir = _make_service_ir()
+        mock_conn = AsyncMock()
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value = _AsyncContextManagerMock(mock_conn)
+        executor = SQLRuntimeExecutor(ir, engine=mock_engine)
+
+        mock_col = MagicMock()
+        mock_table = MagicMock()
+        mock_table.c.get = MagicMock(side_effect=lambda col: mock_col if col == "name" else None)
+        executor._get_table = AsyncMock(return_value=mock_table)
+
+        mock_row = MagicMock()
+        mock_row._mapping = {"id": 1, "name": "Alice"}
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([mock_row]))
+        mock_conn.execute = AsyncMock(return_value=mock_result)
+
+        mock_select_chain = MagicMock()
+        mock_select_chain.limit.return_value = mock_select_chain
+        mock_select_chain.where.return_value = mock_select_chain
+
+        config = _make_query_config(filterable_columns=["name", "missing_col"])
+        with patch("apps.mcp_runtime.sql.select", return_value=mock_select_chain):
+            result = await executor.invoke(
+                operation=_make_operation(),
+                arguments={"name": "Alice", "missing_col": "whatever"},
+                config=config,
+            )
+
+        assert result["action"] == "query"
+        assert result["row_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_list_value_uses_in_clause(self) -> None:
+        """Lines 74-75: list value → use IN clause."""
+        ir = _make_service_ir()
+        mock_conn = AsyncMock()
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value = _AsyncContextManagerMock(mock_conn)
+        executor = SQLRuntimeExecutor(ir, engine=mock_engine)
+
+        mock_col = MagicMock()
+        mock_col.in_ = MagicMock(return_value=MagicMock())
+        mock_table = MagicMock()
+        mock_table.c.get = MagicMock(return_value=mock_col)
+        executor._get_table = AsyncMock(return_value=mock_table)
+
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([]))
+        mock_conn.execute = AsyncMock(return_value=mock_result)
+
+        mock_select_chain = MagicMock()
+        mock_select_chain.limit.return_value = mock_select_chain
+        mock_select_chain.where.return_value = mock_select_chain
+
+        config = _make_query_config(filterable_columns=["status"])
+        with patch("apps.mcp_runtime.sql.select", return_value=mock_select_chain):
+            result = await executor.invoke(
+                operation=_make_operation(),
+                arguments={"status": ["active", "pending"]},
+                config=config,
+            )
+
+        mock_col.in_.assert_called_once_with(["active", "pending"])
+        assert result["row_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_dict_value_raises_tool_error(self) -> None:
+        """Line 77: dict value → raise ToolError."""
+        ir = _make_service_ir()
+        mock_engine = MagicMock()
+        executor = SQLRuntimeExecutor(ir, engine=mock_engine)
+
+        mock_col = MagicMock()
+        mock_table = MagicMock()
+        mock_table.c.get = MagicMock(return_value=mock_col)
+        executor._get_table = AsyncMock(return_value=mock_table)
+
+        mock_select_chain = MagicMock()
+        mock_select_chain.limit.return_value = mock_select_chain
+        mock_select_chain.where.return_value = mock_select_chain
+
+        config = _make_query_config(filterable_columns=["metadata"])
+        with patch("apps.mcp_runtime.sql.select", return_value=mock_select_chain):
+            with pytest.raises(ToolError, match="does not support object filter values"):
+                await executor.invoke(
+                    operation=_make_operation(),
+                    arguments={"metadata": {"key": "val"}},
+                    config=config,
+                )
+
+    @pytest.mark.asyncio
+    async def test_query_execute_and_fetch_rows(self) -> None:
+        """Lines 83-84: execute query and fetch rows with _json_safe_row."""
+        from decimal import Decimal
+
+        ir = _make_service_ir()
+        mock_conn = AsyncMock()
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value = _AsyncContextManagerMock(mock_conn)
+        executor = SQLRuntimeExecutor(ir, engine=mock_engine)
+
+        mock_table = MagicMock()
+        mock_table.c.get = MagicMock(return_value=None)
+        executor._get_table = AsyncMock(return_value=mock_table)
+
+        mock_row1 = MagicMock()
+        mock_row1._mapping = {"id": 1, "price": Decimal("9.99")}
+        mock_row2 = MagicMock()
+        mock_row2._mapping = {"id": 2, "price": Decimal("19.99")}
+        mock_result = MagicMock()
+        mock_result.__iter__ = MagicMock(return_value=iter([mock_row1, mock_row2]))
+        mock_conn.execute = AsyncMock(return_value=mock_result)
+
+        mock_select_chain = MagicMock()
+        mock_select_chain.limit.return_value = mock_select_chain
+
+        config = _make_query_config()
+        with patch("apps.mcp_runtime.sql.select", return_value=mock_select_chain):
+            result = await executor.invoke(
+                operation=_make_operation(),
+                arguments={},
+                config=config,
+            )
+
+        assert result["row_count"] == 2
+        assert result["rows"][0] == {"id": 1, "price": pytest.approx(9.99)}
+        assert result["rows"][1] == {"id": 2, "price": pytest.approx(19.99)}
+        assert result["limit"] == 10
+
+
+class TestSQLRuntimeExecutorInsert:
+    """Tests covering insert-path gap: returning primary key."""
+
+    @pytest.mark.asyncio
+    async def test_insert_returning_primary_key(self) -> None:
+        """Lines 118-123: insert returning primary key."""
+        ir = _make_service_ir()
+        mock_conn = AsyncMock()
+        mock_engine = MagicMock()
+        mock_engine.begin.return_value = _AsyncContextManagerMock(mock_conn)
+        executor = SQLRuntimeExecutor(ir, engine=mock_engine)
+
+        mock_pk_col = MagicMock()
+        mock_pk = MagicMock()
+        mock_pk.columns = [mock_pk_col]
+        mock_table = MagicMock()
+        mock_table.primary_key = mock_pk
+        executor._get_table = AsyncMock(return_value=mock_table)
+
+        returned_row = MagicMock()
+        returned_row.__iter__ = MagicMock(return_value=iter([42]))
+        mock_result = MagicMock()
+        mock_result.first.return_value = returned_row
+        mock_result.rowcount = 1
+        mock_conn.execute = AsyncMock(return_value=mock_result)
+
+        mock_insert_chain = MagicMock()
+        mock_insert_chain.values.return_value = mock_insert_chain
+        mock_insert_chain.returning.return_value = mock_insert_chain
+
+        config = _make_insert_config(insertable_columns=["name"])
+        with patch("apps.mcp_runtime.sql.insert", return_value=mock_insert_chain):
+            result = await executor.invoke(
+                operation=_make_operation(),
+                arguments={"name": "Alice"},
+                config=config,
+            )
+
+        assert result["action"] == "insert"
+        assert result["row_count"] == 1
+        assert result["inserted_primary_key"] == [42]

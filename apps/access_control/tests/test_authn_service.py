@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from apps.access_control.authn.models import PATCreateResponse, PATResponse, TokenPrincipalResponse
 from apps.access_control.authn.service import (
     AuthenticationError,
     AuthnService,
@@ -24,6 +25,7 @@ from apps.access_control.authn.service import (
     _b64decode_json,
     _generate_pat,
     _hash_token,
+    build_service_jwt,
     hash_token_value,
     load_jwt_settings,
 )
@@ -302,16 +304,329 @@ class TestValidateTokenDispatch:
 # Additional tests to cover uncovered lines in authn/service.py
 
 
+class TestBuildServiceJwt:
+    def test_includes_issuer_claim(self) -> None:
+        settings = JWTSettings(secret=_SECRET, issuer="my-issuer")
+        token = build_service_jwt(jwt_settings=settings)
+        claims = json.loads(_b64decode_json(token.split(".")[1]))
+        assert claims["iss"] == "my-issuer"
+
+    def test_includes_audience_claim(self) -> None:
+        settings = JWTSettings(secret=_SECRET, audience="my-audience")
+        token = build_service_jwt(jwt_settings=settings)
+        claims = json.loads(_b64decode_json(token.split(".")[1]))
+        assert claims["aud"] == "my-audience"
+
+    def test_includes_both_issuer_and_audience(self) -> None:
+        settings = JWTSettings(secret=_SECRET, issuer="iss", audience="aud")
+        token = build_service_jwt(jwt_settings=settings)
+        claims = json.loads(_b64decode_json(token.split(".")[1]))
+        assert claims["iss"] == "iss"
+        assert claims["aud"] == "aud"
+
+    def test_omits_issuer_when_none(self) -> None:
+        settings = JWTSettings(secret=_SECRET)
+        token = build_service_jwt(jwt_settings=settings)
+        claims = json.loads(_b64decode_json(token.split(".")[1]))
+        assert "iss" not in claims
+
+    def test_omits_audience_when_none(self) -> None:
+        settings = JWTSettings(secret=_SECRET)
+        token = build_service_jwt(jwt_settings=settings)
+        claims = json.loads(_b64decode_json(token.split(".")[1]))
+        assert "aud" not in claims
+
+    def test_result_is_valid_jwt(self) -> None:
+        settings = JWTSettings(secret=_SECRET, issuer="iss", audience="aud")
+        token = build_service_jwt(jwt_settings=settings, subject="svc-user", roles=["reader"])
+        svc = _make_service(issuer="iss", audience="aud")
+        result = svc._validate_jwt(token)
+        assert result.subject == "svc-user"
+        assert result.claims["roles"] == ["reader"]
+        assert result.claims["iss"] == "iss"
+        assert result.claims["aud"] == "aud"
+
+
 class TestCreatePat:
-    pass
+    @pytest.mark.asyncio
+    async def test_create_pat_returns_response(self) -> None:
+        from types import SimpleNamespace
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        fake_user = SimpleNamespace(id=uuid4(), username="alice", email="alice@test.com")
+        svc._get_or_create_user = AsyncMock(return_value=fake_user)
+
+        pat_id = uuid4()
+        created_at = datetime.now(UTC)
+
+        def fake_refresh(record):
+            record.id = pat_id
+            record.created_at = created_at
+            record.revoked_at = None
+
+        session.refresh.side_effect = fake_refresh
+
+        result = await svc.create_pat(username="alice", name="my-token", email="alice@test.com")
+
+        assert result.username == "alice"
+        assert result.name == "my-token"
+        assert result.id == pat_id
+        assert result.created_at == created_at
+        assert result.revoked_at is None
+        assert result.token.startswith("pat_")
+        session.add.assert_called_once()
+        session.flush.assert_awaited_once()
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_pat_without_commit(self) -> None:
+        from types import SimpleNamespace
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        fake_user = SimpleNamespace(id=uuid4(), username="bob", email=None)
+        svc._get_or_create_user = AsyncMock(return_value=fake_user)
+
+        def fake_refresh(record):
+            record.id = uuid4()
+            record.created_at = datetime.now(UTC)
+            record.revoked_at = None
+
+        session.refresh.side_effect = fake_refresh
+
+        result = await svc.create_pat(username="bob", name="tok", commit=False)
+
+        assert result.username == "bob"
+        session.commit.assert_not_awaited()
+
+
+class TestListPats:
+    @pytest.mark.asyncio
+    async def test_list_pats_returns_responses(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        now = datetime.now(UTC)
+        pat1 = SimpleNamespace(id=uuid4(), name="tok1", created_at=now, revoked_at=None)
+        pat2 = SimpleNamespace(id=uuid4(), name="tok2", created_at=now, revoked_at=now)
+        user = SimpleNamespace(username="alice")
+
+        mock_result = MagicMock()
+        mock_result.all.return_value = [(pat1, user), (pat2, user)]
+        session.execute.return_value = mock_result
+
+        result = await svc.list_pats(username="alice")
+        assert len(result) == 2
+        assert result[0].name == "tok1"
+        assert result[0].revoked_at is None
+        assert result[1].name == "tok2"
+        assert result[1].revoked_at == now
+
+    @pytest.mark.asyncio
+    async def test_list_pats_empty(self) -> None:
+        from unittest.mock import MagicMock
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        session.execute.return_value = mock_result
+
+        result = await svc.list_pats(username="nobody")
+        assert result == []
+
+
+class TestGetPat:
+    @pytest.mark.asyncio
+    async def test_get_pat_found(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        pat_id = uuid4()
+        now = datetime.now(UTC)
+        pat = SimpleNamespace(id=pat_id, name="tok", created_at=now, revoked_at=None)
+        user = SimpleNamespace(username="alice")
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = (pat, user)
+        session.execute.return_value = mock_result
+
+        result = await svc.get_pat(pat_id)
+        assert result is not None
+        assert result.id == pat_id
+        assert result.username == "alice"
+        assert result.name == "tok"
+
+    @pytest.mark.asyncio
+    async def test_get_pat_not_found(self) -> None:
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = None
+        session.execute.return_value = mock_result
+
+        result = await svc.get_pat(uuid4())
+        assert result is None
 
 
 class TestRevokePat:
-    pass
+    @pytest.mark.asyncio
+    async def test_revoke_active_pat(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        pat_id = uuid4()
+        now = datetime.now(UTC)
+        pat = SimpleNamespace(id=pat_id, name="tok", created_at=now, revoked_at=None)
+        user = SimpleNamespace(username="alice")
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = (pat, user)
+        session.execute.return_value = mock_result
+
+        def fake_refresh(record):
+            pass  # revoked_at already set by the method
+
+        session.refresh.side_effect = fake_refresh
+
+        result = await svc.revoke_pat(pat_id)
+        assert result is not None
+        assert result.id == pat_id
+        assert result.revoked_at is not None
+        session.flush.assert_awaited_once()
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_revoke_already_revoked_pat(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        pat_id = uuid4()
+        now = datetime.now(UTC)
+        pat = SimpleNamespace(id=pat_id, name="tok", created_at=now, revoked_at=now)
+        user = SimpleNamespace(username="alice")
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = (pat, user)
+        session.execute.return_value = mock_result
+
+        result = await svc.revoke_pat(pat_id)
+        assert result is not None
+        assert result.revoked_at == now
+        # Should not flush/commit since already revoked
+        session.flush.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_revoke_pat_not_found(self) -> None:
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = None
+        session.execute.return_value = mock_result
+
+        result = await svc.revoke_pat(uuid4())
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_revoke_active_pat_without_commit(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        pat_id = uuid4()
+        now = datetime.now(UTC)
+        pat = SimpleNamespace(id=pat_id, name="tok", created_at=now, revoked_at=None)
+        user = SimpleNamespace(username="alice")
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = (pat, user)
+        session.execute.return_value = mock_result
+        session.refresh.side_effect = lambda record: None
+
+        result = await svc.revoke_pat(pat_id, commit=False)
+        assert result is not None
+        assert result.revoked_at is not None
+        session.flush.assert_awaited_once()
+        session.commit.assert_not_awaited()
 
 
 class TestValidatePat:
-    pass
+    @pytest.mark.asyncio
+    async def test_validate_valid_active_pat(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        pat_id = uuid4()
+        pat = SimpleNamespace(id=pat_id, name="my-pat", revoked_at=None, token_hash=_hash_token("pat_abc123"))
+        user = SimpleNamespace(username="alice")
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = (pat, user)
+        session.execute.return_value = mock_result
+
+        result = await svc._validate_pat("pat_abc123")
+        assert result.subject == "alice"
+        assert result.token_type == "pat"
+        assert result.claims["sub"] == "alice"
+        assert result.claims["pat_id"] == str(pat_id)
+        assert result.claims["name"] == "my-pat"
+
+    @pytest.mark.asyncio
+    async def test_validate_revoked_pat_raises(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        pat = SimpleNamespace(id=uuid4(), name="tok", revoked_at=datetime.now(UTC), token_hash="x")
+        user = SimpleNamespace(username="alice")
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = (pat, user)
+        session.execute.return_value = mock_result
+
+        with pytest.raises(AuthenticationError, match="revoked"):
+            await svc._validate_pat("pat_revoked")
 
 
 class TestValidateJwt:

@@ -1,7 +1,10 @@
 import {
+  Braces,
   Globe,
   Code,
   Database,
+  Network,
+  Shield,
   Zap,
   FileText,
   Server,
@@ -35,6 +38,22 @@ const protocolConfig: Record<
     icon: Zap,
     color:
       "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300",
+  },
+  jsonrpc: {
+    label: "JSON-RPC",
+    icon: Braces,
+    color:
+      "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+  },
+  odata: {
+    label: "OData",
+    icon: Network,
+    color: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300",
+  },
+  scim: {
+    label: "SCIM",
+    icon: Shield,
+    color: "bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300",
   },
   soap: {
     label: "SOAP",

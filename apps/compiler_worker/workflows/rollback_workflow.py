@@ -92,6 +92,11 @@ class RollbackWorkflow:
         await self._deployer.wait_for_rollout(deployment_revision)
         validation_report = await self._validator.validate(target_version)
         if not bool(validation_report.get("overall_passed", False)):
+            if current_active is not None:
+                await self._store.activate_version(
+                    request.service_id,
+                    current_active.version_number,
+                )
             raise RuntimeError(
                 f"Rollback validation failed for {request.service_id} v{request.target_version}."
             )

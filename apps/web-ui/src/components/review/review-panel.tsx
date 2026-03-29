@@ -18,6 +18,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { RiskBadge } from "@/components/services/risk-badge";
 import type { ServiceIR, Operation } from "@/types/api";
+import { useWorkflowStore } from "@/stores/workflow-store";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -25,6 +26,8 @@ import type { ServiceIR, Operation } from "@/types/api";
 
 interface ReviewPanelProps {
   ir: ServiceIR;
+  serviceId: string;
+  versionNumber: number;
   readOnly?: boolean;
   onCompleteReview?: (notes: Record<string, string>, overallNote: string) => void;
 }
@@ -175,10 +178,12 @@ function OperationReviewRow({
 // Main component
 // ---------------------------------------------------------------------------
 
-export function ReviewPanel({ ir, readOnly, onCompleteReview }: ReviewPanelProps) {
+export function ReviewPanel({ ir, serviceId, versionNumber, readOnly, onCompleteReview }: ReviewPanelProps) {
+  const saveNotes = useWorkflowStore((s) => s.saveNotes);
   const [reviewed, setReviewed] = React.useState<Set<string>>(new Set());
   const [notes, setNotes] = React.useState<Record<string, string>>({});
   const [overallNote, setOverallNote] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
 
   const operations = ir.operations;
   const total = operations.length;
@@ -199,7 +204,15 @@ export function ReviewPanel({ ir, readOnly, onCompleteReview }: ReviewPanelProps
     setNotes((prev) => ({ ...prev, [opId]: val }));
   }
 
-  function handleComplete() {
+  async function handleComplete() {
+    setSaving(true);
+    try {
+      await saveNotes(serviceId, versionNumber, notes, overallNote || undefined);
+    } catch {
+      // best-effort — notes saved locally even if backend fails
+    } finally {
+      setSaving(false);
+    }
     onCompleteReview?.(notes, overallNote);
   }
 
@@ -263,9 +276,13 @@ export function ReviewPanel({ ir, readOnly, onCompleteReview }: ReviewPanelProps
 
       {/* Complete button */}
       {!readOnly && (
-        <Button disabled={!allReviewed} onClick={handleComplete} className="w-full">
+        <Button disabled={!allReviewed || saving} onClick={handleComplete} className="w-full">
           <CheckSquare className="mr-1.5 size-4" />
-          {allReviewed ? "Complete Review" : `Review all operations to continue (${total - reviewedCount} remaining)`}
+          {saving
+            ? "Saving…"
+            : allReviewed
+              ? "Complete Review"
+              : `Review all operations to continue (${total - reviewedCount} remaining)`}
         </Button>
       )}
     </div>

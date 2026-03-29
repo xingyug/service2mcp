@@ -361,3 +361,99 @@ class TestHTTPGatewayAdminClientInit:
 
         # Should not set Authorization header
         assert "Authorization" not in client._client.headers
+
+
+# ── Additional coverage tests ──────────────────────────────────────────────
+
+
+class TestHTTPGatewayAdminClientUpsertConsumer:
+    """Test upsert_consumer makes the correct PUT request (line 151)."""
+
+    @pytest.mark.asyncio
+    async def test_upsert_consumer_sends_correct_request(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        import httpx
+
+        client = HTTPGatewayAdminClient(base_url="http://test:9080")
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"status": "ok"}
+
+        client._client.request = AsyncMock(return_value=mock_response)
+
+        await client.upsert_consumer(
+            consumer_id="c42",
+            username="alice",
+            credential="key-abc",
+            metadata={"role": "admin"},
+        )
+
+        client._client.request.assert_called_once_with(
+            "PUT",
+            "/admin/consumers/c42",
+            json={
+                "username": "alice",
+                "credential": "key-abc",
+                "metadata": {"role": "admin"},
+            },
+        )
+
+
+class TestHTTPGatewayAdminClientRequest204:
+    """Test _request returns {} for 204 status (line 224-225)."""
+
+    @pytest.mark.asyncio
+    async def test_request_204_returns_empty_dict(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        import httpx
+
+        client = HTTPGatewayAdminClient(base_url="http://test:9080")
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 204
+
+        client._client.request = AsyncMock(return_value=mock_response)
+
+        result = await client._request("DELETE", "/admin/consumers/c1")
+        assert result == {}
+
+
+class TestHTTPGatewayAdminClientRequestNonDictJson:
+    """Test _request raises RuntimeError for non-dict JSON (lines 227-228)."""
+
+    @pytest.mark.asyncio
+    async def test_request_non_dict_json_raises(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        import httpx
+
+        client = HTTPGatewayAdminClient(base_url="http://test:9080")
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 200
+        mock_response.json.return_value = [1, 2, 3]
+
+        client._client.request = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match="non-object response"):
+            await client._request("GET", "/admin/consumers")
+
+
+class TestLoadGatewayAdminClientFromEnvTimeout:
+    """Test load_gateway_admin_client_from_env with invalid timeout (lines 239-240)."""
+
+    def test_invalid_timeout_uses_default(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GATEWAY_ADMIN_URL": "http://localhost:9080",
+                "GATEWAY_ADMIN_TIMEOUT_SECONDS": "not_a_number",
+            },
+        ):
+            client = load_gateway_admin_client_from_env()
+            assert isinstance(client, HTTPGatewayAdminClient)
+            # The fallback timeout 10.0 should have been used
+            assert client._client.timeout.connect == 10.0

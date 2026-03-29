@@ -52,6 +52,7 @@ from libs.extractors.rest import (
     EndpointClassifier,
     RESTExtractor,
 )
+from libs.extractors.jsonrpc import JsonRpcExtractor
 from libs.extractors.soap import SOAPWSDLExtractor
 from libs.extractors.sql import SQLExtractor
 from libs.generator import GenericManifestConfig, generate_generic_manifests
@@ -77,6 +78,8 @@ GRPC_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "grpc_pro
 GRPC_INVENTORY_PROTO_PATH = GRPC_FIXTURES_DIR / "inventory.proto"
 WSDL_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "wsdl"
 ORDER_SERVICE_WSDL_PATH = WSDL_FIXTURES_DIR / "order_service.wsdl"
+JSONRPC_FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "jsonrpc_specs"
+JSONRPC_CALCULATOR_PATH = JSONRPC_FIXTURES_DIR / "openrpc_calculator.json"
 
 
 def _initialize_sqlite_catalog(tmp_path: Path) -> str:
@@ -2466,6 +2469,327 @@ async def test_sql_schema_compiles_to_running_runtime_and_tool_invocation(
                 }
             ],
         }
+    finally:
+        reset_compilation_executor()
+        await deployment_harness.aclose()
+
+
+@pytest.mark.asyncio
+async def test_jsonrpc_openrpc_compiles_to_running_runtime_and_tool_invocation(
+    postgres_container: PostgresContainer,
+    session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+) -> None:
+    """End-to-end: OpenRPC calculator spec → detect → extract → enhance → deploy → invoke."""
+    jsonrpc_spec = JSONRPC_CALCULATOR_PATH.read_text(encoding="utf-8")
+    worker_database_url = _to_asyncpg_url(postgres_container.get_connection_url())
+
+    async def upstream_handler(request: httpx.Request) -> httpx.Response:
+        """Mock JSON-RPC upstream that dispatches on method name."""
+        body = json.loads(request.content.decode())
+        method = body.get("method", "")
+        params = body.get("params", {})
+        request_id = body.get("id", 1)
+
+        if method == "add":
+            result = (params.get("a", 0) or 0) + (params.get("b", 0) or 0)
+        elif method == "subtract":
+            result = (params.get("a", 0) or 0) - (params.get("b", 0) or 0)
+        elif method == "get_history":
+            result = [{"op": "add", "a": 1, "b": 2, "result": 3}]
+        elif method == "delete_history":
+            result = True
+        else:
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32601, "message": f"Method not found: {method}"},
+                    "id": request_id,
+                },
+                request=request,
+            )
+
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "result": result, "id": request_id},
+            request=request,
+        )
+
+    deployment_harness = RuntimeDeploymentHarness(
+        tmp_path=tmp_path,
+        upstream_handler=upstream_handler,
+    )
+    jsonrpc_extractor = JsonRpcExtractor()
+
+    async def detect_stage(context: CompilationContext) -> StageExecutionResult:
+        source = SourceConfig(
+            url=context.request.source_url,
+            file_content=context.request.source_content,
+        )
+        detection = TypeDetector([jsonrpc_extractor]).detect(source)
+        return _stage_result(
+            context_updates={"detection_confidence": detection.confidence},
+            event_detail={"confidence": detection.confidence},
+            protocol=detection.protocol_name,
+        )
+
+    async def extract_stage(context: CompilationContext) -> StageExecutionResult:
+        source = SourceConfig(
+            url=context.request.source_url,
+            file_content=context.request.source_content,
+        )
+        service_ir = _prioritize_safe_operations(jsonrpc_extractor.extract(source))
+        if service_ir.auth.type is not AuthType.none:
+            service_ir = service_ir.model_copy(update={"auth": AuthConfig(type=AuthType.none)})
+        service_id = context.request.service_name or service_ir.service_name
+        return _stage_result(
+            context_updates={
+                "service_id": service_id,
+                "service_ir": service_ir.model_dump(mode="json"),
+                "version_number": 1,
+            },
+            event_detail={"operation_count": len(service_ir.operations)},
+            protocol="jsonrpc",
+            service_name=service_id,
+        )
+
+    async def enhance_stage(context: CompilationContext) -> StageExecutionResult:
+        return await _run_optional_real_deepseek_enhancer(
+            context,
+            stub_model="stub-jsonrpc-enhancer",
+            stub_input_tokens=8,
+            stub_output_tokens=6,
+        )
+
+    async def validate_ir_stage(context: CompilationContext) -> StageExecutionResult:
+        async with PreDeployValidator() as validator:
+            report = await validator.validate(context.payload["service_ir"])
+        if not report.overall_passed:
+            raise RuntimeError("Pre-deploy validation failed.")
+        return _stage_result(
+            context_updates={"pre_validation_report": report.model_dump(mode="json")},
+            event_detail={"overall_passed": report.overall_passed},
+        )
+
+    async def generate_stage(context: CompilationContext) -> StageExecutionResult:
+        service_ir = ServiceIR.model_validate(context.payload["service_ir"])
+        manifest_set = generate_generic_manifests(
+            service_ir,
+            config=GenericManifestConfig(
+                runtime_image="tool-compiler/mcp-runtime:latest",
+                service_id=str(context.payload["service_id"]),
+                version_number=int(context.payload["version_number"]),
+            ),
+        )
+        return _stage_result(
+            context_updates={
+                "manifest_yaml": manifest_set.yaml,
+                "route_config": manifest_set.route_config,
+            },
+            event_detail={"deployment_name": manifest_set.deployment["metadata"]["name"]},
+            rollback_payload={"deployment_name": manifest_set.deployment["metadata"]["name"]},
+        )
+
+    async def deploy_stage(context: CompilationContext) -> StageExecutionResult:
+        service_ir = ServiceIR.model_validate(context.payload["service_ir"])
+        revision = await deployment_harness.deploy(service_ir)
+        return _stage_result(
+            context_updates={"deployment_revision": revision},
+            event_detail={"deployment_revision": revision},
+            rollback_payload={"deployment_revision": revision},
+        )
+
+    async def validate_runtime_stage(context: CompilationContext) -> StageExecutionResult:
+        service_ir = ServiceIR.model_validate(context.payload["service_ir"])
+        sample_invocations = _build_sample_invocations(service_ir)
+        deployed = deployment_harness.current()
+        async with PostDeployValidator(
+            client=deployed.runtime_client,
+            tool_invoker=deployment_harness.call_tool,
+        ) as validator:
+            report = await validator.validate(
+                "http://runtime",
+                service_ir,
+                sample_invocations=sample_invocations,
+            )
+        if not report.overall_passed:
+            raise RuntimeError("Post-deploy validation failed.")
+        return _stage_result(
+            context_updates={
+                "post_validation_report": report.model_dump(mode="json"),
+                "sample_invocations": sample_invocations,
+            },
+            event_detail={"overall_passed": report.overall_passed},
+        )
+
+    async def route_stage(context: CompilationContext) -> StageExecutionResult:
+        route_config = context.payload["route_config"]
+        return _stage_result(
+            event_detail={"route_id": route_config["default_route"]["route_id"]},
+            rollback_payload={"route_id": route_config["default_route"]["route_id"]},
+        )
+
+    async def deploy_rollback(
+        context: CompilationContext,
+        result: StageExecutionResult,
+    ) -> None:
+        del context
+        assert result.rollback_payload is not None
+        deployment_revision = result.rollback_payload["deployment_revision"]
+        await deployment_harness.rollback(str(deployment_revision))
+
+    worker_celery_app = create_celery_app(
+        broker_url="memory://",
+        result_backend="cache+memory://",
+    )
+
+    async def execute_workflow_for_task(
+        request: CompilationRequest,
+    ) -> None:
+        worker_engine = create_async_engine(worker_database_url)
+        worker_session_factory = async_sessionmaker(worker_engine, expire_on_commit=False)
+
+        async def register_stage(context: CompilationContext) -> StageExecutionResult:
+            manifest_yaml = str(context.payload["manifest_yaml"])
+            artifact_payload = ArtifactVersionCreate(
+                service_id=str(context.payload["service_id"]),
+                version_number=int(context.payload["version_number"]),
+                ir_json=context.payload["service_ir"],
+                deployment_revision=str(context.payload["deployment_revision"]),
+                route_config=context.payload["route_config"],
+                validation_report=context.payload["post_validation_report"],
+                is_active=True,
+                artifacts=[
+                    ArtifactRecordPayload(
+                        artifact_type="manifest",
+                        content_hash=hashlib.sha256(manifest_yaml.encode("utf-8")).hexdigest(),
+                        storage_path="memory://manifests/calculator-jsonrpc.yaml",
+                    )
+                ],
+            )
+            async with worker_session_factory() as session:
+                repository = ArtifactRegistryRepository(session)
+                created = await repository.create_version(artifact_payload)
+            return _stage_result(
+                context_updates={"registered_version": created.version_number},
+                event_detail={
+                    "service_id": created.service_id,
+                    "version_number": created.version_number,
+                },
+            )
+
+        activities = ActivityRegistry(
+            stage_handlers={
+                CompilationStage.DETECT: detect_stage,
+                CompilationStage.EXTRACT: extract_stage,
+                CompilationStage.ENHANCE: enhance_stage,
+                CompilationStage.VALIDATE_IR: validate_ir_stage,
+                CompilationStage.GENERATE: generate_stage,
+                CompilationStage.DEPLOY: deploy_stage,
+                CompilationStage.VALIDATE_RUNTIME: validate_runtime_stage,
+                CompilationStage.ROUTE: route_stage,
+                CompilationStage.REGISTER: register_stage,
+            },
+            rollback_handlers={
+                CompilationStage.DEPLOY: deploy_rollback,
+            },
+        )
+        workflow = CompilationWorkflow(
+            store=SQLAlchemyCompilationJobStore(worker_session_factory),
+            activities=activities,
+        )
+        try:
+            await workflow.run(request)
+        finally:
+            await worker_engine.dispose()
+
+    configure_compilation_executor(CallbackCompilationExecutor(callback=execute_workflow_for_task))
+
+    compiler_api_app = create_compiler_api_app(
+        session_factory=session_factory,
+        compilation_dispatcher=CeleryCompilationDispatcher(celery_app=worker_celery_app),
+    )
+    transport = httpx.ASGITransport(app=compiler_api_app)
+
+    try:
+        with start_worker(
+            worker_celery_app,
+            pool="solo",
+            concurrency=1,
+            loglevel="INFO",
+            perform_ping_check=False,
+        ):
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+            ) as http_client:
+                submission = await http_client.post(
+                    "/api/v1/compilations",
+                    json={
+                        "source_url": "https://calc.example.com/openrpc.json",
+                        "source_content": jsonrpc_spec,
+                        "created_by": "e2e-user",
+                        "service_name": "calculator-jsonrpc",
+                    },
+                )
+                if submission.status_code != 202:
+                    raise AssertionError(
+                        f"Unexpected submit response {submission.status_code}: {submission.text}"
+                    )
+                assert submission.status_code == 202
+                job_id = submission.json()["id"]
+
+                job = await _wait_for_job_status(http_client, job_id, expected_status="succeeded")
+                assert job["protocol"] == "jsonrpc"
+
+                services = await http_client.get("/api/v1/services")
+                assert services.status_code == 200
+                listed_services = services.json()["services"]
+                jsonrpc_service = next(
+                    (s for s in listed_services if s["service_id"] == "calculator-jsonrpc"),
+                    None,
+                )
+                assert jsonrpc_service is not None
+                assert jsonrpc_service["active_version"] == 1
+
+                async with http_client.stream(
+                    "GET",
+                    f"/api/v1/compilations/{job_id}/events",
+                ) as response:
+                    body = ""
+                    async for chunk in response.aiter_text():
+                        body += chunk
+
+                assert response.status_code == 200
+                assert "event: job.succeeded" in body
+                assert "event: stage.succeeded" in body
+
+                active_runtime = deployment_harness.current()
+                service_ir = active_runtime.app.state.runtime_state.service_ir
+                assert service_ir is not None
+                assert service_ir.protocol == "jsonrpc"
+                assert len(service_ir.operations) == 4
+
+                expected_methods = {"add", "subtract", "get_history", "delete_history"}
+                actual_methods = {op.id for op in service_ir.operations}
+                assert expected_methods == actual_methods, (
+                    f"Missing methods: {expected_methods - actual_methods}"
+                )
+
+                # Verify JSON-RPC config is set on operations
+                for op in service_ir.operations:
+                    assert op.jsonrpc is not None, f"jsonrpc config not set on {op.id}"
+                    assert op.jsonrpc.method_name == op.id
+
+                # Invoke 'add' tool and verify correct JSON-RPC response
+                tool_result = await deployment_harness.call_tool(
+                    "add",
+                    {"a": 3, "b": 7},
+                )
+
+        assert tool_result["status"] == "ok"
+        assert tool_result["result"] == 10
     finally:
         reset_compilation_executor()
         await deployment_harness.aclose()

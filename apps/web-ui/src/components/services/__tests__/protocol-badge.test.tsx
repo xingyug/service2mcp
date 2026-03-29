@@ -8,6 +8,9 @@ describe("ProtocolBadge", () => {
     { key: "rest", label: "REST", colorFragment: "green" },
     { key: "graphql", label: "GraphQL", colorFragment: "pink" },
     { key: "grpc", label: "gRPC", colorFragment: "purple" },
+    { key: "jsonrpc", label: "JSON-RPC", colorFragment: "amber" },
+    { key: "odata", label: "OData", colorFragment: "indigo" },
+    { key: "scim", label: "SCIM", colorFragment: "teal" },
     { key: "soap", label: "SOAP", colorFragment: "orange" },
     { key: "sql", label: "SQL", colorFragment: "cyan" },
   ];

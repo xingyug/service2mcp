@@ -1,11 +1,14 @@
 "use client";
 
 import {
+  Braces,
+  Shield,
   Sparkles,
   FileJson,
   Globe,
   Share2,
   Database,
+  Network,
   Zap,
   FileCode,
 } from "lucide-react";
@@ -47,6 +50,24 @@ const PROTOCOLS = [
     label: "gRPC",
     description: "Protocol Buffers / gRPC service",
     icon: Zap,
+  },
+  {
+    value: "jsonrpc",
+    label: "JSON-RPC",
+    description: "JSON-RPC / OpenRPC service",
+    icon: Braces,
+  },
+  {
+    value: "odata",
+    label: "OData",
+    description: "OData service endpoint",
+    icon: Network,
+  },
+  {
+    value: "scim",
+    label: "SCIM",
+    description: "SCIM identity provisioning API",
+    icon: Shield,
   },
   {
     value: "soap",

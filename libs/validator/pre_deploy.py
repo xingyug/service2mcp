@@ -9,7 +9,13 @@ from typing import Any, Self
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from libs.ir.models import AuthType, EventSupportLevel, EventTransport, ServiceIR
+from libs.ir.models import (
+    AuthType,
+    EventSupportLevel,
+    EventTransport,
+    GrpcStreamMode,
+    ServiceIR,
+)
 from libs.validator.audit import ToolAuditSummary
 
 _APPROVED_STREAM_TRANSPORTS = {EventTransport.sse, EventTransport.websocket}
@@ -264,6 +270,11 @@ class PreDeployValidator:
                         continue
                     if not self._allow_native_grpc_stream:
                         invalid_descriptors.append(f"{descriptor.id}=grpc_stream_disabled")
+                        continue
+                    if descriptor.grpc_stream.mode is not GrpcStreamMode.server:
+                        invalid_descriptors.append(
+                            f"{descriptor.id}=grpc_stream_mode_{descriptor.grpc_stream.mode.value}"
+                        )
                         continue
                     supported_ids.append(f"{descriptor.id}({descriptor.transport.value})")
                     continue

@@ -49,6 +49,16 @@ class TestToWebsocketUrl:
         result = _to_websocket_url("https://example.com/api/v1/ws", {})
         assert "/api/v1/ws" in result
 
+    def test_wss_preserved(self) -> None:
+        """BUG-098: wss:// must not be downgraded to ws://."""
+        result = _to_websocket_url("wss://example.com/ws", {})
+        assert result.startswith("wss://")
+
+    def test_ws_stays_ws(self) -> None:
+        result = _to_websocket_url("ws://example.com/ws", {})
+        assert result.startswith("ws://")
+        assert not result.startswith("wss://")
+
 
 class TestSplitUrlQuery:
     def test_no_query(self) -> None:
@@ -373,8 +383,17 @@ class TestApplyFieldFilter:
         result = _apply_field_filter(data, ["id"])
         assert result == [{"id": 1}, {"id": 2}]
 
-    def test_non_dict_payload_passthrough(self) -> None:
-        assert _apply_field_filter("just a string", ["field"]) == "just a string"
+    def test_escaped_dot_literal_field_name(self) -> None:
+        """BUG-092: backslash-dot selects a key with a literal dot."""
+        data = {"Address.City": "Berlin", "name": "Alice"}
+        result = _apply_field_filter(data, [r"Address\.City"])
+        assert result == {"Address.City": "Berlin"}
+
+    def test_escaped_dot_among_nested(self) -> None:
+        """Escaped dot and regular nested path coexist."""
+        data = {"Address.City": "Berlin", "user": {"name": "Bob"}}
+        result = _apply_field_filter(data, [r"Address\.City", "user.name"])
+        assert result == {"Address.City": "Berlin", "user": {"name": "Bob"}}
 
 
 # --- Array limits ---

@@ -5,38 +5,88 @@ import {
   type WorkflowState,
 } from "../workflow-store";
 
-const STORAGE_KEY = "workflow-storage";
+// ---------------------------------------------------------------------------
+// Mock the API client
+// ---------------------------------------------------------------------------
+
+const mockGet = vi.fn();
+const mockTransition = vi.fn();
+const mockSaveNotes = vi.fn();
+const mockHistory = vi.fn();
+
+vi.mock("@/lib/api-client", () => ({
+  workflowApi: {
+    get: (...args: unknown[]) => mockGet(...args),
+    transition: (...args: unknown[]) => mockTransition(...args),
+    saveNotes: (...args: unknown[]) => mockSaveNotes(...args),
+    history: (...args: unknown[]) => mockHistory(...args),
+  },
+}));
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function resetStore() {
-  useWorkflowStore.setState({ workflows: {} });
+  useWorkflowStore.setState({ workflows: {}, loading: {} });
 }
+
+function apiResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "00000000-0000-0000-0000-000000000001",
+    service_id: "s",
+    version_number: 1,
+    state: "draft",
+    review_notes: null,
+    history: [],
+    created_at: "2025-01-01T00:00:00+00:00",
+    updated_at: "2025-01-01T00:00:00+00:00",
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 describe("workflow-store", () => {
   beforeEach(() => {
     resetStore();
+    vi.clearAllMocks();
   });
 
   // -----------------------------------------------------------------------
-  // getOrCreateWorkflow
+  // loadWorkflow
   // -----------------------------------------------------------------------
 
-  it("getOrCreateWorkflow creates a new workflow in draft state", () => {
-    const wf = useWorkflowStore.getState().getOrCreateWorkflow("svc-1", 1);
+  it("loadWorkflow fetches from backend and caches", async () => {
+    mockGet.mockResolvedValue(apiResponse({ state: "in_review" }));
 
-    expect(wf.serviceId).toBe("svc-1");
+    const wf = await useWorkflowStore.getState().loadWorkflow("s", 1);
+
+    expect(wf.serviceId).toBe("s");
     expect(wf.versionNumber).toBe(1);
+    expect(wf.state).toBe("in_review");
+    expect(mockGet).toHaveBeenCalledWith("s", 1);
+  });
+
+  it("loadWorkflow returns cached workflow without re-fetching", async () => {
+    mockGet.mockResolvedValue(apiResponse());
+
+    await useWorkflowStore.getState().loadWorkflow("s", 1);
+    const wf2 = await useWorkflowStore.getState().loadWorkflow("s", 1);
+
+    expect(wf2.state).toBe("draft");
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it("loadWorkflow falls back to draft on API error", async () => {
+    mockGet.mockRejectedValue(new Error("network"));
+
+    const wf = await useWorkflowStore.getState().loadWorkflow("s", 1);
+
     expect(wf.state).toBe("draft");
     expect(wf.history).toEqual([]);
-  });
-
-  it("getOrCreateWorkflow returns existing workflow without recreating", () => {
-    const store = useWorkflowStore.getState();
-    store.getOrCreateWorkflow("svc-1", 1);
-    // Transition to move away from draft
-    useWorkflowStore.getState().transition("svc-1", 1, "submitted", "alice");
-
-    const wf2 = useWorkflowStore.getState().getOrCreateWorkflow("svc-1", 1);
-    expect(wf2.state).toBe("submitted");
   });
 
   // -----------------------------------------------------------------------
@@ -48,8 +98,10 @@ describe("workflow-store", () => {
     expect(wf).toBeUndefined();
   });
 
-  it("getWorkflow returns the workflow when it exists", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("svc-2", 3);
+  it("getWorkflow returns the workflow when it exists", async () => {
+    mockGet.mockResolvedValue(apiResponse({ service_id: "svc-2", version_number: 3 }));
+
+    await useWorkflowStore.getState().loadWorkflow("svc-2", 3);
     const wf = useWorkflowStore.getState().getWorkflow("svc-2", 3);
     expect(wf).toBeDefined();
     expect(wf!.serviceId).toBe("svc-2");
@@ -59,47 +111,53 @@ describe("workflow-store", () => {
   // Valid transitions – happy path
   // -----------------------------------------------------------------------
 
-  it("transitions draft → submitted", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "actor");
+  it("transitions draft → submitted via backend", async () => {
+    mockGet.mockResolvedValue(apiResponse());
+    mockTransition.mockResolvedValue(apiResponse({ state: "submitted", history: [{ from: "draft", to: "submitted", actor: "a", comment: null, timestamp: "2025-01-01T00:00:00Z" }] }));
+
+    await useWorkflowStore.getState().loadWorkflow("s", 1);
+    await useWorkflowStore.getState().transition("s", 1, "submitted", "a");
 
     expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("submitted");
+    expect(mockTransition).toHaveBeenCalledWith("s", 1, "submitted", "a", undefined);
   });
 
-  it("transitions submitted → in_review", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "a");
-    useWorkflowStore.getState().transition("s", 1, "in_review", "b");
+  it("transitions submitted → in_review", async () => {
+    mockGet.mockResolvedValue(apiResponse({ state: "submitted" }));
+    mockTransition.mockResolvedValue(apiResponse({ state: "in_review" }));
+
+    await useWorkflowStore.getState().loadWorkflow("s", 1);
+    await useWorkflowStore.getState().transition("s", 1, "in_review", "b");
 
     expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("in_review");
   });
 
-  it("transitions in_review → approved", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "a");
-    useWorkflowStore.getState().transition("s", 1, "in_review", "a");
-    useWorkflowStore.getState().transition("s", 1, "approved", "reviewer");
+  it("transitions in_review → approved", async () => {
+    mockGet.mockResolvedValue(apiResponse({ state: "in_review" }));
+    mockTransition.mockResolvedValue(apiResponse({ state: "approved" }));
+
+    await useWorkflowStore.getState().loadWorkflow("s", 1);
+    await useWorkflowStore.getState().transition("s", 1, "approved", "reviewer");
 
     expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("approved");
   });
 
-  it("transitions approved → published", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "a");
-    useWorkflowStore.getState().transition("s", 1, "in_review", "a");
-    useWorkflowStore.getState().transition("s", 1, "approved", "a");
-    useWorkflowStore.getState().transition("s", 1, "published", "publisher");
+  it("transitions approved → published", async () => {
+    mockGet.mockResolvedValue(apiResponse({ state: "approved" }));
+    mockTransition.mockResolvedValue(apiResponse({ state: "published" }));
+
+    await useWorkflowStore.getState().loadWorkflow("s", 1);
+    await useWorkflowStore.getState().transition("s", 1, "published", "publisher");
 
     expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("published");
   });
 
-  it("transitions published → deployed", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "a");
-    useWorkflowStore.getState().transition("s", 1, "in_review", "a");
-    useWorkflowStore.getState().transition("s", 1, "approved", "a");
-    useWorkflowStore.getState().transition("s", 1, "published", "a");
-    useWorkflowStore.getState().transition("s", 1, "deployed", "deployer");
+  it("transitions published → deployed", async () => {
+    mockGet.mockResolvedValue(apiResponse({ state: "published" }));
+    mockTransition.mockResolvedValue(apiResponse({ state: "deployed" }));
+
+    await useWorkflowStore.getState().loadWorkflow("s", 1);
+    await useWorkflowStore.getState().transition("s", 1, "deployed", "deployer");
 
     expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("deployed");
   });
@@ -108,177 +166,93 @@ describe("workflow-store", () => {
   // Rejection path
   // -----------------------------------------------------------------------
 
-  it("transitions in_review → rejected", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "a");
-    useWorkflowStore.getState().transition("s", 1, "in_review", "a");
-    useWorkflowStore.getState().transition("s", 1, "rejected", "reviewer");
+  it("transitions in_review → rejected", async () => {
+    mockGet.mockResolvedValue(apiResponse({ state: "in_review" }));
+    mockTransition.mockResolvedValue(apiResponse({ state: "rejected" }));
+
+    await useWorkflowStore.getState().loadWorkflow("s", 1);
+    await useWorkflowStore.getState().transition("s", 1, "rejected", "reviewer");
 
     expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("rejected");
   });
 
-  it("transitions rejected → draft", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "a");
-    useWorkflowStore.getState().transition("s", 1, "in_review", "a");
-    useWorkflowStore.getState().transition("s", 1, "rejected", "a");
-    useWorkflowStore.getState().transition("s", 1, "draft", "author");
+  it("transitions rejected → draft", async () => {
+    mockGet.mockResolvedValue(apiResponse({ state: "rejected" }));
+    mockTransition.mockResolvedValue(apiResponse({ state: "draft" }));
+
+    await useWorkflowStore.getState().loadWorkflow("s", 1);
+    await useWorkflowStore.getState().transition("s", 1, "draft", "author");
 
     expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("draft");
-  });
-
-  // -----------------------------------------------------------------------
-  // Invalid transitions
-  // -----------------------------------------------------------------------
-
-  it("ignores invalid transition draft → approved", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "approved", "a");
-
-    expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("draft");
-  });
-
-  it("ignores invalid transition deployed → draft", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "a");
-    useWorkflowStore.getState().transition("s", 1, "in_review", "a");
-    useWorkflowStore.getState().transition("s", 1, "approved", "a");
-    useWorkflowStore.getState().transition("s", 1, "published", "a");
-    useWorkflowStore.getState().transition("s", 1, "deployed", "a");
-    useWorkflowStore.getState().transition("s", 1, "draft", "a");
-
-    expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("deployed");
-  });
-
-  it("ignores invalid transition submitted → approved (skip in_review)", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "a");
-    useWorkflowStore.getState().transition("s", 1, "approved", "a");
-
-    expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("submitted");
   });
 
   // -----------------------------------------------------------------------
   // History entries
   // -----------------------------------------------------------------------
 
-  it("creates a history entry on valid transition", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2024-01-15T10:00:00.000Z"));
+  it("stores history from backend response", async () => {
+    const historyEntries = [
+      { from: "submitted", to: "in_review", actor: "b", comment: null, timestamp: "2025-01-02T00:00:00Z" },
+      { from: "draft", to: "submitted", actor: "a", comment: "ready", timestamp: "2025-01-01T00:00:00Z" },
+    ];
+    mockGet.mockResolvedValue(apiResponse({ state: "in_review", history: historyEntries }));
 
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "alice", "ready for review");
+    const wf = await useWorkflowStore.getState().loadWorkflow("s", 1);
 
-    const wf = useWorkflowStore.getState().getWorkflow("s", 1)!;
-    expect(wf.history).toHaveLength(1);
-    expect(wf.history[0]).toEqual({
-      from: "draft",
-      to: "submitted",
-      actor: "alice",
-      comment: "ready for review",
-      timestamp: "2024-01-15T10:00:00.000Z",
-    });
-
-    vi.useRealTimers();
-  });
-
-  it("does not create a history entry on invalid transition", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "deployed", "a");
-
-    const wf = useWorkflowStore.getState().getWorkflow("s", 1)!;
-    expect(wf.history).toHaveLength(0);
-  });
-
-  it("prepends new history entries (newest first)", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "a");
-    useWorkflowStore.getState().transition("s", 1, "in_review", "b");
-
-    const wf = useWorkflowStore.getState().getWorkflow("s", 1)!;
     expect(wf.history).toHaveLength(2);
     expect(wf.history[0].from).toBe("submitted");
     expect(wf.history[0].to).toBe("in_review");
-    expect(wf.history[1].from).toBe("draft");
-    expect(wf.history[1].to).toBe("submitted");
+    expect(wf.history[1].comment).toBe("ready");
   });
 
-  it("history entry comment is optional", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("s", 1);
-    useWorkflowStore.getState().transition("s", 1, "submitted", "a");
+  // -----------------------------------------------------------------------
+  // saveNotes
+  // -----------------------------------------------------------------------
 
-    const wf = useWorkflowStore.getState().getWorkflow("s", 1)!;
-    expect(wf.history[0].comment).toBeUndefined();
+  it("saveNotes persists notes via backend", async () => {
+    const notesPayload = { "op-1": "looks good", "op-2": "needs fix" };
+    mockGet.mockResolvedValue(apiResponse());
+    mockSaveNotes.mockResolvedValue(
+      apiResponse({ review_notes: { operation_notes: notesPayload, overall_note: "Ship it" } }),
+    );
+
+    await useWorkflowStore.getState().loadWorkflow("s", 1);
+    const wf = await useWorkflowStore.getState().saveNotes("s", 1, notesPayload, "Ship it");
+
+    expect(wf.reviewNotes).toEqual({ operation_notes: notesPayload, overall_note: "Ship it" });
+    expect(mockSaveNotes).toHaveBeenCalledWith("s", 1, notesPayload, "Ship it");
   });
 
   // -----------------------------------------------------------------------
   // Multiple workflows
   // -----------------------------------------------------------------------
 
-  it("supports multiple independent workflows", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("svc-a", 1);
-    useWorkflowStore.getState().getOrCreateWorkflow("svc-b", 1);
-    useWorkflowStore.getState().transition("svc-a", 1, "submitted", "a");
+  it("supports multiple independent workflows", async () => {
+    mockGet
+      .mockResolvedValueOnce(apiResponse({ service_id: "svc-a" }))
+      .mockResolvedValueOnce(apiResponse({ service_id: "svc-b" }));
+    mockTransition.mockResolvedValue(apiResponse({ service_id: "svc-a", state: "submitted" }));
+
+    await useWorkflowStore.getState().loadWorkflow("svc-a", 1);
+    await useWorkflowStore.getState().loadWorkflow("svc-b", 1);
+    await useWorkflowStore.getState().transition("svc-a", 1, "submitted", "a");
 
     expect(useWorkflowStore.getState().getWorkflow("svc-a", 1)!.state).toBe("submitted");
     expect(useWorkflowStore.getState().getWorkflow("svc-b", 1)!.state).toBe("draft");
   });
 
-  it("supports multiple versions of the same service", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("svc", 1);
-    useWorkflowStore.getState().getOrCreateWorkflow("svc", 2);
-    useWorkflowStore.getState().transition("svc", 1, "submitted", "a");
+  it("supports multiple versions of the same service", async () => {
+    mockGet
+      .mockResolvedValueOnce(apiResponse({ version_number: 1 }))
+      .mockResolvedValueOnce(apiResponse({ version_number: 2 }));
+    mockTransition.mockResolvedValue(apiResponse({ version_number: 1, state: "submitted" }));
+
+    await useWorkflowStore.getState().loadWorkflow("svc", 1);
+    await useWorkflowStore.getState().loadWorkflow("svc", 2);
+    await useWorkflowStore.getState().transition("svc", 1, "submitted", "a");
 
     expect(useWorkflowStore.getState().getWorkflow("svc", 1)!.state).toBe("submitted");
     expect(useWorkflowStore.getState().getWorkflow("svc", 2)!.state).toBe("draft");
-  });
-
-  // -----------------------------------------------------------------------
-  // Transition on non-existent workflow (auto-creates from draft)
-  // -----------------------------------------------------------------------
-
-  it("transition auto-creates workflow from draft when key is missing", () => {
-    useWorkflowStore.getState().transition("new", 1, "submitted", "a");
-    const wf = useWorkflowStore.getState().getWorkflow("new", 1);
-    expect(wf).toBeDefined();
-    expect(wf!.state).toBe("submitted");
-  });
-
-  // -----------------------------------------------------------------------
-  // Persistence
-  // -----------------------------------------------------------------------
-
-  it("persists workflows to localStorage", () => {
-    useWorkflowStore.getState().getOrCreateWorkflow("p", 1);
-
-    const raw = localStorage.getItem(STORAGE_KEY);
-    expect(raw).not.toBeNull();
-    const stored = JSON.parse(raw!);
-    expect(stored.state.workflows).toBeDefined();
-    expect(stored.state.workflows["p-v1"]).toBeDefined();
-    expect(stored.state.workflows["p-v1"].state).toBe("draft");
-  });
-
-  it("restores workflows from localStorage on rehydration", () => {
-    const payload = {
-      state: {
-        workflows: {
-          "r-v1": {
-            serviceId: "r",
-            versionNumber: 1,
-            state: "approved",
-            history: [],
-          },
-        },
-      },
-      version: 0,
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    useWorkflowStore.persist.rehydrate();
-
-    const wf = useWorkflowStore.getState().getWorkflow("r", 1);
-    expect(wf).toBeDefined();
-    expect(wf!.state).toBe("approved");
   });
 
   // -----------------------------------------------------------------------

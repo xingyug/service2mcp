@@ -3,6 +3,9 @@ import { persist } from "zustand/middleware";
 
 interface User {
   username: string;
+  subject?: string;
+  tokenType?: string;
+  claims?: Record<string, unknown>;
   email?: string;
   roles?: string[];
 }

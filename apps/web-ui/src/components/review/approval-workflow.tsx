@@ -31,6 +31,7 @@ import {
   validTransitions,
   type WorkflowState,
 } from "@/stores/workflow-store";
+import { artifactApi, gatewayApi } from "@/lib/api-client";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -216,19 +217,47 @@ export function ApprovalWorkflow({
 
   const completed = completedSet();
 
+  const [submitting, setSubmitting] = React.useState(false);
+
   function requestTransition(to: WorkflowState, label: string, description: string) {
     setComment("");
     setConfirmDialog({ targetState: to, label, description });
   }
 
-  function executeTransition() {
+  async function executeTransition() {
     if (!confirmDialog) return;
     const actor = user?.username ?? "anonymous";
-    transition(serviceId, versionNumber, confirmDialog.targetState, actor, comment || undefined);
-    onStateChange?.(confirmDialog.targetState);
-    toast.success(`Workflow transitioned to "${stateConfig[confirmDialog.targetState].label}"`);
-    setConfirmDialog(null);
-    setComment("");
+    setSubmitting(true);
+    try {
+      await transition(serviceId, versionNumber, confirmDialog.targetState, actor, comment || undefined);
+
+      // Side-effects for publish / deploy
+      if (confirmDialog.targetState === "published") {
+        try {
+          await artifactApi.activateVersion(serviceId, versionNumber);
+        } catch {
+          toast.error("Workflow transitioned to Published but artifact activation failed.");
+        }
+      }
+      if (confirmDialog.targetState === "deployed") {
+        try {
+          await gatewayApi.syncRoutes({
+            route_config: { service_id: serviceId, version_number: versionNumber },
+          });
+        } catch {
+          toast.error("Workflow transitioned to Deployed but gateway sync failed.");
+        }
+      }
+
+      onStateChange?.(confirmDialog.targetState);
+      toast.success(`Workflow transitioned to "${stateConfig[confirmDialog.targetState].label}"`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Transition failed");
+    } finally {
+      setSubmitting(false);
+      setConfirmDialog(null);
+      setComment("");
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -432,10 +461,12 @@ export function ApprovalWorkflow({
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmDialog(null)}>
+            <Button variant="outline" onClick={() => setConfirmDialog(null)} disabled={submitting}>
               Cancel
             </Button>
-            <Button onClick={executeTransition}>{confirmDialog?.label}</Button>
+            <Button onClick={executeTransition} disabled={submitting}>
+              {submitting ? "Processing…" : confirmDialog?.label}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

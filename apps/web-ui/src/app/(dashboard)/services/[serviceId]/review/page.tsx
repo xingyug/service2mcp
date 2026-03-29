@@ -52,14 +52,13 @@ export default function ReviewPage() {
     (v) => v.version_number === versionNumber - 1,
   );
 
-  // Workflow state
-  const getOrCreate = useWorkflowStore((s) => s.getOrCreateWorkflow);
+  // Workflow state — load from backend
+  const loadWorkflow = useWorkflowStore((s) => s.loadWorkflow);
   const getWorkflow = useWorkflowStore((s) => s.getWorkflow);
 
-  // Ensure workflow record exists
   React.useEffect(() => {
-    getOrCreate(serviceId, versionNumber);
-  }, [serviceId, versionNumber, getOrCreate]);
+    loadWorkflow(serviceId, versionNumber);
+  }, [serviceId, versionNumber, loadWorkflow]);
 
   const workflow = getWorkflow(serviceId, versionNumber);
   const currentState: WorkflowState = workflow?.state ?? "draft";
@@ -171,6 +170,8 @@ export default function ReviewPage() {
               {ir ? (
                 <ReviewPanel
                   ir={ir}
+                  serviceId={serviceId}
+                  versionNumber={versionNumber}
                   readOnly={currentState !== "in_review"}
                   onCompleteReview={handleCompleteReview}
                 />

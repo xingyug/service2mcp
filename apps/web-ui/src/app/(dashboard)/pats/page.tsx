@@ -83,8 +83,9 @@ export default function PATTokensPage() {
   const [revokeTarget, setRevokeTarget] = useState<PATResponse | null>(null);
 
   const { data, isLoading } = useQuery({
-    queryKey: queryKeys.auth.pats,
-    queryFn: () => authApi.listPATs(),
+    queryKey: [...queryKeys.auth.pats, user?.username ?? ""] as const,
+    queryFn: () => authApi.listPATs(user?.username ?? ""),
+    enabled: !!user?.username,
   });
 
   const pats = useMemo(() => data?.pats ?? [], [data]);

@@ -162,7 +162,9 @@ class TestArtifactRegistryRepositoryUncoveredLines:
             result = await repo.update_version("nonexistent-service", 1, mock_update)
 
             assert result is None
-            mock_get.assert_called_once_with("nonexistent-service", 1)
+            mock_get.assert_called_once_with(
+                "nonexistent-service", 1, tenant=None, environment=None,
+            )
 
     async def test_activate_version_nonexistent_returns_none(self) -> None:
         """Test line 292: return None when version doesn't exist."""
@@ -176,7 +178,9 @@ class TestArtifactRegistryRepositoryUncoveredLines:
             result = await repo.activate_version("nonexistent-service", 1)
 
             assert result is None
-            mock_get.assert_called_once_with("nonexistent-service", 1)
+            mock_get.assert_called_once_with(
+                "nonexistent-service", 1, tenant=None, environment=None,
+            )
 
     async def test_delete_version_nonexistent_returns_false(self) -> None:
         """Test line 309: return False when version doesn't exist."""
@@ -190,7 +194,9 @@ class TestArtifactRegistryRepositoryUncoveredLines:
             result = await repo.delete_version("nonexistent-service", 1)
 
             assert result is False
-            mock_get.assert_called_once_with("nonexistent-service", 1)
+            mock_get.assert_called_once_with(
+                "nonexistent-service", 1, tenant=None, environment=None,
+            )
 
     async def test_delete_version_inactive_no_replacement_needed(self) -> None:
         """Test delete inactive version - no replacement logic triggered."""

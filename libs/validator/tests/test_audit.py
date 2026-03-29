@@ -14,6 +14,8 @@ from libs.validator.audit import (
     AuditPolicy,
     AuditThresholds,
     ToolAuditSummary,
+    _contains_synthetic_placeholder_sample,
+    _has_synthetic_path_placeholder_samples,
     check_thresholds,
 )
 
@@ -374,3 +376,122 @@ class TestCheckThresholds:
         summary = _make_summary(generated=0, audited=0, passed=0)
         thresholds = AuditThresholds(min_audited_ratio=0.5)
         assert check_thresholds(summary, thresholds) == []
+
+
+# ---------------------------------------------------------------------------
+# AuditPolicy.skip_reason — line 90 (final return None)
+# ---------------------------------------------------------------------------
+
+
+class TestAuditPolicyFinalReturnNone:
+    def test_skip_reason_returns_none_when_no_conditions_match(self) -> None:
+        """Line 90: no skip conditions triggered → returns None."""
+        operation = _make_operation(
+            method=None,
+            writes_state=False,
+            destructive=False,
+            external_side_effect=False,
+        )
+        policy = AuditPolicy()
+        assert policy.skip_reason(operation, {"get_item": {"id": "real_value"}}) is None
+
+
+# ---------------------------------------------------------------------------
+# _has_synthetic_path_placeholder_samples — edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestHasSyntheticPathPlaceholderSamples:
+    def test_returns_false_when_path_is_empty(self) -> None:
+        """Line 124: empty path → False."""
+        operation = Operation(
+            id="op",
+            name="op",
+            description="test",
+            method="GET",
+            path="",
+            params=[Param(name="id", type="string", required=True)],
+            risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=1.0),
+        )
+        assert _has_synthetic_path_placeholder_samples(operation, {"id": "sample"}) is False
+
+    def test_returns_false_when_path_is_none(self) -> None:
+        """Line 124: None path → False."""
+        operation = Operation(
+            id="op",
+            name="op",
+            description="test",
+            method="GET",
+            path=None,
+            params=[Param(name="id", type="string", required=True)],
+            risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=1.0),
+        )
+        assert _has_synthetic_path_placeholder_samples(operation, {"id": "sample"}) is False
+
+    def test_returns_false_when_no_placeholders(self) -> None:
+        """Line 133: path without {…} → False."""
+        operation = Operation(
+            id="op",
+            name="op",
+            description="test",
+            method="GET",
+            path="/items/all",
+            params=[Param(name="q", type="string", required=True)],
+            risk=RiskMetadata(risk_level=RiskLevel.safe, confidence=1.0),
+        )
+        assert _has_synthetic_path_placeholder_samples(operation, {"q": "sample"}) is False
+
+
+# ---------------------------------------------------------------------------
+# _contains_synthetic_placeholder_sample — recursive and int cases
+# ---------------------------------------------------------------------------
+
+
+class TestContainsSyntheticPlaceholderSample:
+    def test_int_1_with_numeric_fallbacks(self) -> None:
+        """Line 156: integer 1 with include_numeric_fallbacks=True → True."""
+        assert _contains_synthetic_placeholder_sample(1, include_numeric_fallbacks=True) is True
+
+    def test_int_1_without_numeric_fallbacks(self) -> None:
+        """Integer 1 with include_numeric_fallbacks=False → False."""
+        assert _contains_synthetic_placeholder_sample(1, include_numeric_fallbacks=False) is False
+
+    def test_int_other_with_numeric_fallbacks(self) -> None:
+        """Integer != 1 with include_numeric_fallbacks=True → False."""
+        assert _contains_synthetic_placeholder_sample(42, include_numeric_fallbacks=True) is False
+
+    def test_list_recursive_check(self) -> None:
+        """Lines 157-164: synthetic value nested in a list → True."""
+        assert _contains_synthetic_placeholder_sample(
+            ["real", "sample"], include_numeric_fallbacks=False
+        ) is True
+
+    def test_list_no_synthetic(self) -> None:
+        """Lines 157-164: list with no synthetic values → False."""
+        assert _contains_synthetic_placeholder_sample(
+            ["real", "data"], include_numeric_fallbacks=False
+        ) is False
+
+    def test_dict_recursive_check(self) -> None:
+        """Lines 165-172: synthetic value nested in a dict → True."""
+        assert _contains_synthetic_placeholder_sample(
+            {"key": "sample"}, include_numeric_fallbacks=False
+        ) is True
+
+    def test_dict_no_synthetic(self) -> None:
+        """Lines 165-172: dict with no synthetic values → False."""
+        assert _contains_synthetic_placeholder_sample(
+            {"key": "real"}, include_numeric_fallbacks=False
+        ) is False
+
+    def test_list_with_numeric_fallback(self) -> None:
+        """Lines 157-164: list containing int 1 with numeric fallbacks → True."""
+        assert _contains_synthetic_placeholder_sample(
+            [1], include_numeric_fallbacks=True
+        ) is True
+
+    def test_dict_with_numeric_fallback(self) -> None:
+        """Lines 165-172: dict containing int 1 with numeric fallbacks → True."""
+        assert _contains_synthetic_placeholder_sample(
+            {"id": 1}, include_numeric_fallbacks=True
+        ) is True

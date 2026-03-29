@@ -17,14 +17,24 @@ from libs.extractors.rest import (
     HeuristicRESTClassifier,
     RESTExtractor,
     _coalesce_sibling_endpoints,
+    _deduplicate_operation_ids,
+    _infer_json_server_relations,
     _is_path_like,
+    _is_static_asset_path,
+    _json_server_collection_methods,
+    _json_server_foreign_keys,
+    _json_server_parent_candidates,
+    _looks_like_foreign_key_field,
+    _looks_like_json_server_db_payload,
+    _looks_like_json_server_resource,
     _looks_like_value_segment,
     _normalize_classification_path,
     _ObservedEndpoint,
+    _pluralize_resource_name,
     _risk_for_method,
     _slugify,
 )
-from libs.ir.models import RiskLevel, SourceType
+from libs.ir.models import Operation, RiskLevel, RiskMetadata, SourceType
 
 
 class RecordingClassifier(EndpointClassifier):
@@ -1665,3 +1675,672 @@ class TestServiceNameFromUrl:
 
         source = SourceConfig(file_content="dummy")
         assert _service_name_from_url(source) == "rest-service"
+
+
+# ---------------------------------------------------------------------------
+# JSON Server helper functions (lines 1225-1400)
+# ---------------------------------------------------------------------------
+
+
+class TestLooksLikeJsonServerDbPayload:
+    def test_valid_dict_with_list_value(self) -> None:
+        assert _looks_like_json_server_db_payload({"posts": [{"id": 1}]}) is True
+
+    def test_valid_dict_with_dict_value(self) -> None:
+        assert _looks_like_json_server_db_payload({"profile": {"name": "Alice"}}) is True
+
+    def test_empty_dict_returns_false(self) -> None:
+        assert _looks_like_json_server_db_payload({}) is False
+
+    def test_non_dict_returns_false(self) -> None:
+        assert _looks_like_json_server_db_payload([1, 2, 3]) is False
+        assert _looks_like_json_server_db_payload("string") is False
+        assert _looks_like_json_server_db_payload(None) is False
+
+    def test_dict_with_only_scalar_values(self) -> None:
+        assert _looks_like_json_server_db_payload({"name": "Alice", "age": 30}) is False
+
+
+class TestLooksLikeJsonServerResource:
+    def test_valid_list_resource(self) -> None:
+        assert _looks_like_json_server_resource("posts", [{"id": 1}]) is True
+
+    def test_valid_dict_resource(self) -> None:
+        assert _looks_like_json_server_resource("profile", {"name": "Alice"}) is True
+
+    def test_non_string_name(self) -> None:
+        assert _looks_like_json_server_resource(123, []) is False
+
+    def test_empty_name(self) -> None:
+        assert _looks_like_json_server_resource("", []) is False
+        assert _looks_like_json_server_resource("   ", []) is False
+
+    def test_dunder_name_rejected(self) -> None:
+        assert _looks_like_json_server_resource("__internal", [{"id": 1}]) is False
+
+    def test_scalar_value_rejected(self) -> None:
+        assert _looks_like_json_server_resource("count", 42) is False
+        assert _looks_like_json_server_resource("name", "Alice") is False
+
+
+class TestJsonServerCollectionMethods:
+    def test_list_returns_get_post(self) -> None:
+        assert _json_server_collection_methods([{"id": 1}]) == {"GET", "POST"}
+
+    def test_dict_returns_get_put_patch(self) -> None:
+        assert _json_server_collection_methods({"key": "value"}) == {"GET", "PUT", "PATCH"}
+
+    def test_other_type_returns_get(self) -> None:
+        assert _json_server_collection_methods("string") == {"GET"}
+        assert _json_server_collection_methods(42) == {"GET"}
+
+
+class TestLooksLikeForeignKeyField:
+    def test_underscore_id_suffix(self) -> None:
+        assert _looks_like_foreign_key_field("user_id") is True
+        assert _looks_like_foreign_key_field("post_id") is True
+
+    def test_camel_case_id_suffix(self) -> None:
+        assert _looks_like_foreign_key_field("userId") is True
+        assert _looks_like_foreign_key_field("postId") is True
+
+    def test_plain_id_excluded(self) -> None:
+        assert _looks_like_foreign_key_field("id") is False
+
+    def test_non_id_field(self) -> None:
+        assert _looks_like_foreign_key_field("name") is False
+        assert _looks_like_foreign_key_field("email") is False
+
+    def test_whitespace_handling(self) -> None:
+        assert _looks_like_foreign_key_field("  user_id  ") is True
+
+
+class TestJsonServerForeignKeys:
+    def test_extracts_foreign_keys(self) -> None:
+        items = [
+            {"id": 1, "title": "Post 1", "user_id": 10},
+            {"id": 2, "title": "Post 2", "user_id": 20},
+        ]
+        keys = _json_server_foreign_keys(items)
+        assert "user_id" in keys
+
+    def test_skips_id_field(self) -> None:
+        items = [{"id": 1, "name": "Alice"}]
+        keys = _json_server_foreign_keys(items)
+        assert "id" not in keys
+
+    def test_skips_non_dict_items(self) -> None:
+        items = ["not-a-dict", 42, None]
+        keys = _json_server_foreign_keys(items)
+        assert keys == set()
+
+    def test_skips_non_scalar_fk_values(self) -> None:
+        items = [{"id": 1, "author_id": [1, 2, 3]}]
+        keys = _json_server_foreign_keys(items)
+        assert "author_id" not in keys
+
+    def test_multiple_foreign_keys(self) -> None:
+        items = [{"id": 1, "author_id": 5, "category_id": 3}]
+        keys = _json_server_foreign_keys(items)
+        assert keys == {"author_id", "category_id"}
+
+
+class TestJsonServerParentCandidates:
+    def test_underscore_id_with_matching_resource(self) -> None:
+        candidates = _json_server_parent_candidates("user_id", {"users", "posts"})
+        assert "users" in candidates
+
+    def test_camel_case_id_with_matching_resource(self) -> None:
+        candidates = _json_server_parent_candidates("userId", {"users", "posts"})
+        assert "users" in candidates
+
+    def test_no_matching_resource(self) -> None:
+        candidates = _json_server_parent_candidates("author_id", {"posts", "comments"})
+        assert candidates == []
+
+    def test_plain_id_returns_empty(self) -> None:
+        candidates = _json_server_parent_candidates("id", {"users"})
+        assert candidates == []
+
+    def test_non_id_suffix_returns_empty(self) -> None:
+        candidates = _json_server_parent_candidates("name", {"users"})
+        assert candidates == []
+
+    def test_empty_base_after_strip_returns_empty(self) -> None:
+        candidates = _json_server_parent_candidates("_id", {"users"})
+        assert candidates == []
+
+    def test_plural_form_matched(self) -> None:
+        candidates = _json_server_parent_candidates("category_id", {"categories"})
+        assert "categories" in candidates
+
+
+class TestPluralizeResourceName:
+    def test_regular_pluralization(self) -> None:
+        assert _pluralize_resource_name("user") == "users"
+        assert _pluralize_resource_name("post") == "posts"
+
+    def test_y_to_ies(self) -> None:
+        assert _pluralize_resource_name("category") == "categories"
+        assert _pluralize_resource_name("company") == "companies"
+
+    def test_vowel_y_stays(self) -> None:
+        assert _pluralize_resource_name("day") == "days"
+        assert _pluralize_resource_name("key") == "keys"
+
+    def test_sibilant_endings(self) -> None:
+        assert _pluralize_resource_name("bus") == "buses"
+        assert _pluralize_resource_name("box") == "boxes"
+        assert _pluralize_resource_name("buzz") == "buzzes"
+        assert _pluralize_resource_name("match") == "matches"
+        assert _pluralize_resource_name("wish") == "wishes"
+
+    def test_empty_string(self) -> None:
+        assert _pluralize_resource_name("") == ""
+
+
+class TestInferJsonServerRelations:
+    def test_simple_relation(self) -> None:
+        payload = {
+            "users": [{"id": 1, "name": "Alice"}],
+            "posts": [{"id": 1, "title": "Post 1", "user_id": 1}],
+        }
+        relations = _infer_json_server_relations(payload)
+        assert "users" in relations
+        assert "posts" in relations["users"]
+
+    def test_no_foreign_keys(self) -> None:
+        payload = {
+            "users": [{"id": 1, "name": "Alice"}],
+            "posts": [{"id": 1, "title": "Post 1"}],
+        }
+        relations = _infer_json_server_relations(payload)
+        assert relations == {}
+
+    def test_non_dict_payload(self) -> None:
+        assert _infer_json_server_relations("not a dict") == {}
+        assert _infer_json_server_relations([1, 2, 3]) == {}
+
+    def test_self_reference_excluded(self) -> None:
+        payload = {
+            "posts": [{"id": 1, "title": "Post", "post_id": 2}],
+        }
+        relations = _infer_json_server_relations(payload)
+        # post_id -> posts would be self-reference, should be excluded
+        assert "posts" not in relations
+
+    def test_dict_resources_skipped_for_fk_scan(self) -> None:
+        payload = {
+            "users": [{"id": 1, "name": "Alice"}],
+            "profile": {"user_id": 1, "bio": "Hello"},
+        }
+        relations = _infer_json_server_relations(payload)
+        # profile is a dict, not a list, so no FK scanning
+        assert "users" not in relations
+
+
+# ---------------------------------------------------------------------------
+# JSON Server bootstrap integration (lines 386-447)
+# ---------------------------------------------------------------------------
+
+
+class TestJsonServerBootstrap:
+    """Tests for _bootstrap_json_server end-to-end discovery."""
+
+    _JSON_SERVER_HTML = (
+        "<html><head><title>JSON Server</title></head><body>"
+        "<p>Congrats! You're successfully running JSON Server</p>"
+        "</body></html>"
+    )
+
+    @staticmethod
+    def _make_extractor(
+        handler: Callable[[httpx.Request], httpx.Response],
+    ) -> RESTExtractor:
+        transport = httpx.MockTransport(handler)
+        client = httpx.Client(transport=transport, follow_redirects=True)
+        return RESTExtractor(client=client)
+
+    def test_bootstrap_registers_collection_and_detail_endpoints(self) -> None:
+        """JSON Server /db endpoint registers collection + detail paths."""
+        html = self._JSON_SERVER_HTML
+        db_payload = {
+            "posts": [{"id": 1, "title": "Hello"}],
+            "comments": [{"id": 10, "body": "Nice", "postId": 1}],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if request.method == "GET" and url == "https://jsonserver.test/":
+                return httpx.Response(
+                    200, text=html, headers={"content-type": "text/html"}, request=request
+                )
+            if request.method == "GET" and url == "https://jsonserver.test/db":
+                return httpx.Response(200, json=db_payload, request=request)
+            if request.method == "OPTIONS":
+                return httpx.Response(200, headers={"allow": "GET"}, request=request)
+            return httpx.Response(404, request=request)
+
+        extractor = self._make_extractor(handler)
+        try:
+            service_ir = extractor.extract(SourceConfig(url="https://jsonserver.test/"))
+        finally:
+            extractor.close()
+
+        discovered_paths = set(service_ir.metadata["discovered_paths"])
+        assert "/posts" in discovered_paths
+        assert "/comments" in discovered_paths
+        assert any("{" in p and "post" in p for p in discovered_paths)
+        assert any("{" in p and "comment" in p for p in discovered_paths)
+
+    def test_bootstrap_skips_non_html_content(self) -> None:
+        """Non-HTML responses skip JSON Server bootstrap."""
+        extractor = self._make_extractor(lambda r: httpx.Response(404, request=r))
+        observed: dict[str, _ObservedEndpoint] = {}
+        response = httpx.Response(
+            200,
+            json={"data": "test"},
+            headers={"content-type": "application/json"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        result = extractor._bootstrap_json_server(
+            current_url="https://x.com/",
+            response=response,
+            observed=observed,
+            auth_headers={},
+        )
+        assert result == {}
+
+    def test_bootstrap_skips_non_json_server_html(self) -> None:
+        """HTML without JSON Server markers is skipped."""
+        extractor = self._make_extractor(lambda r: httpx.Response(404, request=r))
+        observed: dict[str, _ObservedEndpoint] = {}
+        response = httpx.Response(
+            200,
+            text="<html><body>Hello World</body></html>",
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        result = extractor._bootstrap_json_server(
+            current_url="https://x.com/",
+            response=response,
+            observed=observed,
+            auth_headers={},
+        )
+        assert result == {}
+
+    def test_bootstrap_handles_db_http_error(self) -> None:
+        """HTTPError when fetching /db is handled gracefully."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "db" in str(request.url):
+                raise httpx.ConnectError("fail")
+            return httpx.Response(404, request=request)
+
+        extractor = self._make_extractor(handler)
+        observed: dict[str, _ObservedEndpoint] = {}
+        response = httpx.Response(
+            200,
+            text=self._JSON_SERVER_HTML,
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        result = extractor._bootstrap_json_server(
+            current_url="https://x.com/",
+            response=response,
+            observed=observed,
+            auth_headers={},
+        )
+        assert result == {}
+
+    def test_bootstrap_handles_db_400_status(self) -> None:
+        """400+ status from /db is handled gracefully."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "db" in str(request.url):
+                return httpx.Response(500, request=request)
+            return httpx.Response(404, request=request)
+
+        extractor = self._make_extractor(handler)
+        observed: dict[str, _ObservedEndpoint] = {}
+        response = httpx.Response(
+            200,
+            text=self._JSON_SERVER_HTML,
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        result = extractor._bootstrap_json_server(
+            current_url="https://x.com/",
+            response=response,
+            observed=observed,
+            auth_headers={},
+        )
+        assert result == {}
+
+    def test_bootstrap_handles_invalid_json_from_db(self) -> None:
+        """Non-JSON response from /db is handled gracefully."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "db" in str(request.url):
+                return httpx.Response(
+                    200,
+                    text="not-json",
+                    headers={"content-type": "text/plain"},
+                    request=request,
+                )
+            return httpx.Response(404, request=request)
+
+        extractor = self._make_extractor(handler)
+        observed: dict[str, _ObservedEndpoint] = {}
+        response = httpx.Response(
+            200,
+            text=self._JSON_SERVER_HTML,
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        result = extractor._bootstrap_json_server(
+            current_url="https://x.com/",
+            response=response,
+            observed=observed,
+            auth_headers={},
+        )
+        assert result == {}
+
+    def test_bootstrap_handles_non_db_payload(self) -> None:
+        """Response that doesn't look like a JSON Server DB payload is skipped."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "db" in str(request.url):
+                return httpx.Response(200, json="just a string", request=request)
+            return httpx.Response(404, request=request)
+
+        extractor = self._make_extractor(handler)
+        observed: dict[str, _ObservedEndpoint] = {}
+        response = httpx.Response(
+            200,
+            text=self._JSON_SERVER_HTML,
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        result = extractor._bootstrap_json_server(
+            current_url="https://x.com/",
+            response=response,
+            observed=observed,
+            auth_headers={},
+        )
+        assert result == {}
+
+    def test_bootstrap_skips_invalid_resources(self) -> None:
+        """Resources with dunder names or non-list/dict values are skipped."""
+        db_payload = {
+            "__meta": [{"id": 1}],
+            "valid": [{"id": 2, "name": "ok"}],
+            "count": 42,
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "db" in str(request.url):
+                return httpx.Response(200, json=db_payload, request=request)
+            return httpx.Response(404, request=request)
+
+        extractor = self._make_extractor(handler)
+        observed: dict[str, _ObservedEndpoint] = {}
+        response = httpx.Response(
+            200,
+            text=self._JSON_SERVER_HTML,
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        extractor._bootstrap_json_server(
+            current_url="https://x.com/",
+            response=response,
+            observed=observed,
+            auth_headers={},
+        )
+        assert "/valid" in observed
+        assert "/__meta" not in observed
+        assert "/count" not in observed
+
+    def test_bootstrap_dict_resource_gets_put_patch(self) -> None:
+        """Dict resources get GET/PUT/PATCH methods (singleton)."""
+        db_payload = {"profile": {"name": "Alice", "bio": "Hello"}}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "db" in str(request.url):
+                return httpx.Response(200, json=db_payload, request=request)
+            return httpx.Response(404, request=request)
+
+        extractor = self._make_extractor(handler)
+        observed: dict[str, _ObservedEndpoint] = {}
+        response = httpx.Response(
+            200,
+            text=self._JSON_SERVER_HTML,
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        extractor._bootstrap_json_server(
+            current_url="https://x.com/",
+            response=response,
+            observed=observed,
+            auth_headers={},
+        )
+        assert "/profile" in observed
+        assert observed["/profile"].methods == {"GET", "PUT", "PATCH"}
+
+    def test_bootstrap_collection_without_sample_id_skips_detail(self) -> None:
+        """Collections without items with 'id' field skip detail endpoint."""
+        db_payload = {"items": [{"name": "no-id-here"}]}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "db" in str(request.url):
+                return httpx.Response(200, json=db_payload, request=request)
+            return httpx.Response(404, request=request)
+
+        extractor = self._make_extractor(handler)
+        observed: dict[str, _ObservedEndpoint] = {}
+        response = httpx.Response(
+            200,
+            text=self._JSON_SERVER_HTML,
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        extractor._bootstrap_json_server(
+            current_url="https://x.com/",
+            response=response,
+            observed=observed,
+            auth_headers={},
+        )
+        assert "/items" in observed
+        # No detail endpoint since no sample ID
+        detail_paths = [p for p in observed if "{" in p]
+        assert len(detail_paths) == 0
+
+    def test_bootstrap_returns_relations(self) -> None:
+        """Bootstrap returns inferred relations from foreign keys."""
+        db_payload = {
+            "users": [{"id": 1, "name": "Alice"}],
+            "posts": [{"id": 1, "title": "Hello", "user_id": 1}],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "db" in str(request.url):
+                return httpx.Response(200, json=db_payload, request=request)
+            return httpx.Response(404, request=request)
+
+        extractor = self._make_extractor(handler)
+        observed: dict[str, _ObservedEndpoint] = {}
+        response = httpx.Response(
+            200,
+            text=self._JSON_SERVER_HTML,
+            headers={"content-type": "text/html"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        relations = extractor._bootstrap_json_server(
+            current_url="https://x.com/",
+            response=response,
+            observed=observed,
+            auth_headers={},
+        )
+        assert "users" in relations
+        assert "posts" in relations["users"]
+
+
+# ---------------------------------------------------------------------------
+# _auth_headers edge cases (lines 647-652)
+# ---------------------------------------------------------------------------
+
+
+class TestAuthHeaders:
+    def test_auth_header_direct(self) -> None:
+        """auth_header is used directly as Authorization header."""
+        transport = httpx.MockTransport(lambda r: httpx.Response(404, request=r))
+        extractor = RESTExtractor(client=httpx.Client(transport=transport))
+        source = SourceConfig(url="https://x.com", auth_header="Token abc123")
+        result = extractor._auth_headers(source)
+        assert result == {"Authorization": "Token abc123"}
+
+    def test_auth_token_bearer(self) -> None:
+        """auth_token is wrapped in Bearer prefix."""
+        transport = httpx.MockTransport(lambda r: httpx.Response(404, request=r))
+        extractor = RESTExtractor(client=httpx.Client(transport=transport))
+        source = SourceConfig(url="https://x.com", auth_token="my-token")
+        result = extractor._auth_headers(source)
+        assert result == {"Authorization": "Bearer my-token"}
+
+    def test_no_auth(self) -> None:
+        """No auth configured returns empty dict."""
+        transport = httpx.MockTransport(lambda r: httpx.Response(404, request=r))
+        extractor = RESTExtractor(client=httpx.Client(transport=transport))
+        source = SourceConfig(url="https://x.com")
+        result = extractor._auth_headers(source)
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# _extract_candidate_paths non-HTML/JSON fallback (line 667)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractCandidatePathsFallback:
+    def test_non_html_non_json_falls_back_to_html(self) -> None:
+        """Content types that are neither HTML nor JSON fall back to HTML extraction."""
+        transport = httpx.MockTransport(lambda r: httpx.Response(404, request=r))
+        client = httpx.Client(transport=transport, follow_redirects=True)
+        extractor = RESTExtractor(client=client)
+        response = httpx.Response(
+            200,
+            text='<html><a href="/resource">link</a></html>',
+            headers={"content-type": "text/plain"},
+            request=httpx.Request("GET", "https://x.com/"),
+        )
+        result = extractor._extract_candidate_paths("https://x.com", response)
+        paths = [p for p, _ in result]
+        assert any("/resource" in p for p in paths)
+
+
+# ---------------------------------------------------------------------------
+# _extract_from_html: form without method (line 678)
+# ---------------------------------------------------------------------------
+
+
+class TestExtractFromHtmlFormNoMethod:
+    def test_form_without_method_treated_as_link(self) -> None:
+        """Forms without explicit method attribute produce 'link' source."""
+        transport = httpx.MockTransport(lambda r: httpx.Response(404, request=r))
+        client = httpx.Client(transport=transport, follow_redirects=True)
+        extractor = RESTExtractor(client=client)
+        # The regex captures empty string for method when not present
+        body = '<html><form action="/search" method="get"></form></html>'
+        result = extractor._extract_from_html("https://x.com", body)
+        source_types = [s for _, s in result]
+        assert "link" in source_types
+
+
+# ---------------------------------------------------------------------------
+# _normalize_candidate: static asset filtering (line 700)
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeCandidateStaticAsset:
+    def test_static_asset_rejected(self) -> None:
+        """Static assets (.js, .css, .png etc.) are filtered out."""
+        transport = httpx.MockTransport(lambda r: httpx.Response(404, request=r))
+        client = httpx.Client(transport=transport, follow_redirects=True)
+        extractor = RESTExtractor(client=client)
+        assert extractor._normalize_candidate("https://x.com", "/app.js") is None
+        assert extractor._normalize_candidate("https://x.com", "/style.css") is None
+        assert extractor._normalize_candidate("https://x.com", "/logo.png") is None
+
+
+# ---------------------------------------------------------------------------
+# _deduplicate_operation_ids (lines 1474-1486)
+# ---------------------------------------------------------------------------
+
+
+class TestDeduplicateOperationIds:
+    def _make_op(self, op_id: str, method: str = "GET", path: str = "/test") -> Operation:
+        return Operation(
+            id=op_id,
+            name="Test Op",
+            description="test",
+            method=method,
+            path=path,
+            params=[],
+            risk=RiskMetadata(risk_level=RiskLevel.safe),
+            source=SourceType.extractor,
+            confidence=0.9,
+        )
+
+    def test_no_duplicates_unchanged(self) -> None:
+        ops = [self._make_op("get_users"), self._make_op("post_users")]
+        result = _deduplicate_operation_ids(ops)
+        assert [op.id for op in result] == ["get_users", "post_users"]
+
+    def test_duplicate_ids_get_suffix(self) -> None:
+        ops = [
+            self._make_op("get_users"),
+            self._make_op("get_users"),
+            self._make_op("get_users"),
+        ]
+        result = _deduplicate_operation_ids(ops)
+        assert result[0].id == "get_users"
+        assert result[1].id == "get_users_1"
+        assert result[2].id == "get_users_2"
+
+
+# ---------------------------------------------------------------------------
+# _is_path_like: custom URL scheme detection (lines 1162-1163, 1166-1167)
+# ---------------------------------------------------------------------------
+
+
+class TestIsPathLikeCustomSchemes:
+    def test_custom_scheme_with_protocol(self) -> None:
+        """Custom schemes like ftp:// are path-like (line 1162)."""
+        assert _is_path_like("ftp://files.example.com/data") is True
+
+    def test_parsed_scheme_without_slashes(self) -> None:
+        """Values that urlparse treats as having a scheme but no netloc are rejected (line 1166-1167)."""
+        assert _is_path_like("mailto:user@example.com") is False
+
+
+# ---------------------------------------------------------------------------
+# _is_static_asset_path extension extraction (lines 1216-1217)
+# ---------------------------------------------------------------------------
+
+
+class TestIsStaticAssetPath:
+    def test_known_extensions(self) -> None:
+        assert _is_static_asset_path("/assets/app.js") is True
+        assert _is_static_asset_path("/styles/main.css") is True
+        assert _is_static_asset_path("/images/logo.png") is True
+        assert _is_static_asset_path("/fonts/roboto.woff2") is True
+
+    def test_non_static_extensions(self) -> None:
+        assert _is_static_asset_path("/api/users") is False
+        assert _is_static_asset_path("/data.json") is False
+
+    def test_no_dot_in_leaf(self) -> None:
+        assert _is_static_asset_path("/api/users/123") is False
+
+    def test_nested_path_with_extension(self) -> None:
+        assert _is_static_asset_path("/assets/vendor/bundle.js") is True

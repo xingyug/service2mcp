@@ -55,6 +55,13 @@ spec:
               value: {{ .Values.global.redisUrl | quote }}
             - name: TEMPORAL_ADDRESS
               value: {{ .Values.global.temporalAddress | quote }}
+            - name: ACCESS_CONTROL_URL
+              value: "http://{{ include "tool-compiler.fullname" . }}-access-control:{{ .Values.services.accessControl.port }}"
+            - name: ACCESS_CONTROL_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tool-compiler.fullname" . }}-secrets
+                  key: jwt-secret
           ports:
             - name: http
               containerPort: {{ .Values.services.compilerApi.port }}
@@ -259,6 +266,11 @@ spec:
               value: access-control
             - name: ACCESS_CONTROL_URL
               value: "http://{{ include "tool-compiler.fullname" . }}-access-control:{{ .Values.services.accessControl.port }}"
+            - name: ACCESS_CONTROL_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tool-compiler.fullname" . }}-secrets
+                  key: jwt-secret
             {{- range .Values.compilerWorker.extraEnv }}
             - name: {{ .name }}
               value: {{ .value | quote }}
