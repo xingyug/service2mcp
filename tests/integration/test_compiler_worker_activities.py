@@ -958,6 +958,7 @@ async def test_default_activity_registry_enhance_stage_respects_skip_enhancement
         result = await registry.run_stage(CompilationStage.ENHANCE, context)
 
     assert result.context_updates["token_usage"]["model"] == "disabled"
+    assert result.event_detail is not None
     assert result.event_detail["mode"] == "passthrough"
 
 
