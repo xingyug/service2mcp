@@ -138,6 +138,27 @@ function buildRequest(form: WizardFormData): CompilationCreateRequest {
   if (form.tenant) options.tenant = form.tenant;
   if (form.environment) options.environment = form.environment;
 
+  if (form.authType !== "none") {
+    const authConfig: AuthConfig = { type: form.authType };
+    if (form.authType === "bearer") {
+      authConfig.compile_time_secret_ref = form.bearerSecretRef;
+    } else if (form.authType === "basic") {
+      authConfig.username = form.basicUsername;
+      authConfig.password_secret_ref = form.basicPasswordRef;
+    } else if (form.authType === "api_key") {
+      authConfig.header_name = form.apiKeyHeaderName;
+      authConfig.compile_time_secret_ref = form.apiKeySecretRef;
+    } else if (form.authType === "custom_header") {
+      authConfig.header_name = form.customHeaderName;
+      authConfig.compile_time_secret_ref = form.customHeaderValueRef;
+    } else if (form.authType === "oauth2") {
+      authConfig.token_url = form.oauth2TokenUrl;
+      authConfig.client_id = form.oauth2ClientId;
+      authConfig.client_secret_ref = form.oauth2ClientSecretRef;
+    }
+    options.auth_config = authConfig;
+  }
+
   const req: CompilationCreateRequest = {
     created_by: form.createdBy,
     options,

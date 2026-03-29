@@ -707,9 +707,15 @@ class RESTExtractor:
             path = f"{path}?{unquote(parsed.query)}"
         return path
 
-    def _probe_allowed_methods(self, endpoint: _ObservedEndpoint) -> None:
+    def _probe_allowed_methods(
+        self,
+        endpoint: _ObservedEndpoint,
+        *,
+        auth_headers: dict[str, str] | None = None,
+    ) -> None:
+        headers = auth_headers or {}
         try:
-            response = self._client.options(endpoint.absolute_url)
+            response = self._client.options(endpoint.absolute_url, headers=headers)
         except httpx.HTTPError:
             return
 

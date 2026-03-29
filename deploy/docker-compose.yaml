@@ -86,7 +86,7 @@ services:
         python -m uvicorn apps.access_control.main:app --host 0.0.0.0 --port 8001
     environment:
       DATABASE_URL: postgresql+asyncpg://toolcompiler:toolcompiler@postgres:5432/toolcompiler
-      JWT_SECRET_KEY: dev-secret-key
+      ACCESS_CONTROL_JWT_SECRET: dev-secret
       GATEWAY_ADMIN_URL: http://gateway-admin-mock:8004
       PYTHONUNBUFFERED: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"

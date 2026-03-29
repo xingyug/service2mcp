@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.access_control.audit.service import AuditLogService
 from apps.compiler_api.db import get_db_session
 from apps.compiler_api.repository import ArtifactRegistryRepository
 from apps.compiler_api.route_publisher import ArtifactRoutePublisher, get_route_publisher
@@ -44,13 +45,21 @@ async def create_artifact_version(
 ) -> ArtifactVersionResponse:
     repository = ArtifactRegistryRepository(session)
     try:
-        return await repository.create_version(payload)
+        created = await repository.create_version(payload)
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Service version {payload.service_id}:{payload.version_number} already exists.",
         ) from exc
+    audit_log = AuditLogService(session)
+    await audit_log.append_entry(
+        actor="system",
+        action="artifact.created",
+        resource=f"{payload.service_id}:{payload.version_number}",
+        detail={"service_id": payload.service_id, "version_number": payload.version_number},
+    )
+    return created
 
 
 @router.get("/{service_id}/versions", response_model=ArtifactVersionListResponse)
@@ -103,6 +112,13 @@ async def update_artifact_version(
     )
     if version is None:
         raise _not_found(service_id, version_number)
+    audit_log = AuditLogService(session)
+    await audit_log.append_entry(
+        actor="system",
+        action="artifact.updated",
+        resource=f"{service_id}:{version_number}",
+        detail={"service_id": service_id, "version_number": version_number},
+    )
     return version
 
 
@@ -149,6 +165,14 @@ async def delete_artifact_version(
                 await route_publisher.delete(deleted_version.route_config)
         elif version_only_route is not None:
             await route_publisher.delete(version_only_route)
+        audit_log = AuditLogService(session)
+        await audit_log.append_entry(
+            actor="system",
+            action="artifact.deleted",
+            resource=f"{service_id}:{version_number}",
+            detail={"service_id": service_id, "version_number": version_number},
+            commit=False,
+        )
         await session.commit()
     except Exception as exc:
         await session.rollback()
@@ -187,6 +211,14 @@ async def activate_artifact_version(
     try:
         if isinstance(version.route_config, dict):
             await route_publisher.sync(version.route_config)
+        audit_log = AuditLogService(session)
+        await audit_log.append_entry(
+            actor="system",
+            action="artifact.activated",
+            resource=f"{service_id}:{version_number}",
+            detail={"service_id": service_id, "version_number": version_number},
+            commit=False,
+        )
         await session.commit()
     except Exception as exc:
         await session.rollback()

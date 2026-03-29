@@ -67,6 +67,8 @@ class CompilationJob(Base):
     options: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     service_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tenant: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    environment: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -695,13 +695,19 @@ export const auditApi = {
   },
 
   get(entryId: string) {
-    return auditApi.list().then((response) => {
-      const entry = response.entries.find((item) => item.id === entryId);
-      if (!entry) {
-        throw new ApiError(404, `Audit entry ${entryId} not found`);
-      }
-      return entry;
-    });
+    return fetchAPI<RawAuditLogEntry>(
+      `${ACCESS_CONTROL_API}/api/v1/audit/logs/${encodeURIComponent(entryId)}`,
+    )
+      .then(normalizeAuditLogEntry)
+      .catch(() =>
+        auditApi.list().then((response) => {
+          const entry = response.entries.find((item) => item.id === entryId);
+          if (!entry) {
+            throw new ApiError(404, `Audit entry ${entryId} not found`);
+          }
+          return entry;
+        }),
+      );
   },
 };
 

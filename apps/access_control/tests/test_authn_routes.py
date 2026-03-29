@@ -23,6 +23,16 @@ from apps.access_control.authn.routes import (
 from apps.access_control.authn.service import AuthenticationError, JWTSettings
 
 
+@pytest.fixture(autouse=True)
+def _mock_audit_log():
+    """Patch AuditLogService so tests don't need a real DB for audit entries."""
+    from unittest.mock import patch
+
+    with patch("apps.access_control.authn.routes.AuditLogService") as mock_cls:
+        mock_cls.return_value = AsyncMock()
+        yield
+
+
 class TestGetJwtSettings:
     def test_jwt_settings_not_configured(self):
         """Test line 36: JWT settings not configured."""

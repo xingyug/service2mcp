@@ -125,16 +125,15 @@ export const useWorkflowStore = create<WorkflowStore>()((set, get) => ({
       return record;
     } catch {
       set((s) => ({ loading: { ...s.loading, [key]: false } }));
-      // Return a default draft record on failure so the UI still works
-      const fallback: WorkflowRecord = {
+      // Return a default draft record on failure so the UI still works.
+      // Do NOT cache — next call should retry the API.
+      return {
         serviceId,
         versionNumber: version,
         state: "draft",
         reviewNotes: null,
         history: [],
-      };
-      set((s) => ({ workflows: { ...s.workflows, [key]: fallback } }));
-      return fallback;
+      } satisfies WorkflowRecord;
     }
   },
 

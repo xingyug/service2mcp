@@ -1224,21 +1224,24 @@ class RuntimeProxy:
         )
         websocket_url = _to_websocket_url(url, query_params)
 
-        async with websockets.connect(
-            websocket_url,
-            additional_headers=headers or None,
-            open_timeout=self._timeout,
-            close_timeout=self._timeout,
-            max_queue=max_messages,
-            write_limit=32768,
-        ) as websocket:
-            for message in outbound_messages:
-                await websocket.send(message)
-            events, termination_reason = await _collect_websocket_messages(
-                websocket,
-                max_messages=max_messages,
-                idle_timeout_seconds=idle_timeout,
-            )
+        try:
+            async with websockets.connect(
+                websocket_url,
+                additional_headers=headers or None,
+                open_timeout=self._timeout,
+                close_timeout=self._timeout,
+                max_queue=max_messages,
+                write_limit=32768,
+            ) as websocket:
+                for message in outbound_messages:
+                    await websocket.send(message)
+                events, termination_reason = await _collect_websocket_messages(
+                    websocket,
+                    max_messages=max_messages,
+                    idle_timeout_seconds=idle_timeout,
+                )
+        except websockets.exceptions.WebSocketException as ws_exc:
+            raise ToolError(f"WebSocket communication failed: {ws_exc}") from ws_exc
 
         return {
             "transport": descriptor.transport.value,
@@ -1549,6 +1552,9 @@ async def _collect_sse_events(
             break
         except TimeoutError:
             return events, "idle_timeout"
+        except (httpx.ReadError, httpx.RemoteProtocolError) as exc:
+            logger.warning("SSE connection error: %s", exc)
+            return events, "connection_error"
 
         if line == "":
             event = _build_sse_event(event_type, data_lines, event_id)
@@ -1942,7 +1948,7 @@ def _apply_field_filter(payload: Any, field_filter: list[str] | None) -> Any:
                 for item in payload
             ]
         return [
-            _filter_dict(item, all_inner_fields, nested_paths, {})
+            _filter_dict(item, all_inner_fields, nested_paths, array_paths)
             if isinstance(item, dict)
             else item
             for item in payload

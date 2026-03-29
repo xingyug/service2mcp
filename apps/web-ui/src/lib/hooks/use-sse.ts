@@ -100,13 +100,13 @@ export function useCompilationEvents(
   const [events, setEvents] = useState<CompilationEvent[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<Error | null>(null);
-  const sourceRef = useRef<EventSource | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!jobId) {
-      if (sourceRef.current) {
-        sourceRef.current.close();
-        sourceRef.current = null;
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
       }
       return;
     }
@@ -119,48 +119,75 @@ export function useCompilationEvents(
       typeof window !== "undefined"
         ? localStorage.getItem("auth_token")
         : null;
-    const authUrl = token
-      ? `${url}?token=${encodeURIComponent(token)}`
-      : url;
-    const es = new EventSource(authUrl);
-    sourceRef.current = es;
 
-    const listeners = SSE_EVENT_TYPES.map((eventType) => {
-      const listener = (msg: MessageEvent<string>) => {
-        try {
-          const raw = JSON.parse(msg.data) as RawCompilationEvent;
-          const normalized = normalizeEvent(raw, eventType);
-          if (normalized) {
-            setEvents((prev) => [...prev, normalized]);
-          }
-        } catch {
-          // Ignore unparseable messages
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const headers: Record<string, string> = { Accept: "text/event-stream" };
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    (async () => {
+      try {
+        const response = await fetch(url, {
+          headers,
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) {
+          setError(new Error(`SSE connection failed: ${response.status}`));
+          return;
         }
-      };
-      es.addEventListener(eventType, listener as EventListener);
-      return { eventType, listener };
-    });
+        setIsConnected(true);
+        setError(null);
 
-    es.onopen = () => {
-      setIsConnected(true);
-      setError(null);
-    };
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let currentEventType = "";
 
-    es.onerror = () => {
-      // EventSource automatically reconnects on transient errors.
-      // Surface a generic error so consumers can display a warning.
-      setError(new Error("SSE connection error"));
-      setIsConnected(false);
-    };
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              currentEventType = line.slice(7).trim();
+            } else if (line.startsWith("data: ")) {
+              const data = line.slice(6);
+              const eventType = currentEventType || "message";
+              try {
+                const raw = JSON.parse(data) as RawCompilationEvent;
+                const normalized = normalizeEvent(raw, eventType);
+                if (normalized) {
+                  setEvents((prev) => [...prev, normalized]);
+                }
+              } catch {
+                // Ignore unparseable messages
+              }
+              currentEventType = "";
+            } else if (line.trim() === "") {
+              currentEventType = "";
+            }
+          }
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setError(
+          err instanceof Error ? err : new Error("SSE connection error"),
+        );
+      } finally {
+        setIsConnected(false);
+      }
+    })();
 
     return () => {
-      listeners.forEach(({ eventType, listener }) => {
-        es.removeEventListener(eventType, listener as EventListener);
-      });
-      if (sourceRef.current) {
-        sourceRef.current.close();
-        sourceRef.current = null;
-      }
+      controller.abort();
+      abortRef.current = null;
       setEvents([]);
       setError(null);
       setIsConnected(false);

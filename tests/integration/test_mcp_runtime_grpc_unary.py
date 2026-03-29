@@ -212,7 +212,7 @@ async def test_reflection_grpc_unary_executor_resolves_descriptors_and_invokes_m
 
             return invoke
 
-        def close(self) -> None:
+        def close(self, grace: float | None = None) -> None:
             captured["closed"] = True
 
     monkeypatch.setattr(

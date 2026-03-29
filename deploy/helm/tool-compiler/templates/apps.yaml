@@ -4,9 +4,8 @@ metadata:
   name: {{ include "tool-compiler.fullname" . }}-runtime-ir
   labels:
     {{- include "tool-compiler.componentLabels" (dict "root" . "component" "mcp-runtime") | nindent 4 }}
-data:
-  service-ir.json: |
-{{ .Values.mcpRuntime.serviceIrJson | indent 4 }}
+binaryData:
+  service-ir.json.gz: {{ .Values.mcpRuntime.serviceIrJson | b64enc }}
 ---
 apiVersion: v1
 kind: Service
@@ -341,7 +340,7 @@ spec:
             - python -m uvicorn apps.mcp_runtime.main:app --host 0.0.0.0 --port {{ .Values.services.mcpRuntime.port }}
           env:
             - name: SERVICE_IR_PATH
-              value: /config/service-ir.json
+              value: /config/service-ir.json.gz
             - name: BILLING_SECRET
               valueFrom:
                 secretKeyRef:

@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from libs.enhancer.enhancer import _sanitize_for_prompt
 from libs.ir.models import Operation, ServiceIR, SourceType, ToolGroup
 
 logger = logging.getLogger(__name__)
@@ -99,8 +100,8 @@ class ToolGrouper:
         )
 
         prompt = GROUPING_PROMPT_TEMPLATE.format(
-            service_name=ir.service_name,
-            protocol=ir.protocol,
+            service_name=_sanitize_for_prompt(ir.service_name),
+            protocol=_sanitize_for_prompt(ir.protocol),
             operations_json=operations_json,
         )
 

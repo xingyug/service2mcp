@@ -30,6 +30,16 @@ from libs.ir.models import (
 
 logger = logging.getLogger(__name__)
 
+
+def _pluralize(name: str) -> str:
+    """Return a basic English plural form of *name*."""
+    lower = name.lower()
+    if lower.endswith(("s", "x", "z", "sh", "ch")):
+        return f"{name}es"
+    if lower.endswith("y") and len(lower) > 1 and lower[-2] not in "aeiou":
+        return f"{name[:-1]}ies"
+    return f"{name}s"
+
 SCIM_TYPE_MAP: dict[str, str] = {
     "string": "string",
     "boolean": "boolean",
@@ -196,7 +206,7 @@ class SCIMExtractor:
                 )
                 continue
             resource_names.append(name)
-            plural = f"{name}s"
+            plural = _pluralize(name)
             lower = name.lower()
             attributes: list[dict[str, Any]] = resource.get("attributes", [])
 

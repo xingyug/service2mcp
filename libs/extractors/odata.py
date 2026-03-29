@@ -315,8 +315,36 @@ def _build_entity_set_operations(entity_set_name: str, et_info: EntityTypeInfo) 
     ops: list[Operation] = []
     es_lower = entity_set_name.lower()
     key_props = et_info.key_properties
-    key_name = key_props[0].name if key_props else "id"
-    key_type = _edm_to_json_type(key_props[0].type_name) if key_props else "integer"
+    if key_props:
+        if len(key_props) == 1:
+            key_path_segment = f"{{{key_props[0].name}}}"
+        else:
+            key_path_segment = ",".join(
+                f"{kp.name}={{{kp.name}}}" for kp in key_props
+            )
+        key_params = [
+            Param(
+                name=kp.name,
+                type=_edm_to_json_type(kp.type_name),
+                required=True,
+                description=f"Key property {kp.name}",
+                source=SourceType.extractor,
+                confidence=1.0,
+            )
+            for kp in key_props
+        ]
+    else:
+        key_path_segment = "{id}"
+        key_params = [
+            Param(
+                name="id",
+                type="integer",
+                required=True,
+                description="Key property id",
+                source=SourceType.extractor,
+                confidence=1.0,
+            ),
+        ]
 
     odata_query_params = [
         Param(
@@ -386,17 +414,8 @@ def _build_entity_set_operations(entity_set_name: str, et_info: EntityTypeInfo) 
             name=f"Get {entity_set_name} by key",
             description=f"Get a single entity from {entity_set_name} by its key.",
             method="GET",
-            path=f"/{entity_set_name}({{{key_name}}})",
-            params=[
-                Param(
-                    name=key_name,
-                    type=key_type,
-                    required=True,
-                    description=f"Key property {key_name}",
-                    source=SourceType.extractor,
-                    confidence=1.0,
-                ),
-            ],
+            path=f"/{entity_set_name}({key_path_segment})",
+            params=list(key_params),
             risk=_risk_safe(),
             tags=["odata", entity_set_name],
             source=SourceType.extractor,
@@ -436,16 +455,7 @@ def _build_entity_set_operations(entity_set_name: str, et_info: EntityTypeInfo) 
     )
 
     # UPDATE
-    update_params = [
-        Param(
-            name=key_name,
-            type=key_type,
-            required=True,
-            description=f"Key property {key_name}",
-            source=SourceType.extractor,
-            confidence=1.0,
-        ),
-    ] + [
+    update_params = list(key_params) + [
         Param(
             name=p.name,
             type=_edm_to_json_type(p.type_name),
@@ -462,7 +472,7 @@ def _build_entity_set_operations(entity_set_name: str, et_info: EntityTypeInfo) 
             name=f"Update {entity_set_name}",
             description=f"Update an entity in {entity_set_name} (partial update).",
             method="PATCH",
-            path=f"/{entity_set_name}({{{key_name}}})",
+            path=f"/{entity_set_name}({key_path_segment})",
             params=update_params,
             risk=_risk_cautious(),
             tags=["odata", entity_set_name],
@@ -480,17 +490,8 @@ def _build_entity_set_operations(entity_set_name: str, et_info: EntityTypeInfo) 
             name=f"Delete {entity_set_name}",
             description=f"Delete an entity from {entity_set_name}.",
             method="DELETE",
-            path=f"/{entity_set_name}({{{key_name}}})",
-            params=[
-                Param(
-                    name=key_name,
-                    type=key_type,
-                    required=True,
-                    description=f"Key property {key_name}",
-                    source=SourceType.extractor,
-                    confidence=1.0,
-                ),
-            ],
+            path=f"/{entity_set_name}({key_path_segment})",
+            params=list(key_params),
             risk=_risk_dangerous(),
             tags=["odata", entity_set_name],
             source=SourceType.extractor,

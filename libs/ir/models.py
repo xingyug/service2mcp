@@ -592,7 +592,12 @@ class ServiceIR(BaseModel):
     @model_validator(mode="after")
     def operation_ids_must_be_unique(self) -> ServiceIR:
         ids = [op.id for op in self.operations]
-        duplicates = {x for x in ids if ids.count(x) > 1}
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for x in ids:
+            if x in seen:
+                duplicates.add(x)
+            seen.add(x)
         if duplicates:
             raise ValueError(f"Duplicate operation IDs: {duplicates}")
         return self
@@ -634,7 +639,12 @@ class ServiceIR(BaseModel):
     @model_validator(mode="after")
     def resource_definition_ids_must_be_unique(self) -> ServiceIR:
         ids = [r.id for r in self.resource_definitions]
-        duplicates = {x for x in ids if ids.count(x) > 1}
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for x in ids:
+            if x in seen:
+                duplicates.add(x)
+            seen.add(x)
         if duplicates:
             raise ValueError(f"Duplicate resource definition IDs: {duplicates}")
         return self
@@ -642,7 +652,12 @@ class ServiceIR(BaseModel):
     @model_validator(mode="after")
     def prompt_definition_ids_must_be_unique(self) -> ServiceIR:
         ids = [p.id for p in self.prompt_definitions]
-        duplicates = {x for x in ids if ids.count(x) > 1}
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for x in ids:
+            if x in seen:
+                duplicates.add(x)
+            seen.add(x)
         if duplicates:
             raise ValueError(f"Duplicate prompt definition IDs: {duplicates}")
         return self

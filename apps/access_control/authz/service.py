@@ -172,7 +172,7 @@ class AuthzService:
         )
 
     def _matches(self, policy: Policy, payload: PolicyEvaluationRequest) -> bool:
-        if policy.resource_id not in {"*", payload.resource_id}:
+        if not fnmatchcase(payload.resource_id, policy.resource_id):
             return False
         if not fnmatchcase(payload.action, policy.action_pattern):
             return False
@@ -188,9 +188,13 @@ class AuthzService:
         if policy.subject_id == payload.subject_id:
             score += 4
         if policy.resource_id == payload.resource_id:
-            score += 2
+            score += 2  # exact match
+        elif policy.resource_id != "*" and fnmatchcase(payload.resource_id, policy.resource_id):
+            score += 1  # glob match (more specific than wildcard)
         if policy.action_pattern == payload.action:
-            score += 1
+            score += 1  # exact match
+        elif policy.action_pattern != "*" and fnmatchcase(payload.action, policy.action_pattern):
+            score += 1  # glob match (more specific than wildcard)
         return score
 
     @staticmethod

@@ -16,6 +16,7 @@ from apps.access_control.authn.models import (
     TokenValidationRequest,
 )
 from apps.access_control.authn.service import AuthenticationError, AuthnService, JWTSettings
+from apps.access_control.audit.service import AuditLogService
 from apps.access_control.db import get_db_session
 from apps.access_control.gateway_binding.service import (
     GatewayBindingService,
@@ -72,6 +73,14 @@ async def create_pat(
             commit=False,
         )
         await gateway_binding.sync_pat_creation(created, created.token)
+        audit_log = AuditLogService(session)
+        await audit_log.append_entry(
+            actor=caller.subject,
+            action="pat.created",
+            resource=str(created.id),
+            detail={"username": payload.username, "name": payload.name},
+            commit=False,
+        )
         await session.commit()
     except Exception as exc:
         await session.rollback()
@@ -120,6 +129,14 @@ async def revoke_pat(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PAT not found.")
     try:
         await gateway_binding.sync_pat_revocation(revoked.id)
+        audit_log = AuditLogService(session)
+        await audit_log.append_entry(
+            actor=caller.subject,
+            action="pat.revoked",
+            resource=str(revoked.id),
+            detail={"username": existing.username, "pat_id": pat_id},
+            commit=False,
+        )
         await session.commit()
     except Exception as exc:
         await session.rollback()

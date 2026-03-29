@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from threading import Thread
@@ -46,6 +47,8 @@ from libs.ir.models import (
     SqlOperationType,
     SqlRelationKind,
 )
+
+logger = logging.getLogger(__name__)
 
 _DATABASE_SCHEMES = {"postgres", "postgresql", "mysql", "mariadb", "sqlite"}
 
@@ -238,8 +241,14 @@ class SQLExtractor:
             constrained_columns = foreign_key.get("constrained_columns") or []
             referred_table = foreign_key.get("referred_table")
             referred_columns = foreign_key.get("referred_columns") or []
-            for index, column_name in enumerate(constrained_columns):
-                referred_column = referred_columns[index] if index < len(referred_columns) else "id"
+            if len(constrained_columns) != len(referred_columns):
+                logger.warning(
+                    "FK column count mismatch for %s: constrained=%s, referred=%s; pairing only matched columns.",
+                    relation_name,
+                    constrained_columns,
+                    referred_columns,
+                )
+            for column_name, referred_column in zip(constrained_columns, referred_columns):
                 descriptions[str(column_name)] = f"References {referred_table}.{referred_column}."
         return descriptions
 

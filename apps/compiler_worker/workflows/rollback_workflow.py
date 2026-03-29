@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from libs.registry_client.models import ArtifactVersionResponse, ArtifactVersionUpdate
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -93,10 +96,19 @@ class RollbackWorkflow:
         validation_report = await self._validator.validate(target_version)
         if not bool(validation_report.get("overall_passed", False)):
             if current_active is not None:
-                await self._store.activate_version(
-                    request.service_id,
-                    current_active.version_number,
-                )
+                fresh_active = await self._store.get_active_version(request.service_id)
+                if fresh_active is not None and fresh_active.version_number == current_active.version_number:
+                    await self._store.activate_version(
+                        request.service_id,
+                        current_active.version_number,
+                    )
+                else:
+                    logger.warning(
+                        "Active version changed during rollback validation "
+                        "(was v%s, now v%s); skipping restore",
+                        current_active.version_number,
+                        fresh_active.version_number if fresh_active else None,
+                    )
             raise RuntimeError(
                 f"Rollback validation failed for {request.service_id} v{request.target_version}."
             )

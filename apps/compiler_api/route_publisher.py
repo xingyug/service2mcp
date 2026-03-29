@@ -114,10 +114,13 @@ def get_route_publisher(request: Request) -> ArtifactRoutePublisher:
 async def dispose_route_publisher(app: FastAPI) -> None:
     """Close any owned route publisher resources on shutdown."""
 
-    publisher = getattr(app.state, _ROUTE_PUBLISHER_STATE_KEY, None)
+    publisher: Any = getattr(app.state, _ROUTE_PUBLISHER_STATE_KEY, None)
+    if publisher is None:
+        return
     close = getattr(publisher, "aclose", None)
-    if callable(close):
-        await close()
+    if close is None:
+        return
+    await close()
 
 
 def _resolve_default_route_publisher() -> ArtifactRoutePublisher:

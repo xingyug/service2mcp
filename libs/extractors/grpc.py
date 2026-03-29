@@ -36,24 +36,33 @@ logger = logging.getLogger(__name__)
 
 _SYNTAX_PATTERN = re.compile(r'^\s*syntax\s*=\s*"(?P<syntax>[^"]+)"\s*;', re.MULTILINE)
 _PACKAGE_PATTERN = re.compile(r"^\s*package\s+(?P<package>[\w.]+)\s*;", re.MULTILINE)
-_SERVICE_PATTERN = re.compile(
-    r"service\s+(?P<name>\w+)\s*\{(?P<body>.*?)\}",
-    re.DOTALL,
-)
-_MESSAGE_PATTERN = re.compile(
-    r"message\s+(?P<name>\w+)\s*\{(?P<body>.*?)\}",
-    re.DOTALL,
-)
-_ENUM_PATTERN = re.compile(
-    r"enum\s+(?P<name>\w+)\s*\{(?P<body>.*?)\}",
-    re.DOTALL,
-)
 _RPC_PATTERN = re.compile(
     r"rpc\s+"
     r"(?P<name>\w+)\s*"
     r"\(\s*(?P<request_stream>stream\s+)?(?P<request>[\w.]+)\s*\)\s*"
-    r"returns\s*\(\s*(?P<response_stream>stream\s+)?(?P<response>[\w.]+)\s*\)\s*;",
+    r"returns\s*\(\s*(?P<response_stream>stream\s+)?(?P<response>[\w.]+)\s*\)\s*"
+    r"(?:;|\{[^}]*\})",
 )
+
+
+def _find_blocks(keyword: str, text: str) -> list[tuple[str, str]]:
+    """Find top-level `keyword Name { ... }` blocks using brace counting."""
+    pattern = re.compile(rf"{keyword}\s+(\w+)\s*\{{")
+    results: list[tuple[str, str]] = []
+    for m in pattern.finditer(text):
+        name = m.group(1)
+        start = m.end() - 1  # position of opening brace
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    body = text[start + 1 : i]
+                    results.append((name, body))
+                    break
+    return results
 
 _PROTO_TYPE_MAP: dict[str, str] = {
     "string": "string",
@@ -118,7 +127,7 @@ class GrpcProtoExtractor:
         file_path = (source.file_path or "").lower()
         syntax_match = _SYNTAX_PATTERN.search(content)
         rpc_count = len(_RPC_PATTERN.findall(content))
-        service_count = len(_SERVICE_PATTERN.findall(content))
+        service_count = len(_find_blocks("service", content))
         if file_path.endswith(".proto") and syntax_match and rpc_count > 0:
             return 0.98
         if syntax_match and service_count > 0 and rpc_count > 0:
@@ -254,9 +263,7 @@ class GrpcProtoExtractor:
 
 def _parse_services(content: str) -> list[ProtoService]:
     services: list[ProtoService] = []
-    for match in _SERVICE_PATTERN.finditer(content):
-        service_name = match.group("name")
-        body = match.group("body")
+    for service_name, body in _find_blocks("service", content):
         rpcs = [
             ProtoRpc(
                 name=rpc_match.group("name"),
@@ -289,13 +296,13 @@ def _grpc_stream_mode_for_rpc(rpc: ProtoRpc) -> GrpcStreamMode:
 
 def _parse_messages(content: str) -> dict[str, list[ProtoField]]:
     messages: dict[str, list[ProtoField]] = {}
-    for match in _MESSAGE_PATTERN.finditer(content):
-        messages[match.group("name")] = _parse_fields(match.group("body"))
+    for name, body in _find_blocks("message", content):
+        messages[name] = _parse_fields(body)
     return messages
 
 
 def _parse_enums(content: str) -> set[str]:
-    return {match.group("name") for match in _ENUM_PATTERN.finditer(content)}
+    return {name for name, _ in _find_blocks("enum", content)}
 
 
 def _parse_fields(body: str) -> list[ProtoField]:

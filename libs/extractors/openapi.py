@@ -182,11 +182,13 @@ class OpenAPIExtractor:
             return
         _seen.add(node_id)
         if isinstance(node, dict):
-            if "$ref" in node and len(node) == 1:
-                ref_path = node["$ref"]
+            if "$ref" in node:
+                ref_path = node.pop("$ref")
                 resolved = self._follow_ref(ref_path, root)
+                # Merge: existing siblings override resolved values
+                merged = {**resolved, **node}
                 node.clear()
-                node.update(resolved)
+                node.update(merged)
             for v in node.values():
                 self._resolve_refs(v, root, _seen)
         elif isinstance(node, list):
@@ -274,11 +276,9 @@ class OpenAPIExtractor:
 
         if len(parsed_schemes) > 1:
             logger.info(
-                "OpenAPI auth inference skipped because "
-                "multiple security schemes were declared: %s",
+                "Multiple security schemes declared: %s; using first available.",
                 [name for name, _ in parsed_schemes],
             )
-            return AuthConfig(type=AuthType.none)
 
         return parsed_schemes[0][1]
 

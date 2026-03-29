@@ -62,9 +62,15 @@ class SQLAlchemyCompilationJobStore:
                 return existing.id
         return resolved_job_id
 
-    async def get_job(self, job_id: UUID) -> CompilationJobRecord | None:
+    async def get_job(
+        self, job_id: UUID, *, tenant: str | None = None
+    ) -> CompilationJobRecord | None:
         async with self._session_factory() as session:
-            job = await session.get(CompilationJob, job_id)
+            query = select(CompilationJob).where(CompilationJob.id == job_id)
+            if tenant is not None:
+                query = query.where(CompilationJob.tenant == tenant)
+            result = await session.execute(query)
+            job = result.scalar_one_or_none()
             if job is None:
                 return None
             return self._to_job_record(job)
@@ -153,20 +159,30 @@ class SQLAlchemyCompilationJobStore:
         detail: dict[str, Any] | None = None,
         error_detail: str | None = None,
     ) -> None:
+        max_retries = 3
         async with self._session_factory() as session:
             await self._require_job(session, job_id)
-            sequence_number = await self._next_sequence_number(session, job_id)
-            event = CompilationEvent(
-                job_id=job_id,
-                sequence_number=sequence_number,
-                stage=stage.value if stage is not None else None,
-                event_type=event_type.value,
-                attempt=attempt,
-                detail=detail,
-                error_detail=error_detail,
-            )
-            session.add(event)
-            await session.commit()
+            for attempt_num in range(max_retries):
+                try:
+                    sequence_number = await self._next_sequence_number(session, job_id)
+                    event = CompilationEvent(
+                        job_id=job_id,
+                        sequence_number=sequence_number,
+                        stage=stage.value if stage is not None else None,
+                        event_type=event_type.value,
+                        attempt=attempt,
+                        detail=detail,
+                        error_detail=error_detail,
+                    )
+                    session.add(event)
+                    await session.flush()
+                    await session.commit()
+                    return
+                except IntegrityError:
+                    await session.rollback()
+                    if attempt_num == max_retries - 1:
+                        raise
+                    continue
 
     async def _next_sequence_number(self, session: AsyncSession, job_id: UUID) -> int:
         existing_max = await session.scalar(

@@ -54,6 +54,7 @@ export interface CompilationOptions {
   skip_enhancement?: boolean;
   tenant?: string;
   environment?: string;
+  auth_config?: AuthConfig;
 }
 
 export interface CompilationJobResponse {

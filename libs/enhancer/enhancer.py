@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import import_module
@@ -21,6 +22,12 @@ from typing import Any, Protocol
 from libs.ir.models import Operation, Param, ServiceIR, SourceType
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_for_prompt(value: str, max_length: int = 200) -> str:
+    """Sanitize a value for safe inclusion in an LLM prompt."""
+    sanitized = re.sub(r'[\n\r\x00-\x1f]', ' ', value)
+    return sanitized[:max_length]
 
 
 # ── Configuration ──────────────────────────────────────────────────────────
@@ -215,7 +222,6 @@ class VertexAILLMClient:
         self.project = project
         self.location = location
 
-    def complete(self, prompt: str, max_tokens: int = 4096) -> LLMResponse:
         vertexai = import_module("vertexai")
         generative_models = import_module("vertexai.generative_models")
 
@@ -224,8 +230,10 @@ class VertexAILLMClient:
             init_kwargs["project"] = self.project
         vertexai.init(**init_kwargs)
 
-        model = generative_models.GenerativeModel(self.model)
-        response = model.generate_content(
+        self._model = generative_models.GenerativeModel(self.model)
+
+    def complete(self, prompt: str, max_tokens: int = 4096) -> LLMResponse:
+        response = self._model.generate_content(
             prompt,
             generation_config={"max_output_tokens": max_tokens},
         )
@@ -431,9 +439,9 @@ class IREnhancer:
         )
 
         prompt = ENHANCE_PROMPT_TEMPLATE.format(
-            service_name=ir.service_name,
-            protocol=ir.protocol,
-            base_url=ir.base_url,
+            service_name=_sanitize_for_prompt(ir.service_name),
+            protocol=_sanitize_for_prompt(ir.protocol),
+            base_url=_sanitize_for_prompt(ir.base_url),
             operations_json=ops_json,
         )
 

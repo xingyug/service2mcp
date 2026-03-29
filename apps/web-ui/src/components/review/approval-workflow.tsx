@@ -229,26 +229,17 @@ export function ApprovalWorkflow({
     const actor = user?.username ?? "anonymous";
     setSubmitting(true);
     try {
-      await transition(serviceId, versionNumber, confirmDialog.targetState, actor, comment || undefined);
-
-      // Side-effects for publish / deploy
+      // Run side-effects BEFORE transition so we can abort cleanly on failure
       if (confirmDialog.targetState === "published") {
-        try {
-          await artifactApi.activateVersion(serviceId, versionNumber);
-        } catch {
-          toast.error("Workflow transitioned to Published but artifact activation failed.");
-        }
+        await artifactApi.activateVersion(serviceId, versionNumber);
       }
       if (confirmDialog.targetState === "deployed") {
-        try {
-          await gatewayApi.syncRoutes({
-            route_config: { service_id: serviceId, version_number: versionNumber },
-          });
-        } catch {
-          toast.error("Workflow transitioned to Deployed but gateway sync failed.");
-        }
+        await gatewayApi.syncRoutes({
+          route_config: { service_id: serviceId, version_number: versionNumber },
+        });
       }
 
+      await transition(serviceId, versionNumber, confirmDialog.targetState, actor, comment || undefined);
       onStateChange?.(confirmDialog.targetState);
       toast.success(`Workflow transitioned to "${stateConfig[confirmDialog.targetState].label}"`);
     } catch (err) {

@@ -94,7 +94,7 @@ def _run_coro[T](coro: Coroutine[Any, Any, T]) -> T:
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(asyncio.run, coro)
-        return future.result()
+        return future.result(timeout=3600)  # 1 hour max per compilation
 
 
 celery_app = create_celery_app()

@@ -107,7 +107,7 @@ class ReflectionGrpcStreamExecutor:
                         termination_reason = "max_messages"
                         break
             finally:
-                if termination_reason == "max_messages" and hasattr(responses, "cancel"):
+                if hasattr(responses, "cancel"):
                     responses.cancel()
 
             return {

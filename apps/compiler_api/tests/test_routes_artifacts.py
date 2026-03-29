@@ -27,6 +27,14 @@ from libs.registry_client.models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _mock_audit_log():
+    """Patch AuditLogService so tests don't need a real DB for audit entries."""
+    with patch("apps.compiler_api.routes.artifacts.AuditLogService") as mock_cls:
+        mock_cls.return_value = AsyncMock()
+        yield
+
+
 class TestNotFound:
     def test_creates_404_exception(self) -> None:
         exc = _not_found("test-service", 1)
@@ -39,6 +47,8 @@ class TestCreateArtifactVersion:
     async def test_successful_creation(self) -> None:
         mock_session = AsyncMock()
         mock_payload = MagicMock(spec=ArtifactVersionCreate)
+        mock_payload.service_id = "test-service"
+        mock_payload.version_number = 1
         mock_response = MagicMock(spec=ArtifactVersionResponse)
 
         with patch(

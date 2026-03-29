@@ -81,6 +81,8 @@ class CompilationRequest:
 
     def to_payload(self) -> dict[str, Any]:
         """Serialize the request into a JSON-safe task payload."""
+        if not self.source_url and not self.source_content:
+            raise ValueError("Either source_url or source_content must be provided.")
 
         return {
             "source_url": self.source_url,

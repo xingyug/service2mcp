@@ -169,5 +169,21 @@ async def evaluate_policy(
     payload: PolicyEvaluationRequest,
     service: AuthzService = Depends(get_authz_service),
     _caller: TokenPrincipalResponse = Depends(require_authenticated_caller),
+    audit_log: AuditLogService = Depends(get_audit_log_service),
 ) -> PolicyEvaluationResponse:
-    return await service.evaluate(payload)
+    result = await service.evaluate(payload)
+    if hasattr(audit_log, "append_entry"):
+        await audit_log.append_entry(
+            actor=payload.subject_id,
+            action="authz.evaluate",
+            resource=payload.action,
+            detail={
+                "resource_id": payload.resource_id,
+                "decision": result.decision,
+                "matched_policy_id": (
+                    str(result.matched_policy_id) if result.matched_policy_id else None
+                ),
+                "reason": result.reason,
+            },
+        )
+    return result
