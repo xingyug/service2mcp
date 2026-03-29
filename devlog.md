@@ -1137,6 +1137,470 @@ Current capability matrix snapshot:
 
 ---
 
+### Real-target live validation: REST bootstrap, sample-ID backfill, runtime URL fix, smoke resilience (in progress)
+
+**Date:** 2026-03-28
+
+Extended the compilation/validation pipeline to handle real external REST-first APIs (Directus, PocketBase) and improved the proof runner for large-surface OpenAPI specs.
+
+**Fixes implemented:**
+
+1. **REST extractor collection bootstrap** (`libs/extractors/rest.py`):
+   - Directus-style collection URLs (e.g., `/items/products`) and PocketBase paginated endpoints now bootstrap correctly, discovering detail sub-resources via `OPTIONS` probing on observed record IDs.
+   - New functions `_path_param_defaults_by_operation_path()` and `_path_param_defaults_from_endpoint()` extract real sample IDs from discovered endpoints and backfill them as `Param.default` values, so sample invocations use valid record IDs (e.g., `record_id=rec123`) instead of placeholder `1`.
+
+2. **Runtime URL resolution fix** (`apps/mcp_runtime/proxy.py`):
+   - `_resolve_url()` now properly handles root path `/` when `base_url` is a collection endpoint (e.g., `https://api.example.com/items/products`). Previously it appended a trailing slash, causing 404s on PocketBase.
+   - Rewrote path composition to use `urlsplit`/`urlunsplit` for correctness.
+
+3. **Post-deploy smoke test tool selection** (`libs/validator/post_deploy.py`):
+   - `_smoke_operation_priority()` now includes `required_param_count` in the priority tuple, preferring operations with fewer required parameters. This prevents large OpenAPI specs (like Directus with 100+ operations) from selecting complex operations like `compareContentVersion` that need specific data to succeed.
+
+4. **Proof runner resilience** (`apps/proof_runner/live_llm_e2e.py`):
+   - `run_proofs()` now catches exceptions from individual proof cases and records them as `ProofResult(error=...)` instead of crashing the entire run. This allows all 11 real-target cases to complete even if one fails.
+   - Added `error: str | None` field to `ProofResult`.
+
+**Real-target GKE proof progress:**
+- `realr9rest` (PROTOCOL=rest): **2/2 passed** — directus-rest, pocketbase-rest both fully validated
+- `realr10all` (PROTOCOL=all): **Failed** at directus-openapi — `compareContentVersion` smoke test error (fixed by smoke priority change)
+- `realr11all` (PROTOCOL=all): **Stalled** after a compiler-worker pod was evicted under node memory pressure during the rerun; cleaned stale proof-generated deployments/services/configmaps/networkpolicies/jobs from `tool-compiler-llm-e2e`
+- `realr12all` (PROTOCOL=all): **Completed** from a cleaned proof namespace with fixed images (`compiler-api:20260328-realproof-r3`, `compiler-worker:20260328-realproof-r5`) — **7/11 cases passed, 4/11 failed**
+  - Passed: `directus-graphql`, `directus-rest`, `aria2-jsonrpc`, `openfga-grpc`, `northbreeze-odata`, `pocketbase-rest`, `real-postgres-sql`
+  - Failed: `directus-openapi` (`getActivities` smoke error), `gitea-openapi` (Kubernetes `422` while creating runtime configmap), `jackson-scim` (`list_groups` smoke error), `soap-cxf` (`GetOrderStatus` smoke error)
+  - Confirmed resilience: the proof runner no longer aborts on the first failed case; `directus-openapi` failed after deploy/validation, but the run continued through `gitea-openapi`, `aria2-jsonrpc`, `openfga-grpc`, `northbreeze-odata`, `pocketbase-rest`, `jackson-scim`, `soap-cxf`, and `real-postgres-sql`
+
+**Images:**
+- `compiler-api:20260328-realproof-r3` (`sha256:a46087ab323b8865ecf271e121cc51354dfa8f66e65c6ec2dd8e8b53debb7eda`)
+- `compiler-worker:20260328-realproof-r5` (`sha256:fab0aaa689cd492c78fa5e894dc68954940436adb5dbf4499ac32305bca4d364`)
+- `mcp-runtime:20260328-realproof-runtime-r1` (`sha256:cd2710f0a21b8d406c8f5784c47bb172dac863bbfcb38cb1f8aa60cacaf1f235`)
+
+**Local verification:** 79 REST extractor tests, 178 proxy tests, 185 post-deploy + proof runner tests, ruff clean.
+
+### Real-target targeted rerun: `realr13fix4` handoff snapshot
+
+**Date:** 2026-03-28
+
+Paused after a focused rerun against only the four remaining real-target failures, with LLM enhancement intentionally disabled because the failures were not enhancer-related.
+
+**Targeted rerun command:**
+- `HELM_BIN=/usr/local/bin/helm KEEP_NAMESPACE=1 PROOF_PROFILE=real-targets UPSTREAM_NAMESPACE=tc-real-targets RUN_ID=realr13fix4 PROTOCOL=all CASE_IDS=directus-openapi,gitea-openapi,jackson-scim,soap-cxf ENABLE_LLM_ENHANCEMENT=0 ENABLE_LLM_JUDGE=0 AUDIT_ALL_GENERATED_TOOLS=1 COMPILER_API_IMAGE=.../compiler-api:20260328-realproof-r4 COMPILER_WORKER_IMAGE=.../compiler-worker:20260328-realproof-r6 MCP_RUNTIME_IMAGE=.../mcp-runtime:20260328-realproof-runtime-r2 PROOF_HELPER_IMAGE=.../compiler-api:20260328-realproof-r4 ./scripts/smoke-gke-llm-e2e.sh`
+
+**Images used:**
+- `compiler-api:20260328-realproof-r4` (`sha256:a974f632a903760866d59b3593c5dab44ce0ed1dae1a10fb63db4360fdc6404d`)
+- `compiler-worker:20260328-realproof-r6` (`sha256:cf4fb1000c915abc71f32582d9790bc60a11334719d639d67c6b0db6deb7f780`)
+- `mcp-runtime:20260328-realproof-runtime-r2` (`sha256:ed97ee3de9235d3b3528353a3a18c63d6d2583ea128514d247b3811b59250857`)
+
+**Platform-level issue encountered and recovered during rerun startup:**
+- `scripts/smoke-gke-llm-e2e.sh` did not receive `ACCESS_CONTROL_IMAGE`, so Helm tried to roll `tool-compiler-access-control` and `tool-compiler-gateway-admin-mock` to `us-central1-docker.pkg.dev/insightcompass-465300/tool-compiler/access-control:latest`, which does not exist.
+- Recovery was performed in-cluster with:
+  - `kubectl set image deployment/tool-compiler-access-control ... access-control:20260328-mockproof-r1`
+  - `kubectl set image deployment/tool-compiler-gateway-admin-mock ... access-control:20260328-mockproof-r1`
+- After that manual correction, Helm rollout completed and `llm-proof-runner-realr13fix4` executed normally.
+
+**Targeted rerun result:**
+- `realr13fix4`: **0/4 passed, 4/4 failed**
+  - `directus-openapi`: rolled back at post-deploy validation; smoke tool `readItemsProducts` returned `status='error'`
+  - `gitea-openapi`: rolled back at post-deploy validation; smoke tool `repoSearch` returned `status='error'`
+  - `jackson-scim`: rolled back at post-deploy validation; smoke tool `list_users` returned `status='error'`
+  - `soap-cxf`: rolled back at post-deploy validation; smoke tool `GetOrderStatus` returned `status='error'`
+
+**What this rerun definitively fixed:**
+- The previous `gitea-openapi` Kubernetes ConfigMap `422` is fixed.
+  - Worker logs now show `POST .../configmaps "HTTP/1.1 201 Created"` for `gitea-openapi-realr13fix4-v1`.
+- The proof runner case filter works.
+  - Only the four requested cases were executed; no full 11-case matrix was re-run.
+- The no-LLM mode works.
+  - `ENABLE_LLM_ENHANCEMENT=0` plus `--skip-llm-artifact-checks` path ran successfully; failures are now purely runtime/protocol issues.
+
+**Critical confirmed facts from pod-local reproduction after the targeted rerun:**
+
+1. **`directus-openapi` is not failing because the OpenAPI runtime path is fundamentally broken.**
+   - Inside `tool-compiler-compiler-worker`, a local runtime reproduction with a fresh Directus login token succeeded for:
+     - `ping` -> `status: ok`, `upstream_status: 200`
+     - `readItemsProducts` -> `status: ok`, `upstream_status: 200`, real product data returned
+   - This means the `readItemsProducts` tool itself is viable when the runtime has a valid token.
+   - The remaining failure is therefore likely in proof deployment wiring / runtime-secret injection / token freshness, not in the generated OpenAPI tool logic itself.
+
+2. **`gitea-openapi` no longer has a deployment-size problem; the remaining problem is a runtime invocation/path issue.**
+   - Raw upstream checks from the worker pod succeeded:
+     - `GET /api/v1/gitignore/templates` -> `200`
+     - `GET /api/v1/version` -> `200`
+     - `GET /api/v1/repos/search` -> `200`
+     - `GET /api/v1/orgs` -> `200`
+   - Raw Swagger inspection also showed `repoSearch` lives at `GET /repos/search` with optional `q`; `q` is not marked required in the spec.
+   - But a pod-local MCP runtime reproduction for `repoSearch` failed with `httpx.ConnectError: All connection attempts failed`.
+   - Strong suspicion: the extracted/deployed OpenAPI `base_url` and/or resolved request URL for Gitea is wrong in runtime, even though the raw upstream endpoint is healthy.
+   - Next agent should print `service_ir.base_url`, `operation.path`, and the final resolved URL for `repoSearch`, `listGitignoresTemplates`, and `getVersion`.
+
+3. **`jackson-scim` runtime logic works locally; the proof deployment failure is likely deployment/config related rather than SCIM protocol logic.**
+   - Raw upstream check from the worker pod:
+     - `GET <jackson-scim-base-url>/Users` with `Authorization: Bearer <secret>` -> `200`, empty `ListResponse`
+   - Pod-local MCP runtime reproduction also succeeded:
+     - `list_users` -> `status: ok`, `upstream_status: 200`, `items=[]`, `total_count=0`
+   - Therefore the SCIM runtime path is working when the runtime process has `JACKSON_SCIM_SECRET` available.
+   - Strong suspicion: the proof-deployed runtime pod is not receiving or resolving the auth secret the same way the pod-local reproduction did.
+
+4. **`soap-cxf` failure is concretely explained by argument schema generation, not by the upstream service or `orderId` sample value.**
+   - Pod-local MCP runtime reproduction for `GetOrderStatus` failed before the upstream request was sent:
+     - `includeHistory` was treated as a required tool argument by Pydantic validation
+   - The real WSDL declares:
+     - `orderId` required
+     - `includeHistory` type `xsd:boolean` with `default="false"`
+   - Therefore the extractor/runtime tool schema is currently treating a WSDL-defaulted boolean as required.
+   - This is the most concrete remaining bug in the set.
+
+**Important hypothesis that was checked and should NOT be re-investigated first:**
+- It is **not** true that auth overrides are only applied during runtime validation.
+- `apps/compiler_worker/activities/production.py` already applies `_apply_auth_override(service_ir, context.request.options)` in `extract_stage` before manifest generation.
+- So the first thing the next agent should inspect is not "move auth override earlier"; it is:
+  - proof runtime secret injection / env resolution for Directus and Jackson
+  - Gitea OpenAPI `base_url` / resolved URL construction
+  - SOAP defaulted-argument requiredness
+
+**Suggested next-agent order:**
+1. Fix SOAP extractor/tool-schema requiredness for WSDL params with defaults (`includeHistory` should not be required when `default="false"` exists).
+2. Reproduce Gitea OpenAPI runtime URL construction locally and fix the `base_url` / path composition bug.
+3. Inspect generated runtime manifest env for `directus-access-token` and `jackson-scim-secret`, then compare with the successful pod-local runtime reproductions.
+4. Re-run only the still-failing subset after each real fix; do not re-enable LLM enhancement unless debugging explicitly moves into enhancer output.
+
+---
+
+### Real-target targeted rerun: `realr14fix4` current status
+
+**Date:** 2026-03-28
+
+Continued the non-LLM targeted rerun/debug path after `realr13fix4`, rebuilt the worker/runtime images with the latest real-target fixes, and narrowed the remaining failure set further with pod-local reproductions.
+
+**Targeted rerun command:**
+- `HELM_BIN=/usr/local/bin/helm KEEP_NAMESPACE=1 PROOF_PROFILE=real-targets UPSTREAM_NAMESPACE=tc-real-targets RUN_ID=realr14fix4 PROTOCOL=all CASE_IDS=directus-openapi,gitea-openapi,jackson-scim,soap-cxf ENABLE_LLM_ENHANCEMENT=0 ENABLE_LLM_JUDGE=0 AUDIT_ALL_GENERATED_TOOLS=1 COMPILER_API_IMAGE=.../compiler-api:20260328-realproof-r4 COMPILER_WORKER_IMAGE=.../compiler-worker:20260328-realproof-r7 MCP_RUNTIME_IMAGE=.../mcp-runtime:20260328-realproof-runtime-r3 PROOF_HELPER_IMAGE=.../compiler-api:20260328-realproof-r4 ACCESS_CONTROL_IMAGE=.../access-control:20260328-mockproof-r1 ./scripts/smoke-gke-llm-e2e.sh`
+
+**Images used:**
+- `compiler-api:20260328-realproof-r4` (`sha256:a974f632a903760866d59b3593c5dab44ce0ed1dae1a10fb63db4360fdc6404d`)
+- `compiler-worker:20260328-realproof-r7` (`sha256:146a418a6c1722038e3460d4c818d79e36b2496f49de279a856da2de17c7b837`)
+- `mcp-runtime:20260328-realproof-runtime-r3` (`sha256:30c14d498de913a5128810cc3b529b06b54d52b6c58d0862a516f9920c0e8100`)
+- `access-control:20260328-mockproof-r1`
+
+**Targeted rerun result:**
+- `realr14fix4`: **0/4 passed, 4/4 failed**
+  - `directus-openapi`: smoke tool `readItemsProducts` returned `status='error'`
+  - `gitea-openapi`: smoke tool `repoSearch` returned `status='error'`
+  - `jackson-scim`: smoke tool `list_users` returned `status='error'`
+  - `soap-cxf`: smoke tool `GetOrderStatus` returned `status='error'`
+
+**New code changes verified locally before / during rerun:**
+1. **OpenAPI Swagger host fallback** (`libs/extractors/openapi.py`):
+   - When Swagger 2.0 `host` is missing or loopback-like, extraction now falls back to the real `source.url` host/scheme instead of producing `https://localhost/...`.
+   - Verified by local tests in `libs/extractors/tests/test_openapi.py`.
+
+2. **SOAP defaulted-field optionality** (`libs/extractors/soap.py`):
+   - XSD fields with `default="..."` are no longer marked required simply because `minOccurs` is omitted.
+   - Verified by local tests in `libs/extractors/tests/test_soap.py`.
+
+3. **Conservative smoke sample generation** (`apps/compiler_worker/activities/production.py`):
+   - For HTTP-like operations, `_sample_arguments_for_operation()` now sends only required params plus params with explicit defaults; arbitrary optional query params are skipped.
+   - Verified by local tests in `apps/compiler_worker/tests/test_production_helpers.py`.
+
+**Critical confirmed facts from `realr14fix4` + pod-local reproduction:**
+
+1. **`directus-openapi` is now narrowed to smoke argument over-sampling, not auth or base URL wiring.**
+   - Runtime pod logs from `directus-openapi-realr14fix4-v1` showed:
+     - `GET /items/products?fields=sample&limit=1&meta=sample&offset=1&sort=sample&filter=sample&search=sample`
+     - Upstream response: `HTTP/1.1 400 Bad Request`
+   - This explains the proof failure: the old smoke generator was still sending placeholder values for optional query params.
+   - The new conservative sample-generation fix was added after this failure and verified locally, but it is **not yet proven in-cluster** because no rerun has been done with a newer worker image than `r7`.
+
+2. **`gitea-openapi` local runtime reproduction now succeeds.**
+   - Pod-local extraction + auth override + runtime invocation for `repoSearch` with empty args now returns:
+     - `BASE http://gitea.tc-real-targets.svc.cluster.local:3000/api/v1`
+     - `GET /api/v1/repos/search` -> `200`
+     - `status='ok'`
+   - This means:
+     - the old ConfigMap `422` issue remains fixed
+     - the OpenAPI base URL logic now works locally for Gitea
+     - the remaining proof failure is highly likely the same stale smoke-sample issue fixed in `production.py`
+
+3. **`jackson-scim` local runtime path and runtime-secret manifest generation both succeed.**
+   - Proof secret values in `tool-compiler-llm-e2e` decode to:
+     - `jackson-scim-base-url = http://jackson.tc-real-targets.svc.cluster.local:5225/api/scim/v2.0/9b75865b-7169-467a-9959-8e784341c375`
+     - `jackson-scim-secret = <redacted>`
+   - Pod-local reproduction with extractor `SourceConfig(url=<Users>, auth_token=<secret>)`, runtime auth override, and `JACKSON_SCIM_SECRET` in env returns:
+     - `GET .../Users` -> `200`
+     - `list_users` -> `status='ok'`, `upstream_status=200`, empty list response
+   - Local manifest generation also confirms `JACKSON_SCIM_SECRET` is wired into the runtime pod env from `tool-compiler-runtime-secrets`.
+   - Remaining issue: the proof-deployed runtime failure was not captured before rollback, so the mismatch is still unresolved. This needs a single-case rerun with `KEEP_NAMESPACE=1` and immediate runtime log capture.
+
+4. **`soap-cxf` is no longer blocked on requiredness; the remaining bug is SOAP child-element qualification.**
+   - Pod-local extraction now reports:
+     - `orderId` required
+     - `includeHistory` optional
+   - But runtime invocation with `{'orderId': 'ORD-1001'}` still fails upstream with:
+     - `Unmarshalling Error: unexpected element (uri:"http://example.com/order", local:"orderId"). Expected elements are <{}includeHistory>,<{}orderId>`
+   - This points to the runtime always qualifying child elements with the target namespace.
+   - The real-target WSDL does **not** set `elementFormDefault="qualified"`, while the existing local fixture does. The runtime therefore likely needs to carry and honor request child-element qualification instead of always namespacing child args.
+
+**Verified local checks during this phase:**
+- `pytest -q libs/extractors/tests/test_soap.py` -> `37 passed`
+- `pytest -q libs/extractors/tests/test_openapi.py` -> `94 passed`
+- `pytest -q apps/compiler_worker/tests/test_production_helpers.py` -> `59 passed`
+- `pytest -q libs/generator/tests/test_generic_mode.py apps/mcp_runtime/tests/test_loader.py apps/compiler_worker/tests/test_production_helpers.py` -> `86 passed`
+- `ruff check` on the changed Python files -> clean
+
+**Recommended next-agent order after this snapshot:**
+1. Build/push a new `compiler-worker` image that includes the conservative smoke-sampling fix from `production.py`, then rerun only `directus-openapi` and `gitea-openapi` with LLM still disabled.
+2. Run a single-case `jackson-scim` proof with `KEEP_NAMESPACE=1` and capture runtime pod logs/env before cleanup or rollback.
+3. Add explicit SOAP request child-element qualification metadata to IR/runtime, update tests, rebuild runtime/worker images, and rerun only `soap-cxf`.
+
+---
+
+### Real-target OpenAPI follow-up: `realr15openapi2` invalid, `realr16openapi2` narrows the remaining gap
+
+**Date:** 2026-03-28
+
+Continued the non-LLM follow-up specifically for `directus-openapi` and `gitea-openapi`, using the worker-side conservative sample-generation fix from `apps/compiler_worker/activities/production.py`.
+
+**Image status reached in this phase:**
+- `compiler-worker:20260328-realproof-r8` was built and pushed successfully.
+  - Digest: `sha256:f44c23f0c8913898d5a979e0212bb18372abf13225e5a51200b5ea269942c015`
+- `compiler-api:20260328-realproof-r5` was built locally successfully.
+  - Remote push status is **unconfirmed** because the push command was interrupted by the user before completion output returned.
+
+**Worker-side verification before image build:**
+- `pytest -q apps/compiler_worker/tests/test_production_helpers.py` -> `59 passed`
+- `ruff check apps/compiler_worker/activities/production.py apps/compiler_worker/tests/test_production_helpers.py` -> clean
+
+**`realr15openapi2` (invalid run):**
+- Command used:
+  - `HELM_BIN=/usr/local/bin/helm KEEP_NAMESPACE=1 PROOF_PROFILE=real-targets UPSTREAM_NAMESPACE=tc-real-targets RUN_ID=realr15openapi2 PROTOCOL=all CASE_IDS=directus-openapi,gitea-openapi ENABLE_LLM_ENHANCEMENT=0 ENABLE_LLM_JUDGE=0 AUDIT_ALL_GENERATED_TOOLS=1 COMPILER_API_IMAGE=.../compiler-api:20260328-realproof-r4 COMPILER_WORKER_IMAGE=.../compiler-worker:20260328-realproof-r8 MCP_RUNTIME_IMAGE=.../mcp-runtime:20260328-realproof-runtime-r3 PROOF_HELPER_IMAGE=.../compiler-api:20260328-realproof-r4 ACCESS_CONTROL_IMAGE=.../access-control:20260328-mockproof-r1 ./scripts/smoke-gke-llm-e2e.sh`
+- This run should **not** be used as proof evidence.
+- Root cause:
+  - The proof was started while Helm was still rolling the worker from the old image to `compiler-worker:r8`.
+  - The old worker appears to have received the Directus job before rollout completion and then disappeared mid-flight.
+  - Evidence:
+    - the compilation record stayed stuck in `status=running`, `current_stage=deploy`
+    - the runtime pod only showed `/healthz` / `/readyz`, never `/tools` or MCP invocation traffic
+- Cleanup performed:
+  - deleted `job/llm-proof-runner-realr15openapi2`
+- Residual cluster state:
+  - stale deployment still exists: `deployment.apps/directus-openapi-realr15openapi2-v1`
+
+**`realr16openapi2` (clean rerun, partial but highly informative):**
+- Command used:
+  - `HELM_BIN=/usr/local/bin/helm KEEP_NAMESPACE=1 PROOF_PROFILE=real-targets UPSTREAM_NAMESPACE=tc-real-targets RUN_ID=realr16openapi2 PROTOCOL=all CASE_IDS=directus-openapi,gitea-openapi ENABLE_LLM_ENHANCEMENT=0 ENABLE_LLM_JUDGE=0 AUDIT_ALL_GENERATED_TOOLS=1 COMPILER_API_IMAGE=.../compiler-api:20260328-realproof-r4 COMPILER_WORKER_IMAGE=.../compiler-worker:20260328-realproof-r8 MCP_RUNTIME_IMAGE=.../mcp-runtime:20260328-realproof-runtime-r3 PROOF_HELPER_IMAGE=.../compiler-api:20260328-realproof-r4 ACCESS_CONTROL_IMAGE=.../access-control:20260328-mockproof-r1 ./scripts/smoke-gke-llm-e2e.sh`
+- This rerun **did** prove the worker-side fix is effective for post-deploy validation.
+
+**Directus result from `realr16openapi2`:**
+- Compilation job `94d36390-2d9a-46df-ad70-33c0a700f7f1` finished `status="succeeded"`.
+- Worker task log:
+  - `Task compiler_worker.execute_compilation[...] succeeded in 23.46s`
+- Runtime pod log proves the preferred smoke tool now succeeds with conservative arguments:
+  - `GET /items/products` -> `200 OK`
+- But later in the same pod log, the proof-runner audit path still invoked many generated tools with placeholder optional params such as:
+  - `/activity?fields=sample&limit=1&meta=sample&offset=1&sort=sample&filter=sample&search=sample`
+  - `/items/customers?fields=sample&limit=1&meta=sample&offset=1&sort=sample&filter=sample&search=sample`
+  - `/items/orders/1?fields=sample&meta=sample&version=sample`
+- Those audit invocations still returned `400` / `403` / `404`.
+
+**Gitea result from `realr16openapi2`:**
+- Compilation job `524e8f55-3f7c-4911-9503-4073e858185b` finished `status="succeeded"`.
+- Runtime pod log proves the preferred smoke tool now succeeds with conservative arguments:
+  - `GET /api/v1/repos/search` -> `200 OK`
+- But the proof-runner audit path still invoked `repoSearch` with placeholder optional params:
+  - `GET /api/v1/repos/search?q=sample&topic=true&includeDesc=true&uid=1&priority_owner_id=1&team_id=1&starredBy=1&private=true&is_private=true&template=true&archived=true&mode=sample&exclusive=true&sort=sample&order=sample&page=1&limit=1`
+  - Upstream response: `422 Unprocessable Entity`
+
+**Most important new conclusion from `realr16openapi2`:**
+- The conservative sample-generation fix in `apps/compiler_worker/activities/production.py` is working **inside the worker image**.
+- The remaining OpenAPI audit failures are now specifically in the **proof-runner / proof-helper path**, not the worker.
+- Why:
+  - `apps/proof_runner/live_llm_e2e.py` imports `build_sample_invocations` from `apps.compiler_worker.activities.production`.
+
+---
+
+### Real-target fix completion: `realr22fix4` turns the original 4 failures green, `realr23directus` removes the last Directus audit failure
+
+**Date:** 2026-03-29
+
+Continued the non-LLM real-target proof work and closed the four original failing cases from `realr12all`:
+- `directus-openapi`
+- `gitea-openapi`
+- `jackson-scim`
+- `soap-cxf`
+
+This phase also uncovered and then removed one additional residual audit failure in Directus OpenAPI (`getComment` missing its path parameter).
+
+**Key implementation changes:**
+
+1. **Worker-side sample generation now respects path templates** (`apps/compiler_worker/activities/production.py`):
+   - `_sample_arguments_for_operation(...)` now includes any parameter whose name appears in `operation.path`, even if the extractor forgot to mark it `required`.
+   - This fixed the lingering `Missing path parameter id` class of failures whenever IR metadata under-declared required path args.
+
+2. **SOAP request child-element qualification is now schema-aware** (`libs/ir/models.py`, `libs/extractors/soap.py`, `apps/mcp_runtime/proxy.py`):
+   - Added `SoapOperationConfig.child_element_form`.
+   - WSDL extraction now records whether child elements are `qualified` or `unqualified`.
+   - The runtime envelope builder now emits unqualified child elements when the schema requires them.
+   - Pod-local proof against the real CXF target confirmed the root cause before patching:
+     - qualified child elements -> `500` with `unexpected element ... Expected elements are <{}includeHistory>,<{}orderId>`
+     - unqualified child elements -> `200`
+
+3. **Proof-runner case policy now skips feature-disabled endpoints instead of hard-failing them** (`apps/proof_runner/live_llm_e2e.py`):
+   - Added `ProofCase.audit_skip_tool_ids`.
+   - `directus-openapi` now skips `oauth`.
+   - `gitea-openapi` now skips `getNodeInfo`.
+   - These skips are justified by live target behavior, not by conjecture:
+     - Directus `/auth/oauth` returns `404`
+     - Gitea nodeinfo endpoints return `404`
+
+4. **OpenAPI extractor now infers missing path-template params directly from the URL template** (`libs/extractors/openapi.py`):
+   - Any `{param}` present in `operation.path` but absent from the extracted param list is now added back as a required string path param.
+   - This fixed the residual Directus audit failure where `getComment` had path `/comments/{id}` in IR but only exposed query params (`fields`, `meta`) and therefore audited with `{}`.
+
+**Image/build notes from this phase:**
+- Added `.dockerignore` exclusions for `apps/web-ui/.next` and `apps/web-ui/node_modules` to avoid `docker build` running out of disk on a ~2.4 GB build context.
+- Built/pushed:
+  - `compiler-api:20260329-realproof-r8`
+    - digest: `sha256:57084f40efd1df2b8a44628b54fe528e55de934db670c37c7f7e63f1694c0d85`
+  - `compiler-worker:20260329-realproof-r9`
+    - digest: `sha256:599edd002deac3fd3bded9eefac471e41d471845ae1c06da5cc6b3685dc6a7b7`
+  - `mcp-runtime:20260329-realproof-runtime-r4`
+    - digest: `sha256:5a91920c88da30fcc429501a0b28d8a74b533554435b5d1dc8c52a1e48aecc4e`
+  - `compiler-worker:20260329-realproof-r10`
+    - digest: `sha256:4952ced511647a9e76286f4265f9e57617bab0b7eae1a19a43d52c2af56ba251`
+
+**Important operational conclusion:**
+- The earlier `realr21fix4` runtime-image mismatch (`runtime-r3` deployment despite worker env showing `runtime-r4`) was a rollout race, not a persistent code-path bug.
+- Evidence:
+  - the namespace had both old and new workers during the Helm transition
+  - the first job was accepted during that overlap
+  - a clean rerun after the old worker disappeared produced `directus-openapi-realr22fix4-v1` with the correct image:
+    - `mcp-runtime:20260329-realproof-runtime-r4`
+
+**`realr22fix4` (clean 4-case rerun, non-LLM):**
+- Command shape:
+  - `KEEP_NAMESPACE=1 PROOF_PROFILE=real-targets RUN_ID=realr22fix4 CASE_IDS=directus-openapi,gitea-openapi,jackson-scim,soap-cxf ENABLE_LLM_ENHANCEMENT=0 ENABLE_LLM_JUDGE=0 AUDIT_ALL_GENERATED_TOOLS=1 ...`
+- Result:
+  - **4/4 compilation jobs succeeded**
+  - **all four original blockers from `realr12all` are now green**
+- Exact compilation records:
+  - `directus-openapi-realr22fix4` -> `status=succeeded`, `current_stage=register`
+  - `gitea-openapi-realr22fix4` -> `status=succeeded`, `current_stage=register`
+  - `jackson-scim-realr22fix4` -> `status=succeeded`, `current_stage=register`
+  - `soap-cxf-realr22fix4` -> `status=succeeded`, `current_stage=register`
+
+**Per-case proof outcome from `realr22fix4`:**
+- `directus-openapi`
+  - primary invocation: `readItemsProducts`
+  - result: `status="ok"`, `upstream_status=200`
+  - audit summary: `154 generated / 34 audited / 33 passed / 1 failed / 120 skipped`
+  - the only remaining failed audit tool at this point was:
+    - `getComment` -> `Missing path parameter id`
+- `gitea-openapi`
+  - primary invocation: `repoSearch`
+  - result: `status="ok"`, `upstream_status=200`
+  - audit summary: `406 generated / 49 audited / 49 passed / 0 failed / 357 skipped`
+- `jackson-scim`
+  - primary invocation: `list_users`
+  - result: `status="ok"`, `upstream_status=200`
+  - audit summary: `10 generated / 2 audited / 2 passed / 0 failed / 8 skipped`
+  - list operations now pass; path-ID detail tools with synthetic `id=1` are downgraded to skips
+- `soap-cxf`
+  - primary invocation: `GetOrderStatus(orderId="ORD-1001")`
+  - result: `status="ok"`, `upstream_status=200`
+  - audit summary: `3 generated / 1 audited / 1 passed / 0 failed / 2 skipped`
+
+**`realr23directus` (single-case verification for the Directus residual):**
+- Command shape:
+  - `KEEP_NAMESPACE=1 PROOF_PROFILE=real-targets RUN_ID=realr23directus CASE_IDS=directus-openapi ENABLE_LLM_ENHANCEMENT=0 ENABLE_LLM_JUDGE=0 AUDIT_ALL_GENERATED_TOOLS=1 ... compiler-worker:20260329-realproof-r10 ...`
+- Result:
+  - `directus-openapi-realr23directus` succeeded
+  - primary invocation `readItemsProducts` returned `200`
+  - audit summary improved to:
+    - `154 generated / 33 audited / 33 passed / 0 failed / 121 skipped`
+- This removed the last residual failed audit tool (`getComment`) by restoring the missing `id` path param to IR.
+
+**Current real-target conclusion after this phase:**
+- The original four failing real-target cases from `realr12all` are no longer failing.
+- `directus-openapi`, `gitea-openapi`, `jackson-scim`, and `soap-cxf` are all green in non-LLM reruns.
+- Directus still has many placeholder-driven skips (for example `compareContentVersion` with synthetic IDs), but these are now correctly recorded as skips instead of hard failures.
+
+**Verification completed during this phase:**
+- `pytest -q libs/extractors/tests/test_openapi.py` -> `95 passed`
+- `ruff check libs/extractors/openapi.py libs/extractors/tests/test_openapi.py` -> clean
+
+**Recommended next-agent starting point after this snapshot:**
+1. Treat `realr22fix4` + `realr23directus` as the new real-target baseline for the previously failing 4-case set.
+2. If the goal is broader confidence rather than just fixing blockers, rerun the full `real-targets` matrix using:
+   - `compiler-api:20260329-realproof-r8`
+   - `compiler-worker:20260329-realproof-r10`
+   - `mcp-runtime:20260329-realproof-runtime-r4`
+3. If desired, clean old proof-generated runtime deployments in `tool-compiler-llm-e2e`; multiple historical `realr*` deployments remain because these reruns used `KEEP_NAMESPACE=1`.
+  - The proof runner was still running on `compiler-api:20260328-realproof-r4` / `PROOF_HELPER_IMAGE=r4`, which predates the new conservative sampling logic.
+  - So post-deploy smoke used the new worker behavior, but the proof-runner audit still used the old placeholder-heavy behavior.
+
+**Cluster cleanup/state at pause time:**
+- `llm-proof-runner-realr15openapi2` deleted
+- `llm-proof-runner-realr16openapi2` deleted
+- `directus-openapi-realr16openapi2-v1` deleted
+- `gitea-openapi-realr16openapi2-v1` deleted
+- `directus-openapi-realr15openapi2-v1` still present
+
+**Recommended next-agent order after this newer snapshot:**
+1. Confirm/push `compiler-api:20260328-realproof-r5` (or rebuild equivalent tag from the current worktree if push status is uncertain).
+2. Rerun only `directus-openapi,gitea-openapi` with:
+   - `COMPILER_API_IMAGE=...:r5`
+   - `PROOF_HELPER_IMAGE=...:r5`
+   - `COMPILER_WORKER_IMAGE=...:r8`
+   - `MCP_RUNTIME_IMAGE=...:runtime-r3`
+   - `ENABLE_LLM_ENHANCEMENT=0`
+   - `ENABLE_LLM_JUDGE=0`
+3. Only after the proof-runner image is updated should the team re-evaluate whether Directus/Gitea still have real protocol bugs.
+4. The unresolved protocol-specific items after that remain:
+   - `jackson-scim`: capture proof-deployed runtime logs before rollback
+   - `soap-cxf`: implement request child-element qualification support
+
+---
+
+### Full real-target matrix rerun: `realr24all` is fully green without LLM
+
+**Date:** 2026-03-29
+
+Ran the complete `real-targets` proof matrix again after closing the four original blockers and the residual Directus path-param audit issue. This rerun intentionally kept both LLM enhancement and LLM judge disabled because the goal was protocol/runtime confidence, not enhancer coverage.
+
+**Command shape:**
+- `KEEP_NAMESPACE=1 PROOF_PROFILE=real-targets RUN_ID=realr24all PROTOCOL=all ENABLE_LLM_ENHANCEMENT=0 ENABLE_LLM_JUDGE=0 AUDIT_ALL_GENERATED_TOOLS=1 COMPILER_API_IMAGE=.../compiler-api:20260329-realproof-r8 COMPILER_WORKER_IMAGE=.../compiler-worker:20260329-realproof-r10 MCP_RUNTIME_IMAGE=.../mcp-runtime:20260329-realproof-runtime-r4 PROOF_HELPER_IMAGE=.../compiler-api:20260329-realproof-r8 ...`
+
+**Result:**
+- `llm-proof-runner-realr24all`: `Complete`, duration `4m23s`
+- **11/11 cases passed**
+- Aggregate audit: **124 passed / 0 failed / 529 skipped / 653 generated**
+
+**Per-case outcome summary:**
+- `directus-graphql`: primary invocation `products` -> `status="ok"`, `upstream_status=200`; audit `12 passed / 0 failed / 21 skipped / 33 generated`
+- `directus-rest`: primary invocation `get_product_id` -> `status="ok"`, `upstream_status=200`; audit `2 passed / 0 failed / 0 skipped / 2 generated`
+- `directus-openapi`: primary invocation `readItemsProducts` -> `status="ok"`, `upstream_status=200`; audit `33 passed / 0 failed / 121 skipped / 154 generated`
+- `gitea-openapi`: primary invocation `repoSearch` -> `status="ok"`, `upstream_status=200`; audit `49 passed / 0 failed / 357 skipped / 406 generated`
+- `aria2-jsonrpc`: primary invocation `aria2_getVersion` -> `status="ok"`, `upstream_status=200`; audit `3 passed / 0 failed / 0 skipped / 3 generated`
+- `openfga-grpc`: primary invocation `ListStores` -> `status="ok"`; audit `1 passed / 0 failed / 0 skipped / 1 generated`
+- `northbreeze-odata`: primary invocation `list_products` -> `status="ok"`, `upstream_status=200`; audit `7 passed / 0 failed / 10 skipped / 17 generated`
+- `pocketbase-rest`: primary invocation `get_record_id` -> `status="ok"`, `upstream_status=200`; audit `2 passed / 0 failed / 0 skipped / 2 generated`
+- `jackson-scim`: primary invocation `list_users` -> `status="ok"`, `upstream_status=200`; audit `2 passed / 0 failed / 8 skipped / 10 generated`
+- `soap-cxf`: primary invocation `GetOrderStatus` -> `status="ok"`, `upstream_status=200`; audit `1 passed / 0 failed / 2 skipped / 3 generated`
+- `real-postgres-sql`: primary invocation `query_categories` -> `status="ok"`; audit `12 passed / 0 failed / 10 skipped / 22 generated`
+
+**Operational notes:**
+- The full rerun completed on the same non-LLM image set that had already turned the focused 4-case blocker rerun green:
+  - `compiler-api:20260329-realproof-r8`
+  - `compiler-worker:20260329-realproof-r10`
+  - `mcp-runtime:20260329-realproof-runtime-r4`
+- Old proof-generated runtime deployments were cleaned before starting `realr24all`, which avoided the earlier worker-eviction / memory-pressure stall seen in `realr11all`.
+- `compiler-worker:20260329-realproof-r10` includes the OpenAPI path-template fallback added in this phase; that code and the accompanying docs are still local worktree changes and have not yet been committed.
+
+**Current real-target baseline after `realr24all`:**
+- The previously failing real-target set is fully resolved.
+- The complete non-LLM real-target matrix is now green end to end.
+- Remaining rough edges are skip-classification / placeholder-data limitations, not active failing blockers.
+
+---
+
 ## What's Next
 
 The original SDD backlog is complete. Current follow-on work should proceed in this order:
@@ -3047,3 +3511,99 @@ B-006 track is now fully complete. All 3 enterprise protocols have dedicated run
 
 B-007 track is now fully complete. The repository quality-gate stack is migrated to uv + nox + basedpyright with pre-commit hooks and updated CI.
 
+---
+
+## 2026-03-28 — Real-Target MCP Server Endpoint Coverage Audit
+
+### Objective
+
+Systematically compare every compiled MCP server's tool set against the original service's actual API endpoints to identify coverage gaps, root causes, and remediation paths.
+
+### Audit Scope
+
+- **Namespace:** `tool-compiler-llm-e2e` (compiled MCP servers) ← `tc-real-targets` (9 real services)
+- **Proof run:** `realr12all` (7/11 passed), `realr14fix4` (4 focused retries, 0/4 passed)
+- **Method:** Queried compiler API `/api/v1/services` + `/api/v1/artifacts/{id}/versions/{version}` to fetch all compiled IRs; compared generated tools against each service's known API surface.
+
+### Coverage Results
+
+#### Successfully Compiled (7/11)
+
+| Service | Protocol | Tools Generated | Service Actual Endpoints | Coverage |
+|---------|----------|----------------|--------------------------|----------|
+| Directus GraphQL | graphql | 33 | ~30+ queries/mutations | ✅ High |
+| Northbreeze OData | odata | 17 | 3 EntitySets + function + action | ✅ High |
+| PostgreSQL | sql | 22 | 10 tables + 2 views × CRUD | ⚠️ Missing UPDATE/DELETE |
+| aria2 | jsonrpc | 3 | 36 RPC methods | 🔴 8% |
+| OpenFGA | grpc | 1 | ~15+ gRPC RPCs | 🔴 7% |
+| Directus REST | rest | 2 | many `/items/*` endpoints | 🔴 Minimal |
+| PocketBase REST | rest | 2 | collections CRUD | 🔴 Minimal |
+
+#### Failed at invocation_smoke (4/11)
+
+| Service | Protocol | Failed Tool | Notes |
+|---------|----------|-------------|-------|
+| Directus OpenAPI | openapi | readItemsProducts | Smoke over-sampling optional query params → upstream 400 |
+| Gitea OpenAPI | openapi | repoSearch | ConfigMap create 422; works in pod-local repro |
+| Jackson SCIM | scim | list_users | Works in pod-local repro; needs rerun with log capture |
+| Spring CXF SOAP | soap | GetOrderStatus | SOAP elementFormDefault serialization bug |
+
+### Root Cause Analysis
+
+#### A. Extractor Capability Limitations (code changes needed)
+
+**1. SQL Extractor — Missing UPDATE/DELETE**
+- **File:** `libs/extractors/sql.py`, lines 246–253
+- **Code:** `_build_operations()` only calls `_build_query_operation()` and `_build_insert_operation()`. No `_build_update_operation()` or `_build_delete_operation()` methods exist in the entire file.
+- **Impact:** Every table gets query + insert only; ~50% of CRUD capability missing.
+- **Fix:** Add `_build_update_operation(relation)` and `_build_delete_operation(relation)` methods; call them in the `if relation.kind == "table"` branch.
+
+**2. JSON-RPC Extractor — No Auto-Discovery**
+- **File:** `libs/extractors/jsonrpc.py`
+- **Issue:** Requires an OpenRPC spec document to discover methods. When none exists (e.g., aria2), falls back to hardcoded manual definitions in proof runner (`live_llm_e2e.py` → `_aria2_manual_service_definition()`, only 3/36 methods).
+- **Missed opportunity:** aria2 supports `system.listMethods` (JSON-RPC standard), which returns all 36 method names.
+- **Fix:** Add `system.listMethods` fallback in extractor: when no OpenRPC spec, call `system.listMethods` → iterate methods → generate tool wrappers.
+
+**3. gRPC Extractor — No Reflection Support**
+- **File:** `libs/extractors/grpc.py`
+- **Issue:** Only parses `.proto` file text via regex. Does not support gRPC Server Reflection protocol. OpenFGA supports reflection on port 8081, but the extractor can't use it; proof runner hardcodes a minimal proto with 1 RPC (`live_llm_e2e.py` → `_openfga_minimal_service_definition()`).
+- **Fix:** Add gRPC reflection client: `ServerReflectionInfo` → `ListServices` → `FileDescriptorBySymbol` → feed into existing proto parsing.
+
+**4. REST Extractor — BFS Crawler Ineffective on JSON APIs**
+- **File:** `libs/extractors/rest.py`
+- **Issue:** The `HeuristicRESTClassifier` uses BFS crawling from `source_url`:
+  - `_HTML_LINK_PATTERN` looks for `href=` in HTML — Directus/PocketBase return JSON, not HTML
+  - `_walk_json_link_candidates` finds URL-like strings in JSON values — pure data arrays like `{"data":[{"id":1,"name":"Galaxy Pro Max"}]}` contain no URLs
+  - `_infer_sub_resources` adds `/{id}` pattern but cannot discover sibling collections
+  - `_max_pages = 8` — irrelevant when there are no links to follow
+- **Impact:** Only discovers the seed path + its `/{id}` sub-resource → 2 tools.
+- **Fix combination:** (a) Point `source_url` at API root or collection index, (b) enable `llm_seed_mutation: true`, (c) enhance `_walk_json_link_candidates` to detect JSON collection listings.
+
+#### B. Proof Case Configuration Issues (config-only fixes)
+
+| Proof Case | Issue | Fix |
+|-----------|-------|-----|
+| Directus REST | `source_url: /items/products` (single collection) | Change to `/items` or `/` |
+| PocketBase REST | `source_url: /api/collections/products/records` | Change to `/api/collections` |
+| Both REST cases | `llm_seed_mutation: false` | Set to `true` in options |
+| aria2 JSON-RPC | `_aria2_manual_service_definition()` hardcodes 3 methods | Use `system.listMethods` auto-discovery |
+| OpenFGA gRPC | `_openfga_minimal_service_definition()` hardcodes 1 RPC | Use gRPC reflection or full proto file |
+
+### Key Insight
+
+**Protocol introspection quality determines coverage:**
+- Protocols with standardized schema introspection (GraphQL introspection, OData `$metadata`) → high coverage automatically
+- Protocols without standard discovery (REST without HATEOAS, JSON-RPC without OpenRPC, gRPC without reflection) → extractor falls back to manual definitions or limited heuristics → very low coverage
+
+This is the core tension: Tool Compiler's value is automatic API → MCP compilation, but for protocols lacking introspection, it degrades to "manual config + limited crawling."
+
+### Priority Remediation Order
+
+1. **gRPC reflection** — Standard protocol; one implementation benefits all reflection-enabled gRPC services
+2. **JSON-RPC `system.listMethods`** — Simple, well-defined fallback; immediate coverage jump for aria2
+3. **REST entry point widening + LLM seed mutation** — Config change + minor extractor enhancement
+4. **SQL UPDATE/DELETE** — Straightforward extractor completion
+
+### Cleanup
+
+- `tool-compiler-v2-test-targets/scripts/smoke-gke-llm-e2e.sh` — Old 5-protocol script confirmed deletable by user; superseded by `tool-compiler-v2/scripts/smoke-gke-llm-e2e.sh` with 9-protocol real-target support.
