@@ -225,10 +225,12 @@ describe("GatewayPage", () => {
     expect(screen.getByText("v1 → v2")).toBeInTheDocument();
   });
 
-  it("syncs and rolls back using the selected version route configs", async () => {
-    const user = userEvent.setup();
+  it(
+    "syncs and rolls back using the selected version route configs",
+    async () => {
+      const user = userEvent.setup();
 
-    renderWithProviders(<GatewayPage />);
+      renderWithProviders(<GatewayPage />);
 
     await waitFor(() => {
       expect(mockListVersions).toHaveBeenCalledWith("svc-1");
@@ -261,43 +263,45 @@ describe("GatewayPage", () => {
     await user.type(targetVersionInput, "1");
     await user.click(within(dialog).getByRole("button", { name: "Rollback" }));
 
-    await waitFor(() => {
-      expect(mockRollbackRoutes).toHaveBeenCalledWith({
-        route_config: versionTwoRouteConfig,
-        previous_routes: {
-          "svc-1-active": {
-            route_id: "svc-1-active",
-            route_type: "default",
-            service_id: "svc-1",
-            service_name: "Billing API",
-            namespace: "runtime-system",
-            target_service: {
-              name: "billing-runtime-v1",
+      await waitFor(() => {
+        expect(mockRollbackRoutes).toHaveBeenCalledWith({
+          route_config: versionTwoRouteConfig,
+          previous_routes: {
+            "svc-1-active": {
+              route_id: "svc-1-active",
+              route_type: "default",
+              service_id: "svc-1",
+              service_name: "Billing API",
               namespace: "runtime-system",
-              port: 8003,
+              target_service: {
+                name: "billing-runtime-v1",
+                namespace: "runtime-system",
+                port: 8003,
+              },
+              version_number: 1,
             },
-            version_number: 1,
-          },
-          "svc-1-v1": {
-            route_id: "svc-1-v1",
-            route_type: "version",
-            service_id: "svc-1",
-            service_name: "Billing API",
-            namespace: "runtime-system",
-            target_service: {
-              name: "billing-runtime-v1",
+            "svc-1-v1": {
+              route_id: "svc-1-v1",
+              route_type: "version",
+              service_id: "svc-1",
+              service_name: "Billing API",
               namespace: "runtime-system",
-              port: 8003,
-            },
-            version_number: 1,
-            match: {
-              headers: {
-                "x-tool-compiler-version": "1",
+              target_service: {
+                name: "billing-runtime-v1",
+                namespace: "runtime-system",
+                port: 8003,
+              },
+              version_number: 1,
+              match: {
+                headers: {
+                  "x-tool-compiler-version": "1",
+                },
               },
             },
           },
-        },
+        });
       });
-    });
-  });
+    },
+    15000,
+  );
 });

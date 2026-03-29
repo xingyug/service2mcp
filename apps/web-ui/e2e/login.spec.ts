@@ -12,38 +12,28 @@ test.describe("Login Page", () => {
     await expect(page.locator("[data-slot='card-title']").getByText("Sign in")).toBeVisible();
   });
 
-  test("renders username and password fields on password tab", async ({ page }) => {
-    await expect(page.locator("#username")).toBeVisible();
-    await expect(page.locator("#password")).toBeVisible();
-    await expect(page.getByLabel("Username")).toBeVisible();
-    await expect(page.getByLabel("Password")).toBeVisible();
+  test("renders JWT token field on the default tab", async ({ page }) => {
+    await expect(page.locator("#jwt-token")).toBeVisible();
+    await expect(page.getByLabel("JWT Token")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign in with JWT" })).toBeVisible();
   });
 
-  test("can switch between Password and PAT tabs", async ({ page }) => {
-    // Password tab is active by default
-    await expect(page.locator("#username")).toBeVisible();
+  test("can switch between JWT and PAT tabs", async ({ page }) => {
+    await expect(page.locator("#jwt-token")).toBeVisible();
 
-    // Switch to PAT tab
     await page.getByRole("tab", { name: "PAT Token" }).click();
     await expect(page.locator("#pat")).toBeVisible();
     await expect(page.getByLabel("Personal Access Token")).toBeVisible();
+    await expect(page.locator("#jwt-token")).not.toBeVisible();
 
-    // Username/password fields should be hidden
-    await expect(page.locator("#username")).not.toBeVisible();
-
-    // Switch back to Password tab
-    await page.getByRole("tab", { name: "Password Login" }).click();
-    await expect(page.locator("#username")).toBeVisible();
+    await page.getByRole("tab", { name: "JWT Token" }).click();
+    await expect(page.locator("#jwt-token")).toBeVisible();
     await expect(page.locator("#pat")).not.toBeVisible();
   });
 
-  test("shows validation on submitting empty password form", async ({ page }) => {
-    // HTML5 required validation prevents submission – fields have required attr
-    const usernameInput = page.locator("#username");
-    await expect(usernameInput).toHaveAttribute("required", "");
-
-    const passwordInput = page.locator("#password");
-    await expect(passwordInput).toHaveAttribute("required", "");
+  test("shows validation on submitting empty JWT form", async ({ page }) => {
+    const jwtInput = page.locator("#jwt-token");
+    await expect(jwtInput).toHaveAttribute("required", "");
   });
 
   test("shows validation on submitting empty PAT form", async ({ page }) => {
@@ -52,17 +42,11 @@ test.describe("Login Page", () => {
     await expect(patInput).toHaveAttribute("required", "");
   });
 
-  test("can fill in and submit password form", async ({ page }) => {
-    await page.fill("#username", "testuser");
-    await page.fill("#password", "testpass");
+  test("can fill in and submit JWT form", async ({ page }) => {
+    await page.fill("#jwt-token", "test-jwt-token");
+    await expect(page.locator("#jwt-token")).toHaveValue("test-jwt-token");
 
-    await expect(page.locator("#username")).toHaveValue("testuser");
-    await expect(page.locator("#password")).toHaveValue("testpass");
-
-    // Submit – will fail (no backend) but we verify the form submits and shows error
-    await page.getByRole("button", { name: "Sign in" }).click();
-
-    // Should show an error since backend is not running
+    await page.getByRole("button", { name: "Sign in with JWT" }).click();
     await expect(page.locator(".text-destructive").first()).toBeVisible({ timeout: 10000 });
   });
 
@@ -72,8 +56,6 @@ test.describe("Login Page", () => {
     await expect(page.locator("#pat")).toHaveValue("my-test-pat-token");
 
     await page.getByRole("button", { name: "Sign in with PAT" }).click();
-
-    // Should show an error since backend is not running
     await expect(page.locator(".text-destructive").first()).toBeVisible({ timeout: 10000 });
   });
 });

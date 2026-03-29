@@ -555,6 +555,9 @@ describe("api-client", () => {
 
   it("auditApi.get falls back to list() and returns the matching entry", async () => {
     mockFetch.mockResolvedValueOnce(
+      mockResponse({ detail: "not found" }, { status: 404, statusText: "Not Found" }),
+    );
+    mockFetch.mockResolvedValueOnce(
       mockResponse({
         items: [
           {
@@ -569,8 +572,13 @@ describe("api-client", () => {
       }),
     );
 
-    await auditApi.get("entry-7");
-    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/audit/logs`);
+    const entry = await auditApi.get("entry-7");
+
+    expect(entry.id).toBe("entry-7");
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
+      `${ACCESS_CONTROL_API}/api/v1/audit/logs/entry-7`,
+    );
+    expect(mockFetch.mock.calls[1]?.[0]).toBe(`${ACCESS_CONTROL_API}/api/v1/audit/logs`);
   });
 
   // -----------------------------------------------------------------------

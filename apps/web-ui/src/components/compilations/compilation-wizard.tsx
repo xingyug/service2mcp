@@ -43,12 +43,12 @@ import { ProtocolSelector } from "./protocol-selector";
 // Types
 // ---------------------------------------------------------------------------
 
-type SourceMode = "url" | "paste" | "upload";
-type AuthType = AuthConfig["type"];
-type Protocol = NonNullable<CompilationOptions["force_protocol"]> | "";
-type RuntimeMode = NonNullable<CompilationOptions["runtime_mode"]>;
+export type SourceMode = "url" | "paste" | "upload";
+export type AuthType = AuthConfig["type"];
+export type Protocol = NonNullable<CompilationOptions["force_protocol"]> | "";
+export type RuntimeMode = NonNullable<CompilationOptions["runtime_mode"]>;
 
-interface WizardFormData {
+export interface WizardFormData {
   sourceMode: SourceMode;
   sourceUrl: string;
   sourceContent: string;
@@ -75,7 +75,7 @@ interface WizardFormData {
   oauth2ClientSecretRef: string;
 }
 
-const INITIAL_FORM_DATA: WizardFormData = {
+export const INITIAL_FORM_DATA: WizardFormData = {
   sourceMode: "url",
   sourceUrl: "",
   sourceContent: "",
@@ -115,7 +115,7 @@ const ACCEPTED_EXTENSIONS = ".yaml,.yml,.json,.proto,.wsdl,.graphql";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function deriveServiceName(url: string): string {
+export function deriveServiceName(url: string): string {
   try {
     const pathname = new URL(url).pathname;
     const filename = pathname.split("/").pop() ?? "";
@@ -125,7 +125,7 @@ function deriveServiceName(url: string): string {
   }
 }
 
-function buildRequest(form: WizardFormData): CompilationCreateRequest {
+export function buildRequest(form: WizardFormData): CompilationCreateRequest {
   const options: CompilationOptions = {
     runtime_mode: form.runtimeMode,
   };
@@ -179,7 +179,7 @@ function buildRequest(form: WizardFormData): CompilationCreateRequest {
 // Validation
 // ---------------------------------------------------------------------------
 
-function validateStep(step: number, form: WizardFormData): string | null {
+export function validateStep(step: number, form: WizardFormData): string | null {
   switch (step) {
     case 0: {
       if (!form.createdBy.trim()) return "Created by is required.";

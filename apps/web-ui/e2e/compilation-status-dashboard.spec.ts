@@ -191,7 +191,7 @@ test.describe("Compilation status and dashboard flows", () => {
           },
           body: [
             "event: stage.started",
-            'data: {"job_id":"job-running","stage":"extract","status":"running","timestamp":"2026-03-29T04:00:30Z"}',
+            'data: {"event_type":"stage.started","stage":"extract","detail":{"status":"running"},"created_at":"2026-03-29T04:00:30Z"}',
             "",
           ].join("\n"),
         });
@@ -201,7 +201,7 @@ test.describe("Compilation status and dashboard flows", () => {
     await page.goto("/compilations/job-running");
     await page.waitForLoadState("domcontentloaded");
 
-    await expect(page.getByText("Running")).toBeVisible();
+    await expect(page.getByText("Running", { exact: true })).toBeVisible();
     await expect.poll(() => eventsRequested).toBeGreaterThan(0);
   });
 });
