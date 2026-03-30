@@ -49,6 +49,7 @@ def create_app(
     configure_database(app, database_url=database_url, session_factory=session_factory)
     configure_compilation_dispatcher(app, dispatcher=compilation_dispatcher)
     configure_route_publisher(app, route_publisher=route_publisher)
+    app.state.jwt_settings = jwt_settings or load_jwt_settings()
     app.include_router(artifact_registry_router)
     app.include_router(compilations_router)
     app.include_router(services_router)

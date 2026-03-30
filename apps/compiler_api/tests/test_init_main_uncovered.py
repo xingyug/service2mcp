@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -42,6 +42,18 @@ class TestCompilerApiInit:
 
 
 class TestCompilerApiMain:
+    def test_create_app_configures_jwt_settings(self) -> None:
+        from apps.compiler_api.main import create_app
+
+        mock_settings = MagicMock()
+        with patch(
+            "apps.compiler_api.main.load_jwt_settings",
+            return_value=mock_settings,
+        ):
+            app = create_app()
+
+        assert app.state.jwt_settings is mock_settings
+
     async def test_app_lifespan_shutdown_disposes_database(self) -> None:
         """Test lines 23-24: dispose_database called on shutdown."""
         from apps.compiler_api.main import create_app

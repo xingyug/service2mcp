@@ -18,6 +18,7 @@ from apps.proof_runner.live_llm_e2e import (
     _active_version_for_service,
     _artifact_version,
     _async_main,
+    _build_audit_policy,
     _build_llm_judge_from_env,
     _build_proof_cases,
     _compute_tool_intent_counts,
@@ -28,6 +29,7 @@ from apps.proof_runner.live_llm_e2e import (
     _operations_enhanced_from_events,
     _parse_args,
     _parse_sse_events,
+    _resolve_invocation_specs,
     _submit_compilation,
     _wait_for_terminal_job,
     main,
@@ -40,6 +42,7 @@ from libs.ir.models import (
     GrpcStreamMode,
     GrpcStreamRuntimeConfig,
     Operation,
+    Param,
     RiskLevel,
     RiskMetadata,
     ServiceIR,
@@ -51,6 +54,11 @@ _ENHANCE_STAGE_SUCCEEDED_EVENT = (
     'event: msg\ndata: {"stage":"enhance","event_type":"stage.succeeded",'
     '"detail":{"operations_enhanced":3}}\n\n'
 )
+
+
+@pytest.fixture(autouse=True)
+def _set_access_control_jwt_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ACCESS_CONTROL_JWT_SECRET", "test-jwt-secret")
 
 
 def _risk(level: RiskLevel = RiskLevel.safe) -> RiskMetadata:
@@ -216,9 +224,17 @@ class TestFetchCompilationEvents:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        events = await _fetch_compilation_events(mock_client, "job-1")
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="sse-token",
+        ):
+            events = await _fetch_compilation_events(mock_client, "job-1")
         assert len(events) == 1
         assert events[0]["data"]["stage"] == "extract"
+        mock_client.get.assert_awaited_once_with(
+            "/api/v1/compilations/job-1/events",
+            params={"token": "sse-token"},
+        )
 
     async def test_raises_on_error(self) -> None:
         mock_response = httpx.Response(
@@ -229,8 +245,12 @@ class TestFetchCompilationEvents:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        with pytest.raises(httpx.HTTPStatusError):
-            await _fetch_compilation_events(mock_client, "job-1")
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="sse-token",
+        ):
+            with pytest.raises(httpx.HTTPStatusError):
+                await _fetch_compilation_events(mock_client, "job-1")
 
 
 # --- _parse_sse_events (JSONDecodeError branch) ---
@@ -746,7 +766,33 @@ class TestBuildProofCases:
 
         grpc_case = next(case for case in cases if case.case_id == "openfga-grpc")
         assert grpc_case.request_payload["source_url"].startswith("grpc://openfga.")
-        assert "service OpenFGAService" in grpc_case.request_payload["source_content"]
+        assert "source_content" not in grpc_case.request_payload
+        assert grpc_case.request_payload["options"]["preferred_smoke_tool_ids"] == ["ListStores"]
+        assert grpc_case.request_payload["options"]["hints"]["enable_native_grpc_stream"] == "true"
+
+        directus_rest_case = next(case for case in cases if case.case_id == "directus-rest")
+        assert directus_rest_case.request_payload["source_url"].endswith("/collections")
+        assert directus_rest_case.request_payload["options"]["hints"]["llm_seed_mutation"] == "true"
+
+        pocketbase_rest_case = next(case for case in cases if case.case_id == "pocketbase-rest")
+        assert pocketbase_rest_case.request_payload["source_url"].endswith("/api/collections")
+        assert (
+            pocketbase_rest_case.request_payload["options"]["hints"]["llm_seed_mutation"] == "true"
+        )
+
+        aria2_case = next(case for case in cases if case.case_id == "aria2-jsonrpc")
+        assert aria2_case.request_payload["source_url"].endswith("/jsonrpc")
+        assert "source_content" not in aria2_case.request_payload
+        assert aria2_case.request_payload["options"]["auth_token"] == "token:test-secret"
+        assert aria2_case.request_payload["options"]["preferred_smoke_tool_ids"] == [
+            "aria2_getVersion",
+            "aria2_getGlobalStat",
+            "system_listMethods",
+        ]
+        assert aria2_case.request_payload["options"]["hints"] == {
+            "jsonrpc_auth_in_params": "true",
+            "jsonrpc_fallback_params_type": "positional",
+        }
 
         directus_openapi_case = next(case for case in cases if case.case_id == "directus-openapi")
         assert directus_openapi_case.tool_invocations == (
@@ -764,6 +810,35 @@ class TestBuildProofCases:
                 arguments={"orderId": "ORD-1001"},
             ),
         )
+
+    def test_disables_llm_enhancement_in_case_payloads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PROOF_DIRECTUS_ACCESS_TOKEN", "directus-token")
+        monkeypatch.setenv("PROOF_POCKETBASE_ACCESS_TOKEN", "pocketbase-token")
+        monkeypatch.setenv("PROOF_GITEA_BASIC_AUTH", "gitea_admin:Admin123!")
+        monkeypatch.setenv(
+            "PROOF_JACKSON_SCIM_BASE_URL",
+            "http://jackson.tc-real-targets.svc.cluster.local:5225/api/scim/v2.0/dir-id",
+        )
+        monkeypatch.setenv("PROOF_JACKSON_SCIM_SECRET", "jackson-secret")
+
+        cases = _build_proof_cases(
+            "proof-ns",
+            "rid",
+            profile="real-targets",
+            upstream_namespace="tc-real-targets",
+            enable_llm_enhancement=False,
+        )
+
+        for case in cases:
+            assert case.request_payload["options"]["skip_enhancement"] is True
+
+        directus_rest_case = next(case for case in cases if case.case_id == "directus-rest")
+        assert "hints" not in directus_rest_case.request_payload["options"]
+
+        pocketbase_rest_case = next(case for case in cases if case.case_id == "pocketbase-rest")
+        assert "hints" not in pocketbase_rest_case.request_payload["options"]
 
     def test_filters_cases_by_case_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PROOF_DIRECTUS_ACCESS_TOKEN", "directus-token")
@@ -818,6 +893,35 @@ class TestInvokeRuntimeTools:
 
 
 # --- _audit_generated_tools ---
+
+
+class TestResolveInvocationSpecs:
+    def test_sample_invocation_overrides_preferred_tool_arguments(self) -> None:
+        ir = _ir(
+            operations=[
+                _op(
+                    "read_order",
+                    path="/orders/{slug}",
+                    params=[Param(name="slug", type="string", required=True)],
+                )
+            ]
+        )
+        case = ProofCase(
+            protocol="rest",
+            service_id="svc",
+            request_payload={"options": {}},
+            preferred_tool_ids=("read_order",),
+        )
+
+        specs = _resolve_invocation_specs(
+            ir,
+            case,
+            sample_invocation_overrides={"read_order": {"slug": "featured"}},
+        )
+
+        assert specs == (
+            ToolInvocationSpec(tool_name="read_order", arguments={"slug": "featured"}),
+        )
 
 
 class TestAuditGeneratedTools:
@@ -950,6 +1054,39 @@ class TestAuditGeneratedTools:
         assert summary.passed == 1
         assert summary.results[0].outcome == "passed"
 
+    async def test_sample_invocation_overrides_enable_path_parameter_audit(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        ok_invoker = AsyncMock(return_value={"status": "ok", "result": {"good": True}})
+        ir = _ir(
+            operations=[
+                _op(
+                    "read_order",
+                    path="/orders/{slug}",
+                    params=[Param(name="slug", type="string", required=True)],
+                )
+            ]
+        )
+        policy = AuditPolicy(
+            skip_destructive=False,
+            skip_external_side_effect=False,
+            skip_writes_state=False,
+        )
+
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(),
+            representative_results=[],
+            tool_invoker=ok_invoker,
+            available_tool_names={"read_order"},
+            audit_policy=policy,
+            sample_invocation_overrides={"read_order": {"slug": "featured"}},
+        )
+
+        assert summary.passed == 1
+        ok_invoker.assert_awaited_once_with("read_order", {"slug": "featured"})
+
     async def test_cached_result_used(self) -> None:
         from apps.proof_runner.live_llm_e2e import _audit_generated_tools
 
@@ -1066,6 +1203,26 @@ class TestRunProofs:
             )
         assert len(results) == 1
         assert results[0].case_id == "mock-soap"
+
+    async def test_run_proofs_surfaces_exception_type_for_blank_message(self) -> None:
+        class BlankError(Exception):
+            pass
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._run_case",
+            new_callable=AsyncMock,
+            side_effect=BlankError(),
+        ):
+            results = await run_proofs(
+                namespace="test-ns",
+                api_base_url="http://test:8000",
+                protocol="rest",
+                timeout_seconds=10.0,
+                run_id="abc",
+            )
+
+        assert len(results) == 1
+        assert results[0].error == "BlankError"
 
 
 # --- _run_case ---
@@ -1237,9 +1394,7 @@ class TestRunCase:
             "tenant": "tenant-a",
             "environment": "prod",
         }
-        mock_builder.assert_called_once_with(
-            "http://billing-api-v2.test-ns.svc.cluster.local:8003"
-        )
+        mock_builder.assert_called_once_with("http://billing-api-v2.test-ns.svc.cluster.local:8003")
 
     async def test_run_case_failed_job_raises(self) -> None:
         from apps.proof_runner.live_llm_e2e import _run_case
@@ -1654,6 +1809,7 @@ class TestParseArgs:
             assert args.protocol == "all"
             assert args.timeout_seconds == 900.0
             assert args.audit_all_generated_tools is False
+            assert args.audit_mutating_tools is False
             assert args.enable_llm_judge is False
             assert args.case_ids == []
             assert args.skip_llm_artifact_checks is False
@@ -1674,6 +1830,7 @@ class TestParseArgs:
                 "--run-id",
                 "test-run",
                 "--audit-all-generated-tools",
+                "--audit-mutating-tools",
                 "--enable-llm-judge",
                 "--case-id",
                 "directus-openapi",
@@ -1689,9 +1846,22 @@ class TestParseArgs:
             assert args.timeout_seconds == 120.0
             assert args.run_id == "test-run"
             assert args.audit_all_generated_tools is True
+            assert args.audit_mutating_tools is True
             assert args.enable_llm_judge is True
             assert args.case_ids == ["directus-openapi", "gitea-openapi"]
             assert args.skip_llm_artifact_checks is True
+
+
+class TestBuildAuditPolicy:
+    def test_defaults_to_conservative_policy(self) -> None:
+        assert _build_audit_policy(audit_mutating_tools=False) == AuditPolicy()
+
+    def test_enables_mutating_tool_audit(self) -> None:
+        policy = _build_audit_policy(audit_mutating_tools=True)
+
+        assert policy.skip_destructive is False
+        assert policy.skip_external_side_effect is False
+        assert policy.skip_writes_state is False
 
 
 # --- _build_llm_judge_from_env ---
@@ -1736,6 +1906,7 @@ class TestAsyncMainAndMain:
             timeout_seconds=30.0,
             run_id="abc",
             audit_all_generated_tools=False,
+            audit_mutating_tools=False,
             enable_llm_judge=False,
             case_ids=[],
             skip_llm_artifact_checks=False,
@@ -1755,7 +1926,7 @@ class TestAsyncMainAndMain:
                 "apps.proof_runner.live_llm_e2e.run_proofs",
                 new_callable=AsyncMock,
                 return_value=[mock_result],
-            ),
+            ) as mock_run_proofs,
             patch("builtins.print") as mock_print,
         ):
             await _async_main()
@@ -1764,6 +1935,7 @@ class TestAsyncMainAndMain:
             parsed = json.loads(output)
             assert isinstance(parsed, list)
             assert len(parsed) == 1
+            assert mock_run_proofs.await_args.kwargs["audit_policy"] == AuditPolicy()
 
     async def test_async_main_with_judge(self) -> None:
         mock_args = argparse.Namespace(
@@ -1775,6 +1947,7 @@ class TestAsyncMainAndMain:
             timeout_seconds=30.0,
             run_id="abc",
             audit_all_generated_tools=False,
+            audit_mutating_tools=False,
             enable_llm_judge=True,
             case_ids=[],
             skip_llm_artifact_checks=False,
@@ -1803,6 +1976,47 @@ class TestAsyncMainAndMain:
             patch("builtins.print"),
         ):
             await _async_main()
+
+    async def test_async_main_enables_mutating_audit_policy(self) -> None:
+        mock_args = argparse.Namespace(
+            namespace="test-ns",
+            api_base_url="http://test:8000",
+            protocol="rest",
+            profile="mock",
+            upstream_namespace=None,
+            timeout_seconds=30.0,
+            run_id="abc",
+            audit_all_generated_tools=True,
+            audit_mutating_tools=True,
+            enable_llm_judge=False,
+            case_ids=[],
+            skip_llm_artifact_checks=False,
+        )
+        mock_result = ProofResult(
+            protocol="rest",
+            service_id="rest-svc",
+            job_id="job-1",
+            active_version=1,
+            operations_enhanced=2,
+            llm_field_count=3,
+            invocation_results=[],
+        )
+        with (
+            patch("apps.proof_runner.live_llm_e2e._parse_args", return_value=mock_args),
+            patch(
+                "apps.proof_runner.live_llm_e2e.run_proofs",
+                new_callable=AsyncMock,
+                return_value=[mock_result],
+            ) as mock_run_proofs,
+            patch("builtins.print"),
+        ):
+            await _async_main()
+
+        assert mock_run_proofs.await_args.kwargs["audit_policy"] == AuditPolicy(
+            skip_destructive=False,
+            skip_external_side_effect=False,
+            skip_writes_state=False,
+        )
 
     def test_main_calls_asyncio_run(self) -> None:
         with patch("apps.proof_runner.live_llm_e2e.asyncio.run") as mock_run:

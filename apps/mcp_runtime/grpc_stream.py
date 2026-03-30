@@ -131,7 +131,7 @@ class ReflectionGrpcStreamExecutor:
                 f"Native grpc_stream invocation failed for {operation.id}: {exc}"
             ) from exc
         finally:
-            channel.close(grace=5)
+            channel.close()
 
     def _build_channel(self) -> grpc.Channel:
         parsed = urlsplit(self._service_ir.base_url)

@@ -8,8 +8,20 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+import grpc
 import httpx
+from google.protobuf.descriptor import (
+    Descriptor,
+    EnumDescriptor,
+    FieldDescriptor,
+    ServiceDescriptor,
+)
+from google.protobuf.descriptor_pool import DescriptorPool
+from grpc_reflection.v1alpha.proto_reflection_descriptor_database import (
+    ProtoReflectionDescriptorDatabase,
+)
 
 from libs.extractors.base import SourceConfig
 from libs.ir.models import (
@@ -64,6 +76,7 @@ def _find_blocks(keyword: str, text: str) -> list[tuple[str, str]]:
                     break
     return results
 
+
 _PROTO_TYPE_MAP: dict[str, str] = {
     "string": "string",
     "bool": "boolean",
@@ -81,8 +94,30 @@ _PROTO_TYPE_MAP: dict[str, str] = {
     "sfixed32": "integer",
     "sfixed64": "integer",
 }
+_FIELD_DESCRIPTOR_TYPE_NAMES = {
+    FieldDescriptor.TYPE_DOUBLE: "double",
+    FieldDescriptor.TYPE_FLOAT: "float",
+    FieldDescriptor.TYPE_INT64: "int64",
+    FieldDescriptor.TYPE_UINT64: "uint64",
+    FieldDescriptor.TYPE_INT32: "int32",
+    FieldDescriptor.TYPE_FIXED64: "fixed64",
+    FieldDescriptor.TYPE_FIXED32: "fixed32",
+    FieldDescriptor.TYPE_BOOL: "bool",
+    FieldDescriptor.TYPE_STRING: "string",
+    FieldDescriptor.TYPE_BYTES: "bytes",
+    FieldDescriptor.TYPE_UINT32: "uint32",
+    FieldDescriptor.TYPE_SFIXED32: "sfixed32",
+    FieldDescriptor.TYPE_SFIXED64: "sfixed64",
+    FieldDescriptor.TYPE_SINT32: "sint32",
+    FieldDescriptor.TYPE_SINT64: "sint64",
+}
 _SAFE_RPC_PREFIXES = ("Get", "List", "Search", "Read", "Fetch", "Describe", "Lookup", "Count")
 _DANGEROUS_RPC_PREFIXES = ("Delete", "Remove", "Destroy", "Drop", "Purge", "Truncate")
+_IGNORED_REFLECTION_SERVICES = {
+    "grpc.health.v1.Health",
+    "grpc.reflection.v1.ServerReflection",
+    "grpc.reflection.v1alpha.ServerReflection",
+}
 
 
 @dataclass(frozen=True)
@@ -114,14 +149,31 @@ class ProtoService:
     rpcs: list[ProtoRpc]
 
 
+@dataclass(frozen=True)
+class ReflectedProtoModel:
+    """Structured gRPC model discovered from server reflection."""
+
+    package: str
+    messages: dict[str, list[ProtoField]]
+    enums: set[str]
+    services: list[ProtoService]
+    source_hash: str
+
+
 class GrpcProtoExtractor:
     """Extract unary gRPC operations from a Protocol Buffers service definition."""
 
     protocol_name: str = "grpc"
 
     def detect(self, source: SourceConfig) -> float:
+        if source.hints.get("protocol") == "grpc":
+            return 1.0
         content = self._get_content(source)
         if content is None:
+            if source.url:
+                parsed = urlsplit(source.url)
+                if parsed.scheme in {"grpc", "grpcs"}:
+                    return 0.7
             return 0.0
 
         file_path = (source.file_path or "").lower()
@@ -138,15 +190,26 @@ class GrpcProtoExtractor:
 
     def extract(self, source: SourceConfig) -> ServiceIR:
         content = self._get_content(source)
+        metadata: dict[str, Any] = {}
         if content is None:
-            raise ValueError("Could not read source content")
-
-        source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        proto_syntax = _extract_pattern_value(_SYNTAX_PATTERN, content, default="proto3")
-        proto_package = _extract_pattern_value(_PACKAGE_PATTERN, content, default="")
-        messages = _parse_messages(content)
-        enums = _parse_enums(content)
-        services = _parse_services(content)
+            parsed = urlsplit(source.url or "")
+            if parsed.scheme not in {"grpc", "grpcs"}:
+                raise ValueError("Could not read source content")
+            reflected = self._reflect_from_server(source)
+            source_hash = reflected.source_hash
+            proto_syntax = "proto3"
+            proto_package = reflected.package
+            messages = reflected.messages
+            enums = reflected.enums
+            services = reflected.services
+            metadata["discovery_mode"] = "reflection"
+        else:
+            source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            proto_syntax = _extract_pattern_value(_SYNTAX_PATTERN, content, default="proto3")
+            proto_package = _extract_pattern_value(_PACKAGE_PATTERN, content, default="")
+            messages = _parse_messages(content)
+            enums = _parse_enums(content)
+            services = _parse_services(content)
         if not services:
             raise ValueError("No gRPC service definitions found in proto source.")
 
@@ -234,7 +297,8 @@ class GrpcProtoExtractor:
                 "proto_service": primary_service_name,
                 "proto_services": [service.name for service in services],
                 "ignored_streaming_rpcs": ignored_streaming_rpcs,
-            },
+            }
+            | metadata,
         )
 
     def _get_content(self, source: SourceConfig) -> str | None:
@@ -260,6 +324,66 @@ class GrpcProtoExtractor:
             headers["Authorization"] = f"Bearer {source.auth_token}"
         return headers
 
+    def _reflect_from_server(self, source: SourceConfig) -> ReflectedProtoModel:
+        if not source.url:
+            raise ValueError(
+                "gRPC reflection extraction requires source.url when no proto source exists."
+            )
+
+        channel = _build_grpc_channel(source.url)
+        try:
+            reflection_db = ProtoReflectionDescriptorDatabase(channel)
+            pool = DescriptorPool(reflection_db)
+            service_names = [
+                service_name
+                for service_name in reflection_db.get_services()
+                if service_name not in _IGNORED_REFLECTION_SERVICES
+            ]
+            services: list[ProtoService] = []
+            messages: dict[str, list[ProtoField]] = {}
+            enums: set[str] = set()
+            package_name = ""
+            for service_full_name in sorted(service_names):
+                pool.FindFileContainingSymbol(service_full_name)
+                service_descriptor = pool.FindServiceByName(service_full_name)
+                if not package_name:
+                    package_name = service_descriptor.file.package
+                services.append(_service_from_descriptor(service_descriptor))
+                _collect_descriptor_types(service_descriptor, messages=messages, enums=enums)
+
+            if not services:
+                raise ValueError("No gRPC services discovered from server reflection.")
+
+            fingerprint_payload = {
+                "package": package_name,
+                "services": [
+                    {
+                        "name": service.name,
+                        "rpcs": [
+                            {
+                                "name": rpc.name,
+                                "request_type": rpc.request_type,
+                                "response_type": rpc.response_type,
+                                "client_streaming": rpc.client_streaming,
+                                "server_streaming": rpc.server_streaming,
+                            }
+                            for rpc in service.rpcs
+                        ],
+                    }
+                    for service in services
+                ],
+            }
+            source_hash = hashlib.sha256(repr(fingerprint_payload).encode("utf-8")).hexdigest()
+            return ReflectedProtoModel(
+                package=package_name,
+                messages=messages,
+                enums=enums,
+                services=services,
+                source_hash=source_hash,
+            )
+        finally:
+            channel.close()
+
 
 def _parse_services(content: str) -> list[ProtoService]:
     services: list[ProtoService] = []
@@ -276,6 +400,97 @@ def _parse_services(content: str) -> list[ProtoService]:
         ]
         services.append(ProtoService(name=service_name, rpcs=rpcs))
     return services
+
+
+def _service_from_descriptor(service: ServiceDescriptor) -> ProtoService:
+    return ProtoService(
+        name=service.name,
+        rpcs=[
+            ProtoRpc(
+                name=method.name,
+                request_type=method.input_type.full_name,
+                response_type=method.output_type.full_name,
+                client_streaming=method.client_streaming,
+                server_streaming=method.server_streaming,
+            )
+            for method in service.methods
+        ],
+    )
+
+
+def _collect_descriptor_types(
+    service: ServiceDescriptor,
+    *,
+    messages: dict[str, list[ProtoField]],
+    enums: set[str],
+) -> None:
+    for method in service.methods:
+        _collect_message_descriptor(method.input_type, messages=messages, enums=enums)
+        _collect_message_descriptor(method.output_type, messages=messages, enums=enums)
+
+
+def _collect_message_descriptor(
+    descriptor: Descriptor,
+    *,
+    messages: dict[str, list[ProtoField]],
+    enums: set[str],
+) -> None:
+    stripped_name = _strip_qualification(descriptor.full_name)
+    if stripped_name in messages:
+        return
+
+    messages[stripped_name] = [
+        ProtoField(
+            name=field.name,
+            type_name=_field_type_name(field),
+            repeated=field.label == FieldDescriptor.LABEL_REPEATED and not _is_map_field(field),
+            required=field.label == FieldDescriptor.LABEL_REQUIRED,
+        )
+        for field in descriptor.fields
+    ]
+    for enum_descriptor in descriptor.enum_types:
+        enums.add(enum_descriptor.name)
+        enums.add(enum_descriptor.full_name)
+    for field in descriptor.fields:
+        if field.type == FieldDescriptor.TYPE_MESSAGE:
+            _collect_message_descriptor(field.message_type, messages=messages, enums=enums)
+        if field.type == FieldDescriptor.TYPE_ENUM:
+            _collect_enum_descriptor(field.enum_type, enums=enums)
+    for nested_type in descriptor.nested_types:
+        _collect_message_descriptor(nested_type, messages=messages, enums=enums)
+
+
+def _collect_enum_descriptor(descriptor: EnumDescriptor, *, enums: set[str]) -> None:
+    enums.add(descriptor.name)
+    enums.add(descriptor.full_name)
+
+
+def _field_type_name(field: FieldDescriptor) -> str:
+    if _is_map_field(field):
+        return "map<string, object>"
+    if field.type == FieldDescriptor.TYPE_MESSAGE:
+        return str(field.message_type.full_name) if field.message_type is not None else "object"
+    if field.type == FieldDescriptor.TYPE_ENUM:
+        return str(field.enum_type.full_name) if field.enum_type is not None else "string"
+    return _FIELD_DESCRIPTOR_TYPE_NAMES.get(field.type, "string")
+
+
+def _is_map_field(field: FieldDescriptor) -> bool:
+    if field.type != FieldDescriptor.TYPE_MESSAGE or field.message_type is None:
+        return False
+    return bool(field.message_type.GetOptions().map_entry)
+
+
+def _build_grpc_channel(target_url: str) -> grpc.Channel:
+    parsed = urlsplit(target_url)
+    target = parsed.netloc or parsed.path
+    if not target:
+        raise ValueError(f"gRPC source_url {target_url!r} is not a valid grpc target.")
+    if parsed.scheme == "grpcs":
+        return grpc.secure_channel(target, grpc.ssl_channel_credentials())
+    if parsed.scheme == "grpc":
+        return grpc.insecure_channel(target)
+    raise ValueError(f"Unsupported gRPC source_url scheme {parsed.scheme!r}.")
 
 
 def _event_direction_for_rpc(rpc: ProtoRpc) -> EventDirection:
@@ -564,6 +779,8 @@ def _humanize_identifier(value: str) -> str:
 
 def _hint_enabled(source: SourceConfig, name: str) -> bool:
     value = source.hints.get(name)
+    if isinstance(value, bool):
+        return value
     if not isinstance(value, str):
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}

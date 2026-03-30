@@ -426,8 +426,7 @@ def test_current_pocketbase_collection_entrypoint_is_discovered_without_links() 
     assert service_ir.base_url == "https://pocketbase.example.com/api/collections/products/records"
     assert "/api/collections/products/records" in service_ir.metadata["discovered_paths"]
     assert (
-        "/api/collections/products/records/{record_id}"
-        in service_ir.metadata["discovered_paths"]
+        "/api/collections/products/records/{record_id}" in service_ir.metadata["discovered_paths"]
     )
     assert "/" in operation_paths
     assert "/{record_id}" in operation_paths
@@ -438,6 +437,149 @@ def test_current_pocketbase_collection_entrypoint_is_discovered_without_links() 
     )
     params_by_name = {param.name: param for param in detail_operation.params}
     assert params_by_name["record_id"].default == "rec123"
+
+
+def test_directus_collection_registry_root_discovers_sibling_collections() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        routes = {
+            ("GET", "https://directus.example.com/collections"): httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"collection": "products"},
+                        {"collection": "customers"},
+                        {"collection": "orders"},
+                        {"collection": "directus_users"},
+                    ]
+                },
+                request=request,
+            ),
+            ("OPTIONS", "https://directus.example.com/items/products"): httpx.Response(
+                200,
+                headers={"allow": "GET, POST"},
+                request=request,
+            ),
+            ("OPTIONS", "https://directus.example.com/items/customers"): httpx.Response(
+                200,
+                headers={"allow": "GET, POST"},
+                request=request,
+            ),
+            ("OPTIONS", "https://directus.example.com/items/orders"): httpx.Response(
+                200,
+                headers={"allow": "GET, POST"},
+                request=request,
+            ),
+        }
+        return routes.get((request.method, str(request.url)), httpx.Response(404, request=request))
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    extractor = RESTExtractor(client=client)
+
+    try:
+        service_ir = extractor.extract(SourceConfig(url="https://directus.example.com/collections"))
+    finally:
+        extractor.close()
+
+    assert service_ir.base_url == "https://directus.example.com"
+    assert "/items/products" in service_ir.metadata["discovered_paths"]
+    assert "/items/customers" in service_ir.metadata["discovered_paths"]
+    assert "/items/orders" in service_ir.metadata["discovered_paths"]
+    assert "/items/directus_users" not in service_ir.metadata["discovered_paths"]
+    operation_paths = {operation.path for operation in service_ir.operations}
+    assert "/items/products" in operation_paths
+    assert "/items/customers" in operation_paths
+    assert "/items/orders" in operation_paths
+
+
+def test_pocketbase_collection_registry_root_follows_pagination() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        routes = {
+            ("GET", "https://pocketbase.example.com/api/collections"): httpx.Response(
+                200,
+                json={
+                    "page": 1,
+                    "perPage": 1,
+                    "totalItems": 2,
+                    "items": [{"name": "products", "type": "base"}],
+                },
+                request=request,
+            ),
+            (
+                "GET",
+                "https://pocketbase.example.com/api/collections?page=2&perPage=1",
+            ): httpx.Response(
+                200,
+                json={
+                    "page": 2,
+                    "perPage": 1,
+                    "totalItems": 2,
+                    "items": [{"name": "tasks", "type": "base"}],
+                },
+                request=request,
+            ),
+            (
+                "OPTIONS",
+                "https://pocketbase.example.com/api/collections/products/records",
+            ): httpx.Response(200, headers={"allow": "GET, POST"}, request=request),
+            (
+                "OPTIONS",
+                "https://pocketbase.example.com/api/collections/tasks/records",
+            ): httpx.Response(
+                200,
+                headers={"allow": "GET, POST"},
+                request=request,
+            ),
+        }
+        return routes.get((request.method, str(request.url)), httpx.Response(404, request=request))
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    extractor = RESTExtractor(client=client)
+
+    try:
+        service_ir = extractor.extract(
+            SourceConfig(url="https://pocketbase.example.com/api/collections")
+        )
+    finally:
+        extractor.close()
+
+    assert service_ir.base_url == "https://pocketbase.example.com/api/collections"
+    operation_paths = {operation.path for operation in service_ir.operations}
+    assert "/products/records" in operation_paths
+    assert "/tasks/records" in operation_paths
+
+
+def test_retries_after_429_before_discovery() -> None:
+    attempts = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and str(request.url) == "https://api.example.com":
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                return httpx.Response(
+                    429,
+                    headers={"retry-after": "0"},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                text='<html><body><a href="/users">Users</a></body></html>',
+                headers={"content-type": "text/html"},
+                request=request,
+            )
+        if request.method == "OPTIONS" and str(request.url) == "https://api.example.com/users":
+            return httpx.Response(200, headers={"allow": "GET"}, request=request)
+        return httpx.Response(404, request=request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    extractor = RESTExtractor(client=client)
+
+    try:
+        service_ir = extractor.extract(SourceConfig(url="https://api.example.com"))
+    finally:
+        extractor.close()
+
+    assert attempts["count"] == 2
+    assert any(operation.path == "/users" for operation in service_ir.operations)
 
 
 def test_sibling_coalescing_merges_value_like_leaves() -> None:

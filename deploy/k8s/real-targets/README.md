@@ -36,15 +36,15 @@ schema introspection, nested schemas, error models, and health checks.
 
 ## Compiler Source URLs
 
-```
+``` 
 GraphQL:   http://directus.tc-real-targets.svc.cluster.local:8055/graphql
-REST:      http://directus.tc-real-targets.svc.cluster.local:8055/items/products
+REST:      http://directus.tc-real-targets.svc.cluster.local:8055/collections
 OpenAPI:   http://directus.tc-real-targets.svc.cluster.local:8055/server/specs/oas
-gRPC:      openfga.tc-real-targets.svc.cluster.local:8081
+gRPC:      grpc://openfga.tc-real-targets.svc.cluster.local:8081
 JSON-RPC:  http://aria2.tc-real-targets.svc.cluster.local:6800/jsonrpc
 OData:     http://northbreeze.tc-real-targets.svc.cluster.local:4004/odata/v4/northbreeze/$metadata
 OpenAPI:   http://gitea.tc-real-targets.svc.cluster.local:3000/swagger.v1.json
-REST:      http://pocketbase.tc-real-targets.svc.cluster.local:8090/api/collections/products/records
+REST:      http://pocketbase.tc-real-targets.svc.cluster.local:8090/api/collections
 SCIM:      http://jackson.tc-real-targets.svc.cluster.local:5225/api/scim/v2.0/{tenant}/{product}
 SOAP:      http://soap-cxf.tc-real-targets.svc.cluster.local:8080/services/OrderService?wsdl
 SQL:       postgresql://catalog:catalog@real-postgres.tc-real-targets.svc.cluster.local:5432/catalog_v2

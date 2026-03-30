@@ -1,4 +1,4 @@
-"""JSON-RPC 2.0 extractor — parses OpenRPC specs and manual service definitions."""
+"""JSON-RPC 2.0 extractor — parses OpenRPC specs and falls back to live discovery."""
 
 from __future__ import annotations
 
@@ -135,18 +135,12 @@ class JsonRpcExtractor:
     # ── extraction ─────────────────────────────────────────────────────────
 
     def extract(self, source: SourceConfig) -> ServiceIR:
-        content = self._get_content(source)
-        if content is None:
-            raise ValueError("Could not read source content")
-
-        source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        data = json.loads(content)
-
+        data, source_hash, discovery_metadata = self._load_definition(source)
         is_openrpc = "openrpc" in data
 
         # Service info
         info = data.get("info", {})
-        title = info.get("title", "JSON-RPC Service")
+        title = info.get("title") or self._default_service_title(source)
         description = info.get("description", "")
         version = info.get("version", "0.0.0")
 
@@ -169,6 +163,7 @@ class JsonRpcExtractor:
         }
         if is_openrpc:
             metadata["openrpc_version"] = data["openrpc"]
+        metadata.update(discovery_metadata)
 
         service_name = title.lower().replace(" ", "-")
 
@@ -182,6 +177,44 @@ class JsonRpcExtractor:
             auth=AuthConfig(type=AuthType.none),
             operations=operations,
             metadata=metadata,
+        )
+
+    def _load_definition(
+        self,
+        source: SourceConfig,
+    ) -> tuple[dict[str, Any], str, dict[str, Any]]:
+        content = self._get_content(source)
+        if content is not None:
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                data = None
+            if isinstance(data, dict) and (
+                "openrpc" in data
+                or data.get("jsonrpc_service") is True
+                or isinstance(data.get("methods"), list)
+            ):
+                return data, hashlib.sha256(content.encode("utf-8")).hexdigest(), {}
+
+        discovered_methods = self._discover_methods(source)
+        if not discovered_methods:
+            raise ValueError("Could not read source content or discover JSON-RPC methods")
+
+        payload = {
+            "jsonrpc_service": True,
+            "info": {
+                "title": self._default_service_title(source),
+                "description": "Discovered from a live JSON-RPC endpoint via system.listMethods.",
+                "version": "discovered",
+            },
+            "endpoint": source.url,
+            "methods": discovered_methods,
+        }
+        encoded = json.dumps(payload, sort_keys=True)
+        return (
+            payload,
+            hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+            {"discovery_mode": "system.listMethods"},
         )
 
     # ── private helpers ────────────────────────────────────────────────────
@@ -246,6 +279,88 @@ class JsonRpcExtractor:
             error_schema=_JSONRPC_ERROR_SCHEMA,
         )
 
+    def _discover_methods(self, source: SourceConfig) -> list[dict[str, Any]]:
+        if not source.url:
+            return []
+
+        params_type = self._fallback_params_type(source)
+        request_body: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "method": "system.listMethods",
+            "id": 1,
+        }
+        discovery_params = self._discovery_params(source, params_type=params_type)
+        if discovery_params is not None:
+            request_body["params"] = discovery_params
+
+        try:
+            response = httpx.post(
+                source.url,
+                json=request_body,
+                timeout=30,
+                headers=self._auth_headers(source),
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception:
+            logger.warning(
+                "Failed to discover JSON-RPC methods from %s via system.listMethods",
+                source.url,
+                exc_info=True,
+            )
+            return []
+
+        method_names = payload.get("result")
+        if not isinstance(method_names, list):
+            return []
+
+        return [
+            self._fallback_method_definition(
+                str(method_name),
+                source=source,
+                params_type=params_type,
+            )
+            for method_name in method_names
+            if isinstance(method_name, str) and method_name
+        ]
+
+    def _fallback_method_definition(
+        self,
+        method_name: str,
+        *,
+        source: SourceConfig,
+        params_type: Literal["named", "positional"],
+    ) -> dict[str, Any]:
+        params: list[dict[str, Any]] = []
+        auth_param_name = str(source.hints.get("jsonrpc_auth_param_name") or "token")
+        if _truthy_hint(source.hints.get("jsonrpc_auth_in_params")):
+            params.append(
+                {
+                    "name": auth_param_name,
+                    "required": False,
+                    "description": "JSON-RPC auth token injected into params when required.",
+                    "schema": {"type": "string", "default": source.auth_token},
+                }
+            )
+
+        params.append(
+            {
+                "name": "payload",
+                "required": False,
+                "description": (
+                    "Fallback argument container for methods discovered via system.listMethods."
+                ),
+                "schema": {"type": "array" if params_type == "positional" else "object"},
+            }
+        )
+
+        return {
+            "name": method_name,
+            "description": "Discovered via system.listMethods.",
+            "params_type": params_type,
+            "params": params,
+        }
+
     @staticmethod
     def _resolve_base_url(
         data: dict[str, Any],
@@ -309,6 +424,39 @@ class JsonRpcExtractor:
         return None
 
     @staticmethod
+    def _default_service_title(source: SourceConfig) -> str:
+        if source.hints.get("service_name"):
+            return str(source.hints["service_name"])
+        if source.url:
+            parsed = urlparse(source.url)
+            host = parsed.hostname or "jsonrpc-service"
+            return host.replace(".", "-")
+        return "JSON-RPC Service"
+
+    @staticmethod
+    def _fallback_params_type(source: SourceConfig) -> Literal["named", "positional"]:
+        raw = source.hints.get("jsonrpc_fallback_params_type") or source.hints.get(
+            "jsonrpc_params_type"
+        )
+        if raw in {"named", "positional"}:
+            return cast(Literal["named", "positional"], raw)
+        return "named"
+
+    @staticmethod
+    def _discovery_params(
+        source: SourceConfig,
+        *,
+        params_type: Literal["named", "positional"],
+    ) -> dict[str, Any] | list[Any] | None:
+        if not _truthy_hint(source.hints.get("jsonrpc_auth_in_params")) or not source.auth_token:
+            return None
+        auth_param_name = str(source.hints.get("jsonrpc_auth_param_name") or "token")
+        token_value = source.auth_token
+        if params_type == "positional":
+            return [token_value]
+        return {auth_param_name: token_value}
+
+    @staticmethod
     def _auth_headers(source: SourceConfig) -> dict[str, str]:
         headers: dict[str, str] = {}
         if source.auth_header:
@@ -329,3 +477,11 @@ def _resolve_params_type(method: dict[str, Any]) -> Literal["named", "positional
     if param_structure in {"by-name", "either"}:
         return "named"
     return "named"
+
+
+def _truthy_hint(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False

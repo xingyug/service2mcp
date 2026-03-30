@@ -117,6 +117,7 @@ class TestBuildChannel:
         with pytest.raises(ToolError, match="not a valid grpc target"):
             executor._build_channel()
 
+
 class TestInvokeSyncErrorHandling:
     def _make_executor(
         self, base_url: str = "grpc://localhost:50051"
@@ -153,9 +154,7 @@ class TestInvokeSyncErrorHandling:
 
             # Mock the reflection and protobuf setup
             with (
-                patch(
-                    "apps.mcp_runtime.grpc_unary.ProtoReflectionDescriptorDatabase"
-                ),
+                patch("apps.mcp_runtime.grpc_unary.ProtoReflectionDescriptorDatabase"),
                 patch("apps.mcp_runtime.grpc_unary.DescriptorPool") as mock_pool_cls,
                 patch("apps.mcp_runtime.grpc_unary._method_full_name") as mock_method_name,
                 patch("apps.mcp_runtime.grpc_unary._prime_service_descriptor"),
@@ -187,6 +186,7 @@ class TestInvokeSyncErrorHandling:
 
                 with pytest.raises(ToolError, match="returned a non-object protobuf message"):
                     executor._invoke_sync(op, {}, config)
+                mock_channel.close.assert_called_once_with()
 
     def test_grpc_rpc_error_handling(self) -> None:
         """Test general exception handling - covers line 87-90."""
@@ -217,6 +217,7 @@ class TestInvokeSyncErrorHandling:
 
                 with pytest.raises(ToolError, match="Native grpc unary invocation failed"):
                     executor._invoke_sync(op, {}, config)
+                mock_channel.close.assert_called_once_with()
 
     def test_tool_error_passthrough(self) -> None:
         executor = self._make_executor()

@@ -926,7 +926,7 @@ def create_default_activity_registry(
 
     async def extract_stage(context: CompilationContext) -> StageExecutionResult:
         source = _source_config_from_context(context)
-        extractors = _build_extractors()
+        extractors = _build_extractors(source)
         try:
             extractor = _resolve_extractor(context, source, extractors)
             service_ir = extractor.extract(source)
@@ -1394,7 +1394,11 @@ def _sample_invocation_overrides(options: Mapping[str, Any]) -> dict[str, dict[s
     return overrides
 
 
-def _build_extractors() -> list[ExtractorProtocol]:
+def _build_extractors(source: SourceConfig | None = None) -> list[ExtractorProtocol]:
+    rest_llm_client = None
+    if source is not None and _truthy_hint(source.hints.get("llm_seed_mutation")):
+        enhancer_config = EnhancerConfig.from_env()
+        rest_llm_client = create_llm_client(enhancer_config)
     return [
         OpenAPIExtractor(),
         GraphQLExtractor(),
@@ -1404,7 +1408,7 @@ def _build_extractors() -> list[ExtractorProtocol]:
         SCIMExtractor(),
         JsonRpcExtractor(),
         SQLExtractor(),
-        RESTExtractor(),
+        RESTExtractor(llm_client=rest_llm_client),
     ]
 
 
@@ -1428,6 +1432,14 @@ def _close_extractors(extractors: list[ExtractorProtocol]) -> None:
         close = getattr(extractor, "close", None)
         if callable(close):
             close()
+
+
+def _truthy_hint(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
 
 
 async def _next_version_number(
@@ -1743,6 +1755,21 @@ def _sample_sql_arguments(operation: Operation) -> dict[str, Any]:
                 continue
             if param.required:
                 arguments[param.name] = _sample_value(param, operation=operation)
+        return arguments
+
+    if operation.sql.action is SqlOperationType.update:
+        arguments = {
+            param.name: _sample_value(param, operation=operation)
+            for param in operation.params
+            if param.required
+        }
+        for param in operation.params:
+            if param.name in arguments:
+                continue
+            if param.name not in operation.sql.updatable_columns:
+                continue
+            arguments[param.name] = _sample_value(param, operation=operation)
+            break
         return arguments
 
     return {

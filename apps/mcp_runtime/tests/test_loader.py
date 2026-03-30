@@ -35,6 +35,7 @@ def _op(
     method: str = "GET",
     params: list[Param] | None = None,
     enabled: bool = True,
+    risk: RiskMetadata | None = None,
 ) -> Operation:
     return Operation(
         id=op_id,
@@ -43,7 +44,8 @@ def _op(
         method=method,
         path=f"/{op_id}",
         params=params or [],
-        risk=RiskMetadata(
+        risk=risk
+        or RiskMetadata(
             risk_level=RiskLevel.safe,
             confidence=1.0,
             source=SourceType.extractor,
@@ -198,6 +200,45 @@ class TestRegisterIrTools:
         ir = _ir(operations=[_op("op_a"), _op("op_b"), _op("op_c")])
         registered = register_ir_tools(server, ir)
         assert set(registered.keys()) == {"op_a", "op_b", "op_c"}
+
+    def test_enabled_mutating_operations_registered(self) -> None:
+        server = create_runtime_server("test")
+        ir = _ir(
+            operations=[
+                _op(
+                    "create_order",
+                    method="POST",
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.dangerous,
+                        confidence=1.0,
+                        source=SourceType.extractor,
+                        writes_state=True,
+                        destructive=False,
+                        external_side_effect=True,
+                        idempotent=False,
+                    ),
+                ),
+                _op(
+                    "delete_order",
+                    method="DELETE",
+                    risk=RiskMetadata(
+                        risk_level=RiskLevel.dangerous,
+                        confidence=1.0,
+                        source=SourceType.extractor,
+                        writes_state=True,
+                        destructive=True,
+                        external_side_effect=True,
+                        idempotent=True,
+                    ),
+                ),
+            ]
+        )
+
+        registered = register_ir_tools(server, ir)
+
+        assert set(registered.keys()) == {"create_order", "delete_order"}
+        assert registered["create_order"].method == "POST"
+        assert registered["delete_order"].method == "DELETE"
 
     def test_empty_operations_returns_empty(self) -> None:
         server = create_runtime_server("test")

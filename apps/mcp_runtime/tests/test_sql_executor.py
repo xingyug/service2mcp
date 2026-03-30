@@ -15,6 +15,7 @@ from apps.mcp_runtime.sql import (
     SQLRuntimeExecutor,
     _json_safe_row,
     _json_safe_value,
+    _required_primary_key_values,
     _resolve_limit,
     _to_async_database_url,
 )
@@ -360,6 +361,40 @@ def _make_insert_config(
     )
 
 
+def _make_update_config(
+    *,
+    updatable_columns: list[str] | None = None,
+    primary_key_columns: list[str] | None = None,
+) -> SqlOperationConfig:
+    return SqlOperationConfig(
+        action=SqlOperationType.update,
+        relation_name="users",
+        schema_name="main",
+        relation_kind=SqlRelationKind.table,
+        filterable_columns=[],
+        updatable_columns=updatable_columns or ["name", "email"],
+        primary_key_columns=primary_key_columns or ["id"],
+        default_limit=10,
+        max_limit=100,
+    )
+
+
+def _make_delete_config(
+    *,
+    primary_key_columns: list[str] | None = None,
+) -> SqlOperationConfig:
+    return SqlOperationConfig(
+        action=SqlOperationType.delete,
+        relation_name="users",
+        schema_name="main",
+        relation_kind=SqlRelationKind.table,
+        filterable_columns=[],
+        primary_key_columns=primary_key_columns or ["id"],
+        default_limit=10,
+        max_limit=100,
+    )
+
+
 class _AsyncContextManagerMock:
     """Helper to create a mock async context manager."""
 
@@ -579,3 +614,106 @@ class TestSQLRuntimeExecutorInsert:
         assert result["action"] == "insert"
         assert result["row_count"] == 1
         assert result["inserted_primary_key"] == [42]
+
+
+class TestRequiredPrimaryKeyValues:
+    def test_collects_required_values(self) -> None:
+        assert _required_primary_key_values(
+            operation_id="delete_users",
+            arguments={"id": 42},
+            primary_key_columns=["id"],
+        ) == {"id": 42}
+
+    def test_raises_when_primary_key_missing(self) -> None:
+        with pytest.raises(ToolError, match="requires primary key parameter id"):
+            _required_primary_key_values(
+                operation_id="delete_users",
+                arguments={},
+                primary_key_columns=["id"],
+            )
+
+
+class TestSQLRuntimeExecutorUpdateDelete:
+    @pytest.mark.asyncio
+    async def test_update_uses_primary_key_filter_and_returns_row_count(self) -> None:
+        ir = _make_service_ir()
+        mock_conn = AsyncMock()
+        mock_engine = MagicMock()
+        mock_engine.begin.return_value = _AsyncContextManagerMock(mock_conn)
+        executor = SQLRuntimeExecutor(ir, engine=mock_engine)
+
+        mock_id_col = MagicMock()
+        mock_id_col.__eq__ = MagicMock(return_value=MagicMock())
+        mock_table = MagicMock()
+        mock_table.c.get = MagicMock(side_effect=lambda name: mock_id_col if name == "id" else None)
+        executor._get_table = AsyncMock(return_value=mock_table)
+
+        mock_result = MagicMock()
+        mock_result.rowcount = 2
+        mock_conn.execute = AsyncMock(return_value=mock_result)
+
+        mock_update_chain = MagicMock()
+        mock_update_chain.values.return_value = mock_update_chain
+        mock_update_chain.where.return_value = mock_update_chain
+
+        with patch("apps.mcp_runtime.sql.update", return_value=mock_update_chain):
+            result = await executor.invoke(
+                operation=_make_operation(),
+                arguments={"id": 42, "email": "alice@example.com"},
+                config=_make_update_config(updatable_columns=["email"]),
+            )
+
+        assert result == {
+            "relation": "users",
+            "action": "update",
+            "row_count": 2,
+            "updated_primary_key": {"id": 42},
+        }
+
+    @pytest.mark.asyncio
+    async def test_update_requires_at_least_one_updatable_value(self) -> None:
+        ir = _make_service_ir()
+        executor = SQLRuntimeExecutor(ir, engine=MagicMock())
+        executor._get_table = AsyncMock(return_value=MagicMock())
+
+        with pytest.raises(ToolError, match="requires at least one updatable value"):
+            await executor.invoke(
+                operation=_make_operation(),
+                arguments={"id": 42},
+                config=_make_update_config(updatable_columns=["email"]),
+            )
+
+    @pytest.mark.asyncio
+    async def test_delete_uses_primary_key_filter_and_returns_row_count(self) -> None:
+        ir = _make_service_ir()
+        mock_conn = AsyncMock()
+        mock_engine = MagicMock()
+        mock_engine.begin.return_value = _AsyncContextManagerMock(mock_conn)
+        executor = SQLRuntimeExecutor(ir, engine=mock_engine)
+
+        mock_id_col = MagicMock()
+        mock_id_col.__eq__ = MagicMock(return_value=MagicMock())
+        mock_table = MagicMock()
+        mock_table.c.get = MagicMock(side_effect=lambda name: mock_id_col if name == "id" else None)
+        executor._get_table = AsyncMock(return_value=mock_table)
+
+        mock_result = MagicMock()
+        mock_result.rowcount = 1
+        mock_conn.execute = AsyncMock(return_value=mock_result)
+
+        mock_delete_chain = MagicMock()
+        mock_delete_chain.where.return_value = mock_delete_chain
+
+        with patch("apps.mcp_runtime.sql.delete", return_value=mock_delete_chain):
+            result = await executor.invoke(
+                operation=_make_operation(),
+                arguments={"id": 42},
+                config=_make_delete_config(),
+            )
+
+        assert result == {
+            "relation": "users",
+            "action": "delete",
+            "row_count": 1,
+            "deleted_primary_key": {"id": 42},
+        }

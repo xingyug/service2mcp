@@ -794,11 +794,32 @@ class RuntimeProxy:
     ) -> PreparedRequestPayload:
         """Wrap tool arguments in a JSON-RPC 2.0 request envelope."""
         if config.params_type == "positional":
-            params: Any = [remaining.get(n) for n in config.params_names]
+            params_list: list[Any] = []
+            for name in config.params_names:
+                if name not in remaining:
+                    continue
+                value = remaining[name]
+                if name == "payload":
+                    if isinstance(value, list):
+                        params_list.extend(value)
+                    elif value is not None:
+                        params_list.append(value)
+                    continue
+                if value is not None:
+                    params_list.append(value)
+            params: Any = params_list
         else:
-            params = {
-                name: remaining[name] for name in config.params_names if name in remaining
-            } or remaining
+            params_dict: dict[str, Any] = {
+                name: remaining[name]
+                for name in config.params_names
+                if name in remaining and name != "payload"
+            }
+            payload_value = remaining.get("payload")
+            if isinstance(payload_value, dict):
+                params_dict.update(payload_value)
+            elif payload_value is not None:
+                params_dict["payload"] = payload_value
+            params = params_dict or remaining
         json_body: dict[str, Any] = {
             "jsonrpc": config.jsonrpc_version,
             "method": config.method_name,
@@ -1679,9 +1700,7 @@ def _normalize_websocket_message(value: Any) -> str | bytes:
             try:
                 return base64.b64decode(value["bytes_base64"], validate=True)
             except ValueError as exc:
-                raise ToolError(
-                    "WebSocket bytes_base64 contains invalid base64 data."
-                ) from exc
+                raise ToolError("WebSocket bytes_base64 contains invalid base64 data.") from exc
         if "text" in value and isinstance(value["text"], str):
             return value["text"]
         if "json" in value:
@@ -1816,9 +1835,7 @@ def _build_soap_envelope(config: SoapOperationConfig, arguments: dict[str, Any])
         f"{{{config.target_namespace}}}{config.request_element}",
     )
 
-    child_namespace = (
-        config.target_namespace if config.child_element_form == "qualified" else None
-    )
+    child_namespace = config.target_namespace if config.child_element_form == "qualified" else None
     for key, value in arguments.items():
         _append_soap_argument(
             request_root,
