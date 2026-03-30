@@ -15,6 +15,8 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
+_STRUCTURED_ROOT_HANDLER_MARKER = "_tool_compiler_structured_root_handler"
+
 
 class StructuredFormatter(logging.Formatter):
     """Formats log records as single-line JSON objects."""
@@ -85,20 +87,25 @@ def setup_logging(
         level: Log level string or constant.
     """
     root = logging.getLogger()
-
-    # Remove existing handlers to avoid duplicate output
-    root.handlers.clear()
-
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(StructuredFormatter(component=component))
-
-    root.addHandler(handler)
     resolved_level = (
         level if isinstance(level, int) else getattr(logging, level.upper(), logging.INFO)
     )
+    handler = _configured_structured_root_handler(root)
+    if handler is None:
+        handler = logging.StreamHandler(sys.stderr)
+        setattr(handler, _STRUCTURED_ROOT_HANDLER_MARKER, True)
+        handler.setFormatter(StructuredFormatter(component=component))
+        root.addHandler(handler)
     root.setLevel(resolved_level)
 
 
 def get_logger(name: str) -> logging.Logger:
     """Return a named logger (convenience wrapper)."""
     return logging.getLogger(name)
+
+
+def _configured_structured_root_handler(root: logging.Logger) -> logging.Handler | None:
+    for handler in root.handlers:
+        if getattr(handler, _STRUCTURED_ROOT_HANDLER_MARKER, False):
+            return handler
+    return None

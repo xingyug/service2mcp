@@ -6,11 +6,14 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from apps.access_control.authn.service import JWTSettings, load_jwt_settings
 from apps.compiler_api.db import configure_database, dispose_database
 from apps.compiler_api.dispatcher import CompilationDispatcher, configure_compilation_dispatcher
+from apps.compiler_api.repository import AmbiguousServiceVersionError
 from apps.compiler_api.route_publisher import (
     ArtifactRoutePublisher,
     configure_route_publisher,
@@ -37,10 +40,12 @@ def create_app(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     compilation_dispatcher: CompilationDispatcher | None = None,
     route_publisher: ArtifactRoutePublisher | None = None,
+    jwt_settings: JWTSettings | None = None,
 ) -> FastAPI:
     """Create the compiler API application."""
 
     app = FastAPI(title="Tool Compiler API", version="0.1.0", lifespan=app_lifespan)
+    app.state.jwt_settings = jwt_settings or load_jwt_settings()
     configure_database(app, database_url=database_url, session_factory=session_factory)
     configure_compilation_dispatcher(app, dispatcher=compilation_dispatcher)
     configure_route_publisher(app, route_publisher=route_publisher)
@@ -48,6 +53,16 @@ def create_app(
     app.include_router(compilations_router)
     app.include_router(services_router)
     app.include_router(workflows_router)
+
+    @app.exception_handler(AmbiguousServiceVersionError)
+    async def handle_ambiguous_service_version(
+        _request: Request,
+        exc: AmbiguousServiceVersionError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc)},
+        )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

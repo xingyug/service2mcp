@@ -127,7 +127,6 @@ class TestUpdatePolicy:
 
         payload = PolicyUpdateRequest(
             resource_id="svc-2",
-            created_by="admin",
         )
 
         policy_id = uuid4()
@@ -264,6 +263,7 @@ class TestEvaluatePolicy:
     async def test_evaluate_policy_requires_authenticated_caller(self):
         service_mock = AsyncMock()
         service_mock.evaluate.return_value = MagicMock()
+        audit_log_mock = AsyncMock()
         caller = TokenPrincipalResponse(
             subject="alice",
             token_type="jwt",
@@ -278,9 +278,52 @@ class TestEvaluatePolicy:
             risk_level="safe",
         )
 
-        await evaluate_policy(payload, service_mock, caller)
+        await evaluate_policy(payload, service_mock, caller, audit_log_mock)
 
         service_mock.evaluate.assert_awaited_once_with(payload)
+        audit_log_mock.append_entry.assert_awaited_once()
+
+    async def test_evaluate_policy_audits_real_caller_and_resource(self):
+        service_mock = AsyncMock()
+        matched_policy_id = uuid4()
+        result = MagicMock(
+            decision="allow",
+            matched_policy_id=matched_policy_id,
+            reason="Matched policy",
+        )
+        service_mock.evaluate.return_value = result
+        audit_log_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="alice",
+            token_type="jwt",
+            claims={"sub": "alice"},
+        )
+
+        payload = PolicyEvaluationRequest(
+            subject_type="user",
+            subject_id="bob",
+            resource_id="svc-1",
+            action="getItem",
+            risk_level="dangerous",
+        )
+
+        response = await evaluate_policy(payload, service_mock, caller, audit_log_mock)
+
+        assert response is result
+        audit_log_mock.append_entry.assert_awaited_once()
+        call_kwargs = audit_log_mock.append_entry.call_args.kwargs
+        assert call_kwargs["actor"] == "alice"
+        assert call_kwargs["resource"] == "svc-1"
+        assert call_kwargs["detail"] == {
+            "subject_type": "user",
+            "subject_id": "bob",
+            "action": "getItem",
+            "resource_id": "svc-1",
+            "risk_level": "dangerous",
+            "decision": "allow",
+            "matched_policy_id": str(matched_policy_id),
+            "reason": "Matched policy",
+        }
 
 
 # ---------- Additional tests to cover uncovered lines ----------
@@ -322,13 +365,15 @@ class TestCreatePolicySuccess:
 
         assert result is created
         service_mock.create_policy.assert_awaited_once()
+        request_payload = service_mock.create_policy.call_args.args[0]
+        assert request_payload.created_by == caller.subject
         gateway_binding_mock.sync_policy.assert_awaited_once_with(created)
         audit_log_mock.append_entry.assert_awaited_once()
         session.commit.assert_awaited_once()
         session.rollback.assert_not_awaited()
 
     async def test_create_policy_audit_failure_rolls_back(self):
-        """When audit_log raises after gateway sync, should rollback and raise 502."""
+        """When a local step fails after sync, rollback and preserve the real error."""
         session = AsyncMock()
         service_mock = AsyncMock()
         gateway_binding_mock = AsyncMock()
@@ -340,7 +385,7 @@ class TestCreatePolicySuccess:
         service_mock.create_policy.return_value = created
         audit_log_mock.append_entry.side_effect = RuntimeError("audit failed")
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RuntimeError, match="audit failed"):
             await create_policy(
                 PolicyCreateRequest(
                     subject_type="user",
@@ -356,7 +401,7 @@ class TestCreatePolicySuccess:
                 caller,
             )
 
-        assert exc_info.value.status_code == 502
+        gateway_binding_mock.reconcile.assert_awaited_once_with(session)
         session.rollback.assert_awaited_once()
 
 
@@ -382,13 +427,15 @@ class TestUpdatePolicySuccess:
         )
 
         assert result is updated
+        request_payload = service_mock.update_policy.call_args.args[1]
+        assert request_payload.model_dump(exclude_none=True) == {"decision": "deny"}
         gateway_binding_mock.sync_policy.assert_awaited_once_with(updated)
         audit_log_mock.append_entry.assert_awaited_once()
         session.commit.assert_awaited_once()
         session.rollback.assert_not_awaited()
 
     async def test_update_policy_audit_failure_rolls_back(self):
-        """When audit_log raises after gateway sync, should rollback and raise 502."""
+        """When a local step fails after sync, rollback and preserve the real error."""
         session = AsyncMock()
         service_mock = AsyncMock()
         gateway_binding_mock = AsyncMock()
@@ -400,7 +447,7 @@ class TestUpdatePolicySuccess:
         service_mock.update_policy.return_value = updated
         audit_log_mock.append_entry.side_effect = RuntimeError("audit broke")
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RuntimeError, match="audit broke"):
             await update_policy(
                 uuid4(),
                 PolicyUpdateRequest(decision="allow"),
@@ -411,7 +458,7 @@ class TestUpdatePolicySuccess:
                 caller,
             )
 
-        assert exc_info.value.status_code == 502
+        gateway_binding_mock.reconcile.assert_awaited_once_with(session)
         session.rollback.assert_awaited_once()
 
 
@@ -446,7 +493,7 @@ class TestDeletePolicySuccess:
         session.rollback.assert_not_awaited()
 
     async def test_delete_policy_audit_failure_rolls_back(self):
-        """When audit_log raises after gateway delete, should rollback and raise 502."""
+        """When a local step fails after sync, rollback and preserve the real error."""
         from types import SimpleNamespace
 
         session = AsyncMock()
@@ -460,10 +507,10 @@ class TestDeletePolicySuccess:
         service_mock.delete_policy.return_value = deleted_policy
         audit_log_mock.append_entry.side_effect = RuntimeError("audit exploded")
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(RuntimeError, match="audit exploded"):
             await delete_policy(
                 policy_id, session, service_mock, gateway_binding_mock, audit_log_mock, caller
             )
 
-        assert exc_info.value.status_code == 502
+        gateway_binding_mock.reconcile.assert_awaited_once_with(session)
         session.rollback.assert_awaited_once()

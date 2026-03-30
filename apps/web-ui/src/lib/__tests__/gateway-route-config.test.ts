@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildDeploymentHistory,
   buildRouteDocuments,
   buildPreviousRoutes,
   findActiveArtifactVersion,
@@ -113,6 +112,76 @@ describe("gateway-route-config", () => {
     });
   });
 
+  it("buildRouteDocuments canonicalizes scoped route ids and preserves scope", () => {
+    const routeDocuments = buildRouteDocuments({
+      service_id: "billing-api",
+      service_name: "Billing API",
+      tenant: "Team A",
+      environment: "Prod",
+      namespace: "runtime-system",
+      version_number: 2,
+      default_route: {
+        route_id: "billing-api-active",
+        target_service: {
+          name: "billing-runtime-v2",
+          namespace: "runtime-system",
+          port: 8003,
+        },
+      },
+      version_route: {
+        route_id: "billing-api-v2",
+        target_service: {
+          name: "billing-runtime-v2",
+          namespace: "runtime-system",
+          port: 8003,
+        },
+        match: {
+          headers: {
+            "x-tool-compiler-version": "2",
+          },
+        },
+      },
+    });
+
+    expect(routeDocuments).toEqual({
+      "billing-api-tenant-team-a-env-prod-active": {
+        route_id: "billing-api-tenant-team-a-env-prod-active",
+        route_type: "default",
+        service_id: "billing-api",
+        service_name: "Billing API",
+        tenant: "Team A",
+        environment: "Prod",
+        namespace: "runtime-system",
+        target_service: {
+          name: "billing-runtime-v2",
+          namespace: "runtime-system",
+          port: 8003,
+        },
+        version_number: 2,
+      },
+      "billing-api-tenant-team-a-env-prod-v2": {
+        route_id: "billing-api-tenant-team-a-env-prod-v2",
+        route_type: "version",
+        service_id: "billing-api",
+        service_name: "Billing API",
+        tenant: "Team A",
+        environment: "Prod",
+        namespace: "runtime-system",
+        target_service: {
+          name: "billing-runtime-v2",
+          namespace: "runtime-system",
+          port: 8003,
+        },
+        version_number: 2,
+        match: {
+          headers: {
+            "x-tool-compiler-version": "2",
+          },
+        },
+      },
+    });
+  });
+
   it("inferRouteStatus returns synced when gateway routes match current config", () => {
     expect(
       inferRouteStatus(
@@ -183,58 +252,6 @@ describe("gateway-route-config", () => {
         },
       ),
     ).toBe("drifted");
-  });
-
-  it("buildDeploymentHistory derives entries from real artifact versions", () => {
-    const history = buildDeploymentHistory(
-      [
-        {
-          service_id: "billing-api",
-          name: "Billing API",
-          protocol: "openapi",
-          active_version: 2,
-          version_count: 2,
-          last_compiled: "2026-03-29T02:00:00Z",
-        },
-      ],
-      {
-        "billing-api": [
-          {
-            service_id: "billing-api",
-            version_number: 1,
-            is_active: false,
-            created_at: "2026-03-29T00:00:00Z",
-            ir: {} as never,
-          },
-          {
-            service_id: "billing-api",
-            version_number: 2,
-            is_active: true,
-            created_at: "2026-03-29T01:00:00Z",
-            ir: {} as never,
-          },
-        ],
-      },
-    );
-
-    expect(history).toEqual([
-      {
-        id: "billing-api-v2",
-        timestamp: "2026-03-29T01:00:00Z",
-        serviceName: "Billing API",
-        fromVersion: 1,
-        toVersion: 2,
-        action: "deploy",
-      },
-      {
-        id: "billing-api-v1",
-        timestamp: "2026-03-29T00:00:00Z",
-        serviceName: "Billing API",
-        fromVersion: null,
-        toVersion: 1,
-        action: "deploy",
-      },
-    ]);
   });
 
   it("findArtifactVersion picks explicit version when provided", () => {

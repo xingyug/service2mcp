@@ -34,6 +34,7 @@ from libs.ir.models import (
     SqlOperationType,
     SqlRelationKind,
 )
+from libs.sample_placeholders import PATH_PLACEHOLDER_ID_SAMPLE, PATH_PLACEHOLDER_INT_SAMPLE
 from libs.ir.schema import serialize_ir
 from libs.validator.audit import AuditThresholds, check_thresholds
 from libs.validator.post_deploy import PostDeployValidator, _select_smoke_operation
@@ -257,6 +258,37 @@ def _build_graphql_query_and_mutation_ir(
     )
 
 
+def _build_destructive_only_rest_ir() -> ServiceIR:
+    return ServiceIR(
+        source_hash="d" * 64,
+        protocol="openapi",
+        service_name="destructive-only-validator",
+        service_description="Fixture with only a destructive default smoke candidate",
+        base_url="https://destructive.example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="deleteWidget",
+                name="Delete Widget",
+                description="Delete a widget.",
+                method="DELETE",
+                path="/widgets/1",
+                params=[],
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.dangerous,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                    writes_state=True,
+                    destructive=True,
+                    external_side_effect=False,
+                    idempotent=False,
+                ),
+                enabled=True,
+            )
+        ],
+    )
+
+
 def _build_soap_ir() -> ServiceIR:
     return SOAPWSDLExtractor().extract(SourceConfig(file_path=str(WSDL_FIXTURE_PATH)))
 
@@ -428,7 +460,30 @@ async def test_runtime_with_wrong_ir_fails_tool_listing_check() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_deploy_validator_uses_first_available_sample_invocation(
+async def test_post_deploy_invalid_expected_ir_returns_schema_failure_report() -> None:
+    called_paths: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        called_paths.append(str(request.url.path))
+        return httpx.Response(200, json={"status": "ok"}, request=request)
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", {"protocol": "openapi"})
+
+    assert report.overall_passed is False
+    assert report.get_result("schema").passed is False
+    assert "schema validation failed" in report.get_result("schema").details.lower()
+    assert "skipped because expected ir schema validation failed" in report.get_result(
+        "tool_listing"
+    ).details.lower()
+    assert called_paths == []
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_validator_refuses_state_mutating_only_default_sample_invocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -444,6 +499,7 @@ async def test_post_deploy_validator_uses_first_available_sample_invocation(
     try:
         app = create_app(service_ir_path=PROXY_IR_PATH, upstream_client=upstream_client)
         transport = httpx.ASGITransport(app=app)
+        invoked: list[tuple[str, dict[str, object]]] = []
 
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
 
@@ -451,6 +507,7 @@ async def test_post_deploy_validator_uses_first_available_sample_invocation(
                 tool_name: str,
                 arguments: dict[str, object],
             ) -> dict[str, object]:
+                invoked.append((tool_name, arguments))
                 _, structured = await app.state.runtime_state.mcp_server.call_tool(
                     tool_name,
                     arguments,
@@ -471,9 +528,10 @@ async def test_post_deploy_validator_uses_first_available_sample_invocation(
     finally:
         await upstream_client.aclose()
 
-    assert report.overall_passed is True
-    assert report.get_result("invocation_smoke").passed is True
-    assert "createNote" in report.get_result("invocation_smoke").details
+    assert report.overall_passed is False
+    assert report.get_result("invocation_smoke").passed is False
+    assert "state-mutating or destructive" in report.get_result("invocation_smoke").details
+    assert invoked == []
 
 
 @pytest.mark.asyncio
@@ -583,6 +641,33 @@ def test_select_smoke_operation_honors_preferred_tool_ids() -> None:
 
     assert selected is not None
     assert selected.id == "adjustInventory"
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_rejects_destructive_only_default_candidates(
+    tmp_path: Path,
+) -> None:
+    service_ir = _build_destructive_only_rest_ir()
+    service_ir_path = _write_service_ir(tmp_path, "destructive_only_smoke_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+    invoked: list[tuple[str, dict[str, object]]] = []
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        invoked.append((name, args))
+        return {"status": "ok", "result": {"deleted": True}}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"deleteWidget": {}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "state-mutating or destructive" in report.get_result("invocation_smoke").details
+    assert invoked == []
 
 
 @pytest.mark.asyncio
@@ -949,6 +1034,113 @@ async def test_post_deploy_validator_rejects_wrong_grpc_stream_transport_shape(
 
 
 @pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_stream_empty_lifecycle_fails(
+    tmp_path: Path,
+) -> None:
+    service_ir = _build_grpc_stream_ir()
+    service_ir_path = _write_service_ir(tmp_path, "grpc_stream_empty_lifecycle_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+
+        async def tool_invoker(
+            tool_name: str,
+            arguments: dict[str, object],
+        ) -> dict[str, object]:
+            del tool_name, arguments
+            return {
+                "status": "ok",
+                "transport": "grpc_stream",
+                "result": {"events": [], "lifecycle": {}},
+            }
+
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"watchInventory": {"payload": {"sku": "sku-1"}}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "termination_reason" in report.get_result("invocation_smoke").details
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_rejects_ambiguous_supported_descriptors() -> None:
+    service_ir = ServiceIR(
+        source_hash="h" * 64,
+        protocol="openapi",
+        service_name="ambiguous-stream-validator",
+        service_description="Ambiguous streaming descriptor fixture",
+        base_url="https://example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="streamInventory",
+                name="Stream Inventory",
+                description="Watch inventory events.",
+                method="GET",
+                path="/inventory/events",
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.safe,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                    writes_state=False,
+                    destructive=False,
+                    external_side_effect=False,
+                    idempotent=True,
+                ),
+                enabled=True,
+            )
+        ],
+        event_descriptors=[
+            EventDescriptor(
+                id="sse-stream",
+                name="SSE Stream",
+                transport=EventTransport.sse,
+                support=EventSupportLevel.supported,
+                operation_id="streamInventory",
+                channel="/inventory/events",
+            ),
+            EventDescriptor(
+                id="ws-stream",
+                name="WebSocket Stream",
+                transport=EventTransport.websocket,
+                support=EventSupportLevel.supported,
+                operation_id="streamInventory",
+                channel="wss://example.test/inventory/events",
+            ),
+        ],
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(200, json={"tools": [{"name": "streamInventory"}]}, request=request)
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        del name, args
+        return {"status": "ok", "transport": "sse", "result": {"events": [], "lifecycle": {}}}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"streamInventory": {}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "multiple descriptors" in report.get_result("invocation_smoke").details
+
+
+@pytest.mark.asyncio
 async def test_validate_with_audit_returns_report_and_audit_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1004,6 +1196,70 @@ async def test_validate_with_audit_returns_report_and_audit_summary(
     assert audit_summary.failed == 0
     results_by_tool = {r.tool_name: r for r in audit_summary.results}
     assert results_by_tool["getAccount"].outcome == "passed"
+
+
+@pytest.mark.asyncio
+async def test_validate_with_audit_invalid_expected_ir_returns_empty_audit_summary() -> None:
+    called_paths: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        called_paths.append(str(request.url.path))
+        return httpx.Response(200, json={"status": "ok"}, request=request)
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report, audit_summary = await validator.validate_with_audit(
+            "http://testserver",
+            {"protocol": "openapi"},
+        )
+
+    assert report.overall_passed is False
+    assert report.audit_summary is audit_summary
+    assert report.get_result("schema").passed is False
+    assert audit_summary.failed == 0
+    assert audit_summary.results == []
+    assert called_paths == []
+
+
+@pytest.mark.asyncio
+async def test_validate_with_audit_failed_audit_flips_overall_passed_false() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(
+                200,
+                json={"tools": [{"name": "searchProducts"}]},
+                request=request,
+            )
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+    responses = iter(
+        (
+            {"status": "ok", "result": {"items": []}},
+            {"status": "error", "detail": "broken"},
+        )
+    )
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        del name, args
+        return next(responses)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report, audit_summary = await validator.validate_with_audit(
+            "http://testserver",
+            _build_graphql_ir(),
+            sample_invocations={"searchProducts": {"term": "widget"}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is True
+    assert audit_summary.failed == 1
+    assert report.overall_passed is False
 
 
 @pytest.mark.asyncio
@@ -1121,7 +1377,38 @@ async def test_post_deploy_health_check_non_200_returns_failure() -> None:
 
     assert report.overall_passed is False
     assert report.get_result("health").passed is False
-    assert "unexpected status" in report.get_result("health").details.lower()
+    assert "healthz=503" in report.get_result("health").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_health_check_contradictory_body_returns_failure() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path:
+            return httpx.Response(200, json={"status": "down"}, request=request)
+        if "/readyz" in path:
+            return httpx.Response(200, json={"status": "not-ready"}, request=request)
+        if "/tools" in path:
+            return httpx.Response(200, json={"tools": []}, request=request)
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+    service_ir = ServiceIR(
+        source_hash="d" * 64,
+        protocol="openapi",
+        service_name="health-body-validator",
+        service_description="Health body validation fixture",
+        base_url="https://example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[],
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", service_ir)
+
+    assert report.get_result("health").passed is False
+    assert "reported status" in report.get_result("health").details
 
 
 @pytest.mark.asyncio
@@ -1176,6 +1463,104 @@ async def test_post_deploy_tool_listing_non_json_returns_failure() -> None:
 
     assert report.get_result("tool_listing").passed is False
     assert "non-json" in report.get_result("tool_listing").details.lower()
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_tool_listing_missing_tools_field_returns_failure() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(200, json={}, request=request)
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+    service_ir = ServiceIR(
+        source_hash="d" * 64,
+        protocol="openapi",
+        service_name="zero-tools-validator",
+        service_description="Zero-operation validator fixture",
+        base_url="https://example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[],
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", service_ir)
+
+    assert report.get_result("tool_listing").passed is False
+    assert "required field 'tools'" in report.get_result("tool_listing").details
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_tool_listing_non_object_returns_failure() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(200, json=["not", "an", "object"], request=request)
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+    service_ir = load_service_ir(VALID_IR_PATH)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", service_ir)
+
+    assert report.get_result("tool_listing").passed is False
+    assert "expected object" in report.get_result("tool_listing").details
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_tool_listing_rejects_malformed_entry() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(
+                200,
+                json={"tools": [{"name": "searchProducts"}, {"id": "broken"}]},
+                request=request,
+            )
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", _build_graphql_ir())
+
+    assert report.get_result("tool_listing").passed is False
+    assert "valid 'name' string" in report.get_result("tool_listing").details
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_tool_listing_rejects_duplicate_tool_names() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = str(request.url.path)
+        if "/healthz" in path or "/readyz" in path:
+            return httpx.Response(200, request=request)
+        if "/tools" in path:
+            return httpx.Response(
+                200,
+                json={"tools": [{"name": "searchProducts"}, {"name": "searchProducts"}]},
+                request=request,
+            )
+        return httpx.Response(200, request=request)
+
+    transport = httpx.MockTransport(handler)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client)
+        report = await validator.validate("http://testserver", _build_graphql_ir())
+
+    assert report.get_result("tool_listing").passed is False
+    assert "duplicate tool name" in report.get_result("tool_listing").details
 
 
 @pytest.mark.asyncio
@@ -1412,6 +1797,30 @@ async def test_post_deploy_invocation_smoke_non_ok_status(
 
 
 @pytest.mark.asyncio
+async def test_post_deploy_invocation_smoke_missing_result_payload(
+    tmp_path: Path,
+) -> None:
+    service_ir = _build_graphql_ir()
+    service_ir_path = _write_service_ir(tmp_path, "missing_result_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"status": "ok"}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"searchProducts": {"term": "test"}},
+        )
+
+    assert report.get_result("invocation_smoke").passed is False
+    assert "result payload" in report.get_result("invocation_smoke").details.lower()
+
+
+@pytest.mark.asyncio
 async def test_post_deploy_invocation_smoke_stream_non_dict_payload(
     tmp_path: Path,
 ) -> None:
@@ -1617,6 +2026,65 @@ async def test_audit_invocation_non_ok_status(
 
 
 @pytest.mark.asyncio
+async def test_audit_non_streaming_missing_result_payload(
+    tmp_path: Path,
+) -> None:
+    service_ir = _build_graphql_ir()
+    service_ir_path = _write_service_ir(tmp_path, "audit_missing_result_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {"status": "ok"}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        _, audit_summary = await validator.validate_with_audit(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"searchProducts": {"term": "test"}},
+        )
+
+    assert any(
+        "result payload" in r.reason.lower()
+        for r in audit_summary.results
+        if r.outcome == "failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_audit_streaming_shape_failure_is_not_marked_passed(
+    tmp_path: Path,
+) -> None:
+    service_ir = _build_grpc_stream_ir()
+    service_ir_path = _write_service_ir(tmp_path, "audit_stream_shape_ir.json", service_ir)
+    app = create_app(service_ir_path=service_ir_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async def tool_invoker(name: str, args: dict[str, object]) -> dict[str, object]:
+        return {
+            "status": "ok",
+            "transport": "websocket",
+            "result": {"events": "oops", "lifecycle": []},
+        }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        _, audit_summary = await validator.validate_with_audit(
+            "http://testserver",
+            service_ir,
+            sample_invocations={"watchInventory": {"payload": {"sku": "sku-1"}}},
+        )
+
+    assert audit_summary.failed >= 1
+    assert any(
+        "transport" in r.reason.lower() or "lifecycle" in r.reason.lower()
+        for r in audit_summary.results
+        if r.outcome == "failed"
+    )
+
+
+@pytest.mark.asyncio
 async def test_audit_skips_failed_string_placeholder_path_samples() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -1667,7 +2135,12 @@ async def test_audit_skips_failed_string_placeholder_path_samples() -> None:
         _, audit_summary = await validator.validate_with_audit(
             "http://testserver",
             service_ir,
-            sample_invocations={"getRepo": {"owner": "sample", "repo": "sample"}},
+            sample_invocations={
+                "getRepo": {
+                    "owner": PATH_PLACEHOLDER_ID_SAMPLE,
+                    "repo": PATH_PLACEHOLDER_ID_SAMPLE,
+                }
+            },
         )
 
     skipped = [r for r in audit_summary.results if r.outcome == "skipped"]
@@ -1722,7 +2195,7 @@ async def test_audit_skips_failed_numeric_placeholder_path_samples() -> None:
         _, audit_summary = await validator.validate_with_audit(
             "http://testserver",
             service_ir,
-            sample_invocations={"getKey": {"id": 1}},
+            sample_invocations={"getKey": {"id": PATH_PLACEHOLDER_INT_SAMPLE}},
         )
 
     skipped = [r for r in audit_summary.results if r.outcome == "skipped"]

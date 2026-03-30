@@ -10,7 +10,9 @@ import pytest
 from apps.access_control.authn.service import (
     AuthenticationError,
     AuthnService,
+    JWTConfigurationError,
     JWTSettings,
+    UserNotFoundError,
     load_jwt_settings,
 )
 
@@ -39,6 +41,28 @@ class TestAuthnServiceUncoveredLines:
         with pytest.raises(AuthenticationError, match="PAT has been revoked"):
             await svc._validate_pat("pat_some_token")
 
+    async def test_validate_pat_inactive_user_error(self):
+        """Disabled users must not authenticate via PATs."""
+        from types import SimpleNamespace
+
+        session = AsyncMock()
+
+        mock_pat = SimpleNamespace(
+            id=uuid4(),
+            revoked_at=None,
+            name="test-pat",
+        )
+        mock_user = SimpleNamespace(username="alice", is_active=False)
+
+        mock_result = MagicMock()
+        mock_result.first.return_value = (mock_pat, mock_user)
+        session.execute.return_value = mock_result
+
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret="test"))
+
+        with pytest.raises(AuthenticationError, match="PAT owner is inactive"):
+            await svc._validate_pat("pat_some_token")
+
     async def test_revoke_pat_not_found(self):
         """Test lines 106-108: revoke_pat returns None when PAT not found."""
         session = AsyncMock()
@@ -51,13 +75,12 @@ class TestAuthnServiceUncoveredLines:
         result = await svc.revoke_pat(uuid4())
         assert result is None
 
-    async def test_get_or_create_user_updates_email(self):
-        """Test lines 209-221: _get_or_create_user updates email when different."""
+    async def test_get_existing_user_returns_existing_without_mutation(self):
+        """PAT creation should not mutate stored user profiles."""
         from types import SimpleNamespace
 
         session = AsyncMock()
 
-        # Mock existing user with different email
         existing_user = SimpleNamespace(id=uuid4(), username="alice", email="old@example.com")
 
         mock_result = MagicMock()
@@ -66,40 +89,44 @@ class TestAuthnServiceUncoveredLines:
 
         svc = AuthnService(session, jwt_settings=JWTSettings(secret="test"))
 
-        result = await svc._get_or_create_user(username="alice", email="new@example.com")
+        result = await svc._get_existing_user(username="alice")
 
-        # Should update email and commit/refresh
-        assert existing_user.email == "new@example.com"
-        session.commit.assert_called_once()
-        session.refresh.assert_called_once()
+        assert existing_user.email == "old@example.com"
+        session.commit.assert_not_called()
+        session.refresh.assert_not_called()
         assert result == existing_user
 
-    async def test_get_or_create_user_creates_new_user(self):
-        """Test lines 217-221: _get_or_create_user creates new user."""
+    async def test_get_existing_user_raises_when_missing(self):
+        """PAT creation should fail for unknown users."""
         session = AsyncMock()
 
-        # Mock no existing user
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         session.execute.return_value = mock_result
 
         svc = AuthnService(session, jwt_settings=JWTSettings(secret="test"))
 
-        await svc._get_or_create_user(username="bob", email="bob@example.com")
+        with pytest.raises(UserNotFoundError, match="bob"):
+            await svc._get_existing_user(username="bob")
 
-        # Should add new user and commit/refresh
-        session.add.assert_called_once()
-        session.commit.assert_called_once()
-        session.refresh.assert_called_once()
+        session.add.assert_not_called()
+        session.commit.assert_not_called()
+        session.refresh.assert_not_called()
 
     def test_load_jwt_settings_non_dev_environment_no_secret_raises_error(self):
-        """Test lines 231-233: load_jwt_settings raises error in non-dev env without secret."""
+        """Missing JWT secret must raise instead of falling back."""
         with patch.dict(os.environ, {"ENV": "production"}, clear=True):
-            with pytest.raises(RuntimeError, match="ACCESS_CONTROL_JWT_SECRET must be set"):
+            with pytest.raises(
+                JWTConfigurationError,
+                match="ACCESS_CONTROL_JWT_SECRET must be configured",
+            ):
                 load_jwt_settings()
 
-    def test_load_jwt_settings_dev_environment_uses_default(self):
-        """Test lines 229-234: load_jwt_settings uses dev secret in dev environment."""
+    def test_load_jwt_settings_dev_environment_raises_error(self):
+        """Dev must also fail closed when JWT secret is missing."""
         with patch.dict(os.environ, {"ENV": "dev"}, clear=True):
-            settings = load_jwt_settings()
-            assert settings.secret == "dev-secret"
+            with pytest.raises(
+                JWTConfigurationError,
+                match="ACCESS_CONTROL_JWT_SECRET must be configured",
+            ):
+                load_jwt_settings()

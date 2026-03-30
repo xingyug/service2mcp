@@ -22,6 +22,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useArtifactVersions } from "@/hooks/use-api";
 import { VersionDiff } from "@/components/services/version-diff";
+import type { ServiceScope } from "@/types/api";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -29,6 +30,7 @@ import { VersionDiff } from "@/components/services/version-diff";
 
 interface VersionDiffDialogProps {
   serviceId: string;
+  scope?: ServiceScope;
   /** Pre-selected "from" version (optional). */
   initialFrom?: number;
   /** Pre-selected "to" version (optional). */
@@ -43,11 +45,12 @@ interface VersionDiffDialogProps {
 
 export function VersionDiffDialog({
   serviceId,
+  scope,
   initialFrom,
   initialTo,
   trigger,
 }: VersionDiffDialogProps) {
-  const { data: versionsData } = useArtifactVersions(serviceId);
+  const { data: versionsData } = useArtifactVersions(serviceId, scope);
   const versions = React.useMemo(() => versionsData?.versions ?? [], [versionsData]);
 
   const [from, setFrom] = React.useState<number>(initialFrom ?? 0);
@@ -100,6 +103,7 @@ export function VersionDiffDialog({
             {from > 0 && to > 0 && from !== to ? (
               <VersionDiff
                 serviceId={serviceId}
+                scope={scope}
                 fromVersion={from}
                 toVersion={to}
               />

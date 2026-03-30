@@ -2,7 +2,6 @@ import type {
   ArtifactVersionResponse,
   GatewayRouteDocument,
   GatewayPreviousRoutes,
-  ServiceSummary,
 } from "@/types/api";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -13,12 +12,43 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function sanitizeRouteComponent(value: string): string {
+  const sanitized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  if (!sanitized) {
+    return "service";
+  }
+
+  return sanitized.slice(0, 63).replace(/-+$/g, "") || "service";
+}
+
+function routeIdentityBase(
+  serviceId: string,
+  tenant?: string,
+  environment?: string,
+): string {
+  const segments = [sanitizeRouteComponent(serviceId)];
+  if (tenant) {
+    segments.push("tenant", sanitizeRouteComponent(tenant));
+  }
+  if (environment) {
+    segments.push("env", sanitizeRouteComponent(environment));
+  }
+  return segments.join("-");
+}
+
 function buildRouteDocument(
   {
     routeId,
     routeType,
     serviceId,
     serviceName,
+    tenant,
+    environment,
     namespace,
     versionNumber,
     routeDefinition,
@@ -27,6 +57,8 @@ function buildRouteDocument(
     routeType: "default" | "version";
     serviceId: string;
     serviceName: string;
+    tenant?: string;
+    environment?: string;
     namespace: string;
     versionNumber: unknown;
     routeDefinition: Record<string, unknown>;
@@ -45,6 +77,12 @@ function buildRouteDocument(
     namespace,
     target_service: { ...targetService },
   };
+  if (tenant) {
+    document.tenant = tenant;
+  }
+  if (environment) {
+    document.environment = environment;
+  }
 
   if (typeof versionNumber === "number") {
     document.version_number = versionNumber;
@@ -65,6 +103,8 @@ export function buildRouteDocuments(
   const serviceId = asString(routeConfig.service_id);
   const serviceName = asString(routeConfig.service_name);
   const namespace = asString(routeConfig.namespace);
+  const tenant = asString(routeConfig.tenant);
+  const environment = asString(routeConfig.environment);
   if (!serviceId || !serviceName || !namespace) {
     return {};
   }
@@ -74,32 +114,37 @@ export function buildRouteDocuments(
 
   const defaultRoute = routeConfig.default_route;
   if (isRecord(defaultRoute)) {
-    const routeId = asString(defaultRoute.route_id);
-    if (routeId) {
-      const document = buildRouteDocument({
-        routeId,
-        routeType: "default",
-        serviceId,
-        serviceName,
-        namespace,
-        versionNumber,
-        routeDefinition: defaultRoute,
-      });
-      if (document) {
-        previousRoutes[routeId] = document;
-      }
+    const routeId = `${routeIdentityBase(serviceId, tenant, environment)}-active`;
+    const document = buildRouteDocument({
+      routeId,
+      routeType: "default",
+      serviceId,
+      serviceName,
+      tenant,
+      environment,
+      namespace,
+      versionNumber,
+      routeDefinition: defaultRoute,
+    });
+    if (document) {
+      previousRoutes[routeId] = document;
     }
   }
 
   const versionRoute = routeConfig.version_route;
   if (isRecord(versionRoute)) {
-    const routeId = asString(versionRoute.route_id);
+    const routeId =
+      typeof versionNumber === "number"
+        ? `${routeIdentityBase(serviceId, tenant, environment)}-v${versionNumber}`
+        : asString(versionRoute.route_id);
     if (routeId) {
       const document = buildRouteDocument({
         routeId,
         routeType: "version",
         serviceId,
         serviceName,
+        tenant,
+        environment,
         namespace,
         versionNumber,
         routeDefinition: versionRoute,
@@ -159,46 +204,6 @@ export function inferRouteStatus(
   });
 
   return allRoutesMatch ? "synced" : "drifted";
-}
-
-export interface GatewayDeploymentHistoryEntry {
-  id: string;
-  timestamp: string;
-  serviceName: string;
-  fromVersion: number | null;
-  toVersion: number | null;
-  action: "deploy";
-}
-
-export function buildDeploymentHistory(
-  services: ServiceSummary[],
-  artifactVersionsByService: Record<string, ArtifactVersionResponse[]>,
-): GatewayDeploymentHistoryEntry[] {
-  return services
-    .flatMap((service) => {
-      const versions = [...(artifactVersionsByService[service.service_id] ?? [])].sort(
-        (left, right) =>
-          new Date(left.created_at).getTime() - new Date(right.created_at).getTime(),
-      );
-
-      let previousVersion: number | null = null;
-      return versions.map((version) => {
-        const entry: GatewayDeploymentHistoryEntry = {
-          id: `${service.service_id}-v${version.version_number}`,
-          timestamp: version.created_at,
-          serviceName: service.name,
-          fromVersion: previousVersion,
-          toVersion: version.version_number,
-          action: "deploy",
-        };
-        previousVersion = version.version_number;
-        return entry;
-      });
-    })
-    .sort(
-      (left, right) =>
-        new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
-    );
 }
 
 export function findArtifactVersion(

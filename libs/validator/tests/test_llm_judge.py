@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from libs.ir.models import (
     Operation,
     Param,
@@ -23,13 +25,29 @@ from libs.validator.llm_judge import (
 class MockJudgeLLMClient:
     """Mock LLM client for judge evaluation tests."""
 
-    def __init__(self, response: str | None = None, fail: bool = False) -> None:
+    def __init__(
+        self,
+        response: str | None = None,
+        fail: bool = False,
+        responses: list[str | Exception] | None = None,
+    ) -> None:
         self._response = response
         self._fail = fail
+        self._responses = list(responses) if responses is not None else None
         self.calls: list[str] = []
 
     def complete(self, prompt: str, max_tokens: int = 4096) -> object:
         self.calls.append(prompt)
+        if self._responses is not None:
+            next_response = self._responses.pop(0)
+            if isinstance(next_response, Exception):
+                raise next_response
+
+            class _Response:
+                content = next_response
+
+            return _Response()
+
         if self._fail:
             raise RuntimeError("LLM API error")
 
@@ -133,14 +151,18 @@ class TestLLMJudge:
         assert result.average_overall == 0.0
         assert len(client.calls) == 0
 
-    def test_evaluate_llm_failure_returns_empty(self) -> None:
+    def test_evaluate_llm_failure_marks_batch_as_failed(self) -> None:
         ir = _make_service_ir(2)
         client = MockJudgeLLMClient(fail=True)
         judge = LLMJudge(client)
 
         result = judge.evaluate(ir)
 
-        assert result.tools_evaluated == 0
+        assert result.tools_evaluated == 2
+        assert result.average_overall == 0.0
+        assert result.quality_passed is False
+        assert result.low_quality_tools == ["op_0", "op_1"]
+        assert all(score.overall == 0.0 for score in result.scores)
         assert len(client.calls) == 1
 
     def test_evaluate_identifies_low_quality_tools(self) -> None:
@@ -226,6 +248,17 @@ class TestLLMJudge:
         )
         assert failing.quality_passed is False
 
+        strict = JudgeEvaluation(
+            service_name="test",
+            tools_evaluated=1,
+            average_accuracy=0.8,
+            average_completeness=0.7,
+            average_clarity=0.8,
+            average_overall=0.7,
+            quality_threshold=0.95,
+        )
+        assert strict.quality_passed is False
+
     def test_parse_markdown_fenced_response(self) -> None:
         ir = _make_service_ir(1)
         fenced_response = (
@@ -305,12 +338,14 @@ class TestParseJudgeResponseEdgeCases:
         assert result.scores[0].accuracy == 0.8
 
     def test_non_array_json_returns_empty(self) -> None:
-        """Lines 210-211: JSON object {} instead of array → empty list."""
+        """Non-array JSON marks the whole batch failed instead of dropping it."""
         ir = _make_service_ir(1)
         judge, _ = self._make_judge('{"not": "an array"}')
 
         result = judge.evaluate(ir)
-        assert result.tools_evaluated == 0
+        assert result.tools_evaluated == 1
+        assert result.scores[0].overall == 0.0
+        assert "not a JSON array" in result.scores[0].feedback
 
     def test_non_numeric_score_defaults_to_half(self) -> None:
         """Lines 225-226: non-numeric score values default to 0.5."""
@@ -335,9 +370,119 @@ class TestParseJudgeResponseEdgeCases:
         assert result.scores[0].clarity == 0.5
 
     def test_malformed_json_returns_empty(self) -> None:
-        """Lines 244-246: malformed JSON → JSONDecodeError caught, return []."""
+        """Malformed JSON marks the whole batch failed instead of returning []."""
         ir = _make_service_ir(1)
         judge, _ = self._make_judge("{invalid json content!!}")
 
         result = judge.evaluate(ir)
-        assert result.tools_evaluated == 0
+        assert result.tools_evaluated == 1
+        assert result.scores[0].overall == 0.0
+        assert "failed to parse" in result.scores[0].feedback.lower()
+
+    def test_partial_batch_response_marks_missing_operations_failed(self) -> None:
+        ir = _make_service_ir(2)
+        response = json.dumps(
+            [
+                {
+                    "operation_id": "op_0",
+                    "accuracy": 0.8,
+                    "completeness": 0.7,
+                    "clarity": 0.9,
+                    "feedback": "ok",
+                }
+            ]
+        )
+        judge, _ = self._make_judge(response)
+
+        result = judge.evaluate(ir)
+
+        assert result.tools_evaluated == 2
+        assert result.scores[0].operation_id == "op_0"
+        assert result.scores[1].operation_id == "op_1"
+        assert result.scores[1].overall == 0.0
+        assert "omitted this operation" in result.scores[1].feedback
+        assert "op_1" in result.low_quality_tools
+
+    def test_duplicate_operation_ids_are_not_double_counted(self) -> None:
+        ir = _make_service_ir(1)
+        response = json.dumps(
+            [
+                {
+                    "operation_id": "op_0",
+                    "accuracy": 0.8,
+                    "completeness": 0.7,
+                    "clarity": 0.9,
+                    "feedback": "first",
+                },
+                {
+                    "operation_id": "op_0",
+                    "accuracy": 0.1,
+                    "completeness": 0.1,
+                    "clarity": 0.1,
+                    "feedback": "duplicate",
+                },
+            ]
+        )
+        judge, _ = self._make_judge(response)
+
+        result = judge.evaluate(ir)
+
+        assert result.tools_evaluated == 1
+        assert len(result.scores) == 1
+        assert result.scores[0].feedback == "first"
+
+    def test_evaluate_uses_configured_threshold_for_quality_passed(self) -> None:
+        ir = _make_service_ir(1)
+        response = json.dumps(
+            [
+                {
+                    "operation_id": "op_0",
+                    "accuracy": 0.7,
+                    "completeness": 0.7,
+                    "clarity": 0.7,
+                    "feedback": "middling",
+                }
+            ]
+        )
+        client = MockJudgeLLMClient(response=response)
+        judge = LLMJudge(client, low_quality_threshold=0.95)
+
+        result = judge.evaluate(ir)
+
+        assert result.average_overall == 0.7
+        assert result.quality_passed is False
+        assert result.low_quality_tools == ["op_0"]
+
+    def test_failed_batch_does_not_drop_other_batches_from_denominator(self) -> None:
+        ir = _make_service_ir(2)
+        client = MockJudgeLLMClient(
+            responses=[
+                RuntimeError("first batch failed"),
+                json.dumps(
+                    [
+                        {
+                            "operation_id": "op_1",
+                            "accuracy": 0.9,
+                            "completeness": 0.9,
+                            "clarity": 0.9,
+                            "feedback": "good",
+                        }
+                    ]
+                ),
+            ]
+        )
+        judge = LLMJudge(client, batch_size=1)
+
+        result = judge.evaluate(ir)
+
+        assert result.tools_evaluated == 2
+        assert result.scores[0].operation_id == "op_0"
+        assert result.scores[0].overall == 0.0
+        assert result.scores[1].operation_id == "op_1"
+        assert result.scores[1].overall > 0.0
+        assert "op_0" in result.low_quality_tools
+
+    def test_batch_size_must_be_positive(self) -> None:
+        client = MockJudgeLLMClient()
+        with pytest.raises(ValueError, match="greater than zero"):
+            LLMJudge(client, batch_size=0)

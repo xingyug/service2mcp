@@ -119,7 +119,40 @@ class TestResourceRegistration:
         assert len(registered) == 1
         assert registered[0].id == "test-schema"
 
-    def test_dynamic_resources_skipped(self) -> None:
+    @pytest.mark.asyncio
+    async def test_dynamic_resources_register_and_read(self) -> None:
+        server = create_runtime_server("test")
+        ir = ServiceIR(
+            source_hash="hash",
+            protocol="rest",
+            service_name="svc",
+            base_url="https://example.com",
+            operations=[_make_op("op1", params=[])],
+            resource_definitions=[
+                ResourceDefinition(
+                    id="dynamic",
+                    name="Dynamic",
+                    uri="service:///svc/dynamic",
+                    content_type="dynamic",
+                    operation_id="op1",
+                ),
+            ],
+        )
+        seen_calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def resource_handler(operation: Operation, arguments: dict[str, Any]) -> dict[str, Any]:
+            seen_calls.append((operation.id, arguments))
+            return {"status": "ok", "result": {"resource": "dynamic-payload"}}
+
+        registered = register_ir_resources(server, ir, tool_handler=resource_handler)
+        assert len(registered) == 1
+        resources = await server.list_resources()
+        assert len(resources) == 1
+        content = await server.read_resource("service:///svc/dynamic")
+        assert "dynamic-payload" in str(content)
+        assert seen_calls == [("op1", {})]
+
+    def test_dynamic_resources_with_required_params_fail_fast(self) -> None:
         server = create_runtime_server("test")
         ir = ServiceIR(
             source_hash="hash",
@@ -137,8 +170,9 @@ class TestResourceRegistration:
                 ),
             ],
         )
-        registered = register_ir_resources(server, ir)
-        assert len(registered) == 0
+
+        with pytest.raises(RuntimeError, match="required params"):
+            register_ir_resources(server, ir)
 
 
 class TestPromptRegistration:

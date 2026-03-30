@@ -146,6 +146,7 @@ export default function ObservePage() {
               <Button
                 variant="outline"
                 size="sm"
+                nativeButton={false}
                 render={
                   <a
                     href={`${GRAFANA_URL}${d.path}`}

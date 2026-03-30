@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
+import apps.access_control.authz.routes as authz_routes
 from apps.access_control.authn.service import JWTSettings
 from apps.access_control.gateway_binding.client import InMemoryAPISIXAdminClient
 from apps.access_control.main import create_app
@@ -102,10 +103,19 @@ async def session_factory(
 
 
 @pytest.fixture
-def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
+def gateway_client() -> InMemoryAPISIXAdminClient:
+    return InMemoryAPISIXAdminClient()
+
+
+@pytest.fixture
+def app(
+    session_factory: async_sessionmaker[AsyncSession],
+    gateway_client: InMemoryAPISIXAdminClient,
+) -> FastAPI:
     return create_app(
         session_factory=session_factory,
         jwt_settings=JWTSettings(secret="test-secret"),
+        gateway_admin_client=gateway_client,
     )
 
 
@@ -321,6 +331,36 @@ async def test_policy_creation_rolls_back_when_gateway_sync_fails(
 
 
 @pytest.mark.asyncio
+async def test_policy_creation_reconciles_gateway_when_audit_fails(
+    app: FastAPI,
+    gateway_client: InMemoryAPISIXAdminClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fail_audit(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("audit broke")
+
+    monkeypatch.setattr(authz_routes.AuditLogService, "append_entry", _fail_audit)
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        created = await client.post(
+            "/api/v1/authz/policies",
+            json={
+                "subject_type": "user",
+                "subject_id": "alice",
+                "resource_id": "billing-api",
+                "action_pattern": "*",
+                "risk_threshold": "safe",
+                "decision": "allow",
+            },
+            headers=_auth_headers(roles=["admin"]),
+        )
+
+    assert created.status_code == 500
+    assert gateway_client.policy_bindings == {}
+
+
+@pytest.mark.asyncio
 async def test_policy_update_rolls_back_when_gateway_sync_fails(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -365,6 +405,47 @@ async def test_policy_update_rolls_back_when_gateway_sync_fails(
 
 
 @pytest.mark.asyncio
+async def test_policy_update_reconciles_gateway_when_audit_fails(
+    app: FastAPI,
+    gateway_client: InMemoryAPISIXAdminClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=base_transport, base_url="http://testserver") as client:
+        created = await client.post(
+            "/api/v1/authz/policies",
+            json={
+                "subject_type": "user",
+                "subject_id": "alice",
+                "resource_id": "billing-api",
+                "action_pattern": "*",
+                "risk_threshold": "safe",
+                "decision": "allow",
+            },
+            headers=_auth_headers(roles=["admin"]),
+        )
+    assert created.status_code == 201
+    policy = created.json()
+    binding_id = f"policy-{policy['id']}"
+    assert gateway_client.policy_bindings[binding_id].document["decision"] == "allow"
+
+    async def _fail_audit(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("audit broke")
+
+    monkeypatch.setattr(authz_routes.AuditLogService, "append_entry", _fail_audit)
+    failing_transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=failing_transport, base_url="http://testserver") as client:
+        updated = await client.put(
+            f"/api/v1/authz/policies/{policy['id']}",
+            json={"decision": "deny"},
+            headers=_auth_headers(roles=["admin"]),
+        )
+
+    assert updated.status_code == 500
+    assert gateway_client.policy_bindings[binding_id].document["decision"] == "allow"
+
+
+@pytest.mark.asyncio
 async def test_policy_delete_rolls_back_when_gateway_sync_fails(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -404,3 +485,43 @@ async def test_policy_delete_rolls_back_when_gateway_sync_fails(
             headers=_auth_headers(subject="alice"),
         )
         assert fetched.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_policy_delete_reconciles_gateway_when_audit_fails(
+    app: FastAPI,
+    gateway_client: InMemoryAPISIXAdminClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=base_transport, base_url="http://testserver") as client:
+        created = await client.post(
+            "/api/v1/authz/policies",
+            json={
+                "subject_type": "user",
+                "subject_id": "alice",
+                "resource_id": "billing-api",
+                "action_pattern": "*",
+                "risk_threshold": "safe",
+                "decision": "allow",
+            },
+            headers=_auth_headers(roles=["admin"]),
+        )
+    assert created.status_code == 201
+    policy = created.json()
+    binding_id = f"policy-{policy['id']}"
+    assert binding_id in gateway_client.policy_bindings
+
+    async def _fail_audit(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("audit broke")
+
+    monkeypatch.setattr(authz_routes.AuditLogService, "append_entry", _fail_audit)
+    failing_transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=failing_transport, base_url="http://testserver") as client:
+        deleted = await client.delete(
+            f"/api/v1/authz/policies/{policy['id']}",
+            headers=_auth_headers(roles=["admin"]),
+        )
+
+    assert deleted.status_code == 500
+    assert binding_id in gateway_client.policy_bindings

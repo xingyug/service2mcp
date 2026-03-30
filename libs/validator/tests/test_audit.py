@@ -10,6 +10,11 @@ from libs.ir.models import (
     SourceType,
     ToolIntent,
 )
+from libs.sample_placeholders import (
+    PATH_PLACEHOLDER_ID_SAMPLE,
+    PATH_PLACEHOLDER_INT_SAMPLE,
+    PATH_PLACEHOLDER_STRING_SAMPLE,
+)
 from libs.validator.audit import (
     AuditPolicy,
     AuditThresholds,
@@ -110,9 +115,31 @@ class TestAuditPolicySkipReason:
             enabled=True,
         )
         policy = AuditPolicy()
-        reason = policy.skip_reason(operation, {"get_item": {"id": "sample"}})
+        reason = policy.skip_reason(operation, {"get_item": {"id": PATH_PLACEHOLDER_ID_SAMPLE}})
         assert reason is not None
         assert "path parameters" in reason.lower()
+
+    def test_real_path_value_sample_is_not_skipped(self) -> None:
+        operation = Operation(
+            id="get_item",
+            name="get_item",
+            description="Get item.",
+            method="GET",
+            path="/items/{id}",
+            params=[Param(name="id", type="string", required=True)],
+            risk=RiskMetadata(
+                risk_level=RiskLevel.safe,
+                confidence=1.0,
+                source=SourceType.extractor,
+                writes_state=False,
+                destructive=False,
+                external_side_effect=False,
+                idempotent=True,
+            ),
+            enabled=True,
+        )
+        policy = AuditPolicy()
+        assert policy.skip_reason(operation, {"get_item": {"id": "sample"}}) is None
 
     def test_non_path_sample_is_not_skipped(self) -> None:
         operation = Operation(
@@ -178,9 +205,31 @@ class TestAuditPolicySkipReason:
             enabled=True,
         )
         policy = AuditPolicy()
-        reason = policy.failure_skip_reason(operation, {"id": 1})
+        reason = policy.failure_skip_reason(operation, {"id": PATH_PLACEHOLDER_INT_SAMPLE})
         assert reason is not None
         assert "placeholder" in reason.lower()
+
+    def test_failure_skip_reason_keeps_real_numeric_path_value(self) -> None:
+        operation = Operation(
+            id="get_repo",
+            name="get_repo",
+            description="Get repo.",
+            method="GET",
+            path="/repos/{id}",
+            params=[Param(name="id", type="integer", required=True)],
+            risk=RiskMetadata(
+                risk_level=RiskLevel.safe,
+                confidence=1.0,
+                source=SourceType.extractor,
+                writes_state=False,
+                destructive=False,
+                external_side_effect=False,
+                idempotent=True,
+            ),
+            enabled=True,
+        )
+        policy = AuditPolicy()
+        assert policy.failure_skip_reason(operation, {"id": 1}) is None
 
     def test_failure_skip_reason_keeps_real_string_path_value(self) -> None:
         operation = Operation(
@@ -372,10 +421,13 @@ class TestCheckThresholds:
         violations = check_thresholds(summary, thresholds)
         assert len(violations) == 3
 
-    def test_zero_generated_tools_skips_ratio_check(self) -> None:
+    def test_zero_generated_tools_fails_positive_ratio_threshold(self) -> None:
         summary = _make_summary(generated=0, audited=0, passed=0)
         thresholds = AuditThresholds(min_audited_ratio=0.5)
-        assert check_thresholds(summary, thresholds) == []
+        violations = check_thresholds(summary, thresholds)
+        assert len(violations) == 1
+        assert "audited ratio" in violations[0].lower()
+        assert "no generated tools" in violations[0].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -449,8 +501,8 @@ class TestHasSyntheticPathPlaceholderSamples:
 
 class TestContainsSyntheticPlaceholderSample:
     def test_int_1_with_numeric_fallbacks(self) -> None:
-        """Line 156: integer 1 with include_numeric_fallbacks=True → True."""
-        assert _contains_synthetic_placeholder_sample(1, include_numeric_fallbacks=True) is True
+        """Real integer 1 should not be treated as a placeholder."""
+        assert _contains_synthetic_placeholder_sample(1, include_numeric_fallbacks=True) is False
 
     def test_int_1_without_numeric_fallbacks(self) -> None:
         """Integer 1 with include_numeric_fallbacks=False → False."""
@@ -463,7 +515,7 @@ class TestContainsSyntheticPlaceholderSample:
     def test_list_recursive_check(self) -> None:
         """Lines 157-164: synthetic value nested in a list → True."""
         assert _contains_synthetic_placeholder_sample(
-            ["real", "sample"], include_numeric_fallbacks=False
+            ["real", PATH_PLACEHOLDER_STRING_SAMPLE], include_numeric_fallbacks=False
         ) is True
 
     def test_list_no_synthetic(self) -> None:
@@ -475,7 +527,7 @@ class TestContainsSyntheticPlaceholderSample:
     def test_dict_recursive_check(self) -> None:
         """Lines 165-172: synthetic value nested in a dict → True."""
         assert _contains_synthetic_placeholder_sample(
-            {"key": "sample"}, include_numeric_fallbacks=False
+            {"key": PATH_PLACEHOLDER_STRING_SAMPLE}, include_numeric_fallbacks=False
         ) is True
 
     def test_dict_no_synthetic(self) -> None:
@@ -487,11 +539,11 @@ class TestContainsSyntheticPlaceholderSample:
     def test_list_with_numeric_fallback(self) -> None:
         """Lines 157-164: list containing int 1 with numeric fallbacks → True."""
         assert _contains_synthetic_placeholder_sample(
-            [1], include_numeric_fallbacks=True
+            [PATH_PLACEHOLDER_INT_SAMPLE], include_numeric_fallbacks=True
         ) is True
 
     def test_dict_with_numeric_fallback(self) -> None:
         """Lines 165-172: dict containing int 1 with numeric fallbacks → True."""
         assert _contains_synthetic_placeholder_sample(
-            {"id": 1}, include_numeric_fallbacks=True
+            {"id": PATH_PLACEHOLDER_INT_SAMPLE}, include_numeric_fallbacks=True
         ) is True

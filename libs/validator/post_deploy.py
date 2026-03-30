@@ -7,6 +7,7 @@ from time import perf_counter
 from typing import Any, Self
 
 import httpx
+from pydantic import ValidationError
 
 from libs.ir.models import (
     EventDescriptor,
@@ -17,10 +18,12 @@ from libs.ir.models import (
     ServiceIR,
     SqlOperationType,
 )
+from libs.runtime_contracts import stream_result_failure_reason, validate_tool_listing_payload
 from libs.validator.audit import (
     AuditPolicy,
     ToolAuditResult,
     ToolAuditSummary,
+    _has_synthetic_path_placeholder_samples,
 )
 from libs.validator.pre_deploy import ValidationReport, ValidationResult
 
@@ -61,11 +64,21 @@ class PostDeployValidator:
     ) -> ValidationReport:
         """Run post-deploy checks against a runtime base URL."""
 
-        service_ir = (
-            expected_ir
-            if isinstance(expected_ir, ServiceIR)
-            else ServiceIR.model_validate(expected_ir)
-        )
+        schema_result, service_ir = self._validate_schema(expected_ir)
+        if service_ir is None:
+            results = [
+                schema_result,
+                self._skipped_result("health", "Skipped because expected IR schema validation failed."),
+                self._skipped_result(
+                    "tool_listing",
+                    "Skipped because expected IR schema validation failed.",
+                ),
+                self._skipped_result(
+                    "invocation_smoke",
+                    "Skipped because expected IR schema validation failed.",
+                ),
+            ]
+            return ValidationReport(results=results, overall_passed=False)
 
         health_result = await self._validate_health(base_url)
         tool_listing_result, available_tools = await self._validate_tool_listing(
@@ -81,7 +94,7 @@ class PostDeployValidator:
             tool_listing_passed=tool_listing_result.passed,
         )
 
-        results = [health_result, tool_listing_result, invocation_result]
+        results = [schema_result, health_result, tool_listing_result, invocation_result]
         return ValidationReport(
             results=results,
             overall_passed=all(result.passed for result in results),
@@ -104,11 +117,35 @@ class PostDeployValidator:
         operation in the IR, applying the given ``audit_policy`` skip rules.
         """
 
-        service_ir = (
-            expected_ir
-            if isinstance(expected_ir, ServiceIR)
-            else ServiceIR.model_validate(expected_ir)
-        )
+        schema_result, service_ir = self._validate_schema(expected_ir)
+        if service_ir is None:
+            results = [
+                schema_result,
+                self._skipped_result("health", "Skipped because expected IR schema validation failed."),
+                self._skipped_result(
+                    "tool_listing",
+                    "Skipped because expected IR schema validation failed.",
+                ),
+                self._skipped_result(
+                    "invocation_smoke",
+                    "Skipped because expected IR schema validation failed.",
+                ),
+            ]
+            audit_summary = ToolAuditSummary(
+                discovered_operations=0,
+                generated_tools=0,
+                audited_tools=0,
+                passed=0,
+                failed=0,
+                skipped=0,
+                results=[],
+            )
+            report = ValidationReport(
+                results=results,
+                overall_passed=False,
+                audit_summary=audit_summary,
+            )
+            return report, audit_summary
         policy = audit_policy or AuditPolicy()
         invocations = sample_invocations or {}
 
@@ -128,7 +165,7 @@ class PostDeployValidator:
             tool_listing_passed=tool_listing_result.passed,
         )
 
-        results = [health_result, tool_listing_result, invocation_result]
+        results = [schema_result, health_result, tool_listing_result, invocation_result]
 
         # Full audit pass over all enabled operations
         audit_summary = await self._audit_all_enabled_operations(
@@ -142,10 +179,49 @@ class PostDeployValidator:
 
         report = ValidationReport(
             results=results,
-            overall_passed=all(result.passed for result in results),
+            overall_passed=all(result.passed for result in results) and audit_summary.failed == 0,
             audit_summary=audit_summary,
         )
         return report, audit_summary
+
+    def _validate_schema(
+        self,
+        expected_ir: ServiceIR | dict[str, Any],
+    ) -> tuple[ValidationResult, ServiceIR | None]:
+        started_at = perf_counter()
+        try:
+            service_ir = (
+                expected_ir
+                if isinstance(expected_ir, ServiceIR)
+                else ServiceIR.model_validate(expected_ir)
+            )
+        except ValidationError as exc:
+            return (
+                ValidationResult(
+                    stage="schema",
+                    passed=False,
+                    details=f"Expected IR schema validation failed: {exc}",
+                    duration_ms=self._duration_ms(started_at),
+                ),
+                None,
+            )
+        return (
+            ValidationResult(
+                stage="schema",
+                passed=True,
+                details="Expected IR schema is valid.",
+                duration_ms=self._duration_ms(started_at),
+            ),
+            service_ir,
+        )
+
+    def _skipped_result(self, stage: str, details: str) -> ValidationResult:
+        return ValidationResult(
+            stage=stage,
+            passed=False,
+            details=details,
+            duration_ms=0,
+        )
 
     async def _audit_all_enabled_operations(
         self,
@@ -223,8 +299,11 @@ class PostDeployValidator:
                 )
                 continue
 
-            status = result.get("status") if isinstance(result, dict) else None
-            if status != "ok":
+            if not isinstance(result, dict):
+                failure_reason = "Invocation returned non-dict result."
+            else:
+                failure_reason = _tool_result_failure_reason(service_ir, operation.id, result)
+            if failure_reason is not None:
                 failure_skip_reason = audit_policy.failure_skip_reason(operation, arguments)
                 if failure_skip_reason is not None:
                     audit_results.append(
@@ -241,7 +320,7 @@ class PostDeployValidator:
                     ToolAuditResult(
                         tool_name=operation.id,
                         outcome="failed",
-                        reason=f"Invocation returned unexpected status: {status!r}.",
+                        reason=failure_reason,
                         arguments=arguments,
                         result=result if isinstance(result, dict) else {"raw": str(result)},
                     )
@@ -286,21 +365,38 @@ class PostDeployValidator:
                 duration_ms=self._duration_ms(started_at),
             )
 
-        passed = health_response.status_code == 200 and ready_response.status_code == 200
-        details = (
-            "Runtime health endpoints are ready."
-            if passed
-            else (
-                "Runtime health endpoints returned unexpected status codes: "
-                f"healthz={health_response.status_code}, readyz={ready_response.status_code}"
+        health_failure = self._health_endpoint_failure_detail("healthz", health_response)
+        ready_failure = self._health_endpoint_failure_detail("readyz", ready_response)
+        passed = health_failure is None and ready_failure is None
+        details = "Runtime health endpoints are ready."
+        if not passed:
+            failure_details = [detail for detail in (health_failure, ready_failure) if detail is not None]
+            details = "Runtime health endpoints returned unexpected readiness state: " + "; ".join(
+                failure_details
             )
-        )
         return ValidationResult(
             stage="health",
             passed=passed,
             details=details,
             duration_ms=self._duration_ms(started_at),
         )
+
+    @staticmethod
+    def _health_endpoint_failure_detail(endpoint: str, response: httpx.Response) -> str | None:
+        if response.status_code != 200:
+            return f"{endpoint}={response.status_code}"
+        if not response.content:
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            return f"{endpoint} returned invalid JSON payload."
+        if not isinstance(payload, dict):
+            return f"{endpoint} returned JSON {type(payload).__name__}, expected object."
+        status = payload.get("status")
+        if "status" in payload and status != "ok":
+            return f"{endpoint} reported status {status!r}"
+        return None
 
     async def _validate_tool_listing(
         self,
@@ -345,11 +441,19 @@ class PostDeployValidator:
                 ),
                 {},
             )
-        listed_tools = {
-            tool["name"]: tool
-            for tool in payload.get("tools", [])
-            if isinstance(tool, dict) and isinstance(tool.get("name"), str)
-        }
+        try:
+            validated_tools = validate_tool_listing_payload(payload, context="Runtime tool listing")
+        except RuntimeError as exc:
+            return (
+                ValidationResult(
+                    stage="tool_listing",
+                    passed=False,
+                    details=str(exc),
+                    duration_ms=self._duration_ms(started_at),
+                ),
+                {},
+            )
+        listed_tools = {tool["name"]: tool for tool in validated_tools}
         expected_tools = {operation.id for operation in expected_ir.operations if operation.enabled}
 
         if set(listed_tools) != expected_tools:
@@ -431,24 +535,42 @@ class PostDeployValidator:
             preferred_tool_ids=preferred_smoke_tool_ids,
         )
         if operation is None:
-            first_available_operation = next(
-                (candidate for candidate in enabled_operations if candidate.id in available_tools),
-                None,
-            )
-            if first_available_operation is None:
+            available_operations = [
+                candidate for candidate in enabled_operations if candidate.id in available_tools
+            ]
+            if not available_operations:
                 return ValidationResult(
                     stage="invocation_smoke",
                     passed=False,
                     details="No enabled runtime tool is available for invocation smoke validation.",
                     duration_ms=self._duration_ms(started_at),
                 )
+            sampled_available_operations = [
+                candidate
+                for candidate in available_operations
+                if candidate.id in sample_invocations
+            ]
+            if not sampled_available_operations:
+                first_available_operation = available_operations[0]
+                return ValidationResult(
+                    stage="invocation_smoke",
+                    passed=False,
+                    details=(
+                        f"No sample invocation provided for available tool "
+                        f"{first_available_operation.id}."
+                    ),
+                    duration_ms=self._duration_ms(started_at),
+                )
+            rejection_details = _default_smoke_rejection_details(
+                sampled_available_operations,
+                sample_invocations=sample_invocations,
+            )
+            if rejection_details is None:
+                rejection_details = "No safe runtime tool is available for invocation smoke validation."
             return ValidationResult(
                 stage="invocation_smoke",
                 passed=False,
-                details=(
-                    f"No sample invocation provided for available tool "
-                    f"{first_available_operation.id}."
-                ),
+                details=rejection_details,
                 duration_ms=self._duration_ms(started_at),
             )
 
@@ -472,57 +594,16 @@ class PostDeployValidator:
                 duration_ms=self._duration_ms(started_at),
             )
 
-        status = result.get("status")
-        if status != "ok":
+        failure_reason = _tool_result_failure_reason(expected_ir, operation.id, result)
+        if failure_reason is not None:
             return ValidationResult(
                 stage="invocation_smoke",
                 passed=False,
-                details=(
-                    f"Invocation smoke test for {operation.id} returned "
-                    f"unexpected status: {status!r}"
-                ),
+                details=f"Invocation smoke test for {operation.id} failed: {failure_reason}",
                 duration_ms=self._duration_ms(started_at),
             )
 
         descriptor = _supported_descriptor_for_operation(expected_ir, operation.id)
-        if descriptor is not None:
-            transport = result.get("transport")
-            if transport != descriptor.transport.value:
-                return ValidationResult(
-                    stage="invocation_smoke",
-                    passed=False,
-                    details=(
-                        f"Invocation smoke test for {operation.id} returned transport "
-                        f"{transport!r}, expected {descriptor.transport.value!r}."
-                    ),
-                    duration_ms=self._duration_ms(started_at),
-                )
-
-            stream_result = result.get("result")
-            if not isinstance(stream_result, dict):
-                return ValidationResult(
-                    stage="invocation_smoke",
-                    passed=False,
-                    details=(
-                        f"Invocation smoke test for {operation.id} returned a non-object "
-                        "stream payload."
-                    ),
-                    duration_ms=self._duration_ms(started_at),
-                )
-
-            events = stream_result.get("events")
-            lifecycle = stream_result.get("lifecycle")
-            if not isinstance(events, list) or not isinstance(lifecycle, dict):
-                return ValidationResult(
-                    stage="invocation_smoke",
-                    passed=False,
-                    details=(
-                        f"Invocation smoke test for {operation.id} did not return the "
-                        "expected streaming lifecycle structure."
-                    ),
-                    duration_ms=self._duration_ms(started_at),
-                )
-
         return ValidationResult(
             stage="invocation_smoke",
             passed=True,
@@ -551,8 +632,40 @@ def _supported_descriptor_for_operation(
     if not descriptors:
         return None
     if len(descriptors) > 1:
-        return descriptors[0]
+        raise ValueError(
+            f"Post-deploy validation does not support multiple descriptors for {operation_id}."
+        )
     return descriptors[0]
+
+
+def _tool_result_failure_reason(
+    expected_ir: ServiceIR,
+    operation_id: str,
+    result: dict[str, Any],
+) -> str | None:
+    status = result.get("status")
+    if status != "ok":
+        return f"Invocation returned unexpected status: {status!r}."
+    if "result" not in result:
+        return "Invocation returned ok status without a result payload."
+
+    try:
+        descriptor = _supported_descriptor_for_operation(expected_ir, operation_id)
+    except ValueError as exc:
+        return str(exc)
+    if descriptor is None:
+        return None
+
+    transport = result.get("transport")
+    if transport != descriptor.transport.value:
+        return (
+            f"Invocation returned transport {transport!r}, expected {descriptor.transport.value!r}."
+        )
+
+    return stream_result_failure_reason(
+        result.get("result"),
+        transport=descriptor.transport.value,
+    )
 
 
 def _select_smoke_operation(
@@ -573,19 +686,86 @@ def _select_smoke_operation(
     preferred_candidate_by_id = {operation.id: operation for operation in candidates}
     for preferred_tool_id in preferred_tool_ids:
         preferred_candidate = preferred_candidate_by_id.get(preferred_tool_id)
-        if preferred_candidate is not None:
+        if preferred_candidate is not None and not _uses_default_placeholder_path_samples(
+            preferred_candidate,
+            sample_invocations=sample_invocations,
+        ):
             return preferred_candidate
+    safe_candidates = [
+        operation
+        for operation in candidates
+        if _is_default_safe_smoke_candidate(operation, sample_invocations=sample_invocations)
+    ]
+    if not safe_candidates:
+        return None
     return min(
-        candidates,
+        safe_candidates,
         key=lambda operation: _smoke_operation_priority(expected_ir, operation),
     )
+
+
+def _uses_default_placeholder_path_samples(
+    operation: Operation,
+    *,
+    sample_invocations: dict[str, dict[str, Any]],
+) -> bool:
+    return bool(
+        _has_synthetic_path_placeholder_samples(
+        operation,
+        sample_invocations[operation.id],
+        include_numeric_fallbacks=True,
+        )
+    )
+
+
+def _is_default_safe_smoke_candidate(
+    operation: Operation,
+    *,
+    sample_invocations: dict[str, dict[str, Any]],
+) -> bool:
+    if _uses_default_placeholder_path_samples(operation, sample_invocations=sample_invocations):
+        return False
+    return not operation.risk.writes_state and not operation.risk.destructive
+
+
+def _default_smoke_rejection_details(
+    operations: list[Operation],
+    *,
+    sample_invocations: dict[str, dict[str, Any]],
+) -> str | None:
+    placeholder_blocked = [
+        operation.id
+        for operation in operations
+        if _uses_default_placeholder_path_samples(operation, sample_invocations=sample_invocations)
+    ]
+    risk_blocked = [
+        operation.id
+        for operation in operations
+        if operation.id not in placeholder_blocked
+        and (operation.risk.writes_state or operation.risk.destructive)
+    ]
+    reasons: list[str] = []
+    if risk_blocked:
+        reasons.append("remaining tools are state-mutating or destructive")
+    if placeholder_blocked:
+        reasons.append("remaining sample invocations still use synthetic placeholder path values")
+    if not reasons:
+        return None
+    if len(reasons) == 1:
+        reason_text = reasons[0]
+    else:
+        reason_text = f"{reasons[0]} and {reasons[1]}"
+    return f"No safe runtime tool is available for invocation smoke validation because {reason_text}."
 
 
 def _smoke_operation_priority(
     expected_ir: ServiceIR,
     operation: Operation,
 ) -> tuple[int, int, int, str]:
-    descriptor = _supported_descriptor_for_operation(expected_ir, operation.id)
+    try:
+        descriptor = _supported_descriptor_for_operation(expected_ir, operation.id)
+    except ValueError:
+        descriptor = None
     category = 6
 
     if operation.sql is not None:

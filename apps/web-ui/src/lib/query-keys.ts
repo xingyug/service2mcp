@@ -1,3 +1,9 @@
+import type { ServiceScope } from "@/types/api";
+
+function scopeSegments(scope?: ServiceScope) {
+  return [scope?.tenant ?? null, scope?.environment ?? null] as const;
+}
+
 export const queryKeys = {
   compilations: {
     all: ["compilations"] as const,
@@ -8,17 +14,23 @@ export const queryKeys = {
     all: ["services"] as const,
     filtered: (filters: Record<string, string>) =>
       ["services", filters] as const,
-    detail: (id: string) => ["services", id] as const,
-    tools: (id: string) => ["services", id, "tools"] as const,
+    detail: (id: string, scope?: ServiceScope) =>
+      ["services", id, "detail", ...scopeSegments(scope)] as const,
+    tools: (id: string, scope?: ServiceScope) =>
+      ["services", id, "tools", ...scopeSegments(scope)] as const,
   },
 
   artifacts: {
-    versions: (serviceId: string) =>
-      ["artifacts", serviceId, "versions"] as const,
-    version: (serviceId: string, version: number) =>
-      ["artifacts", serviceId, "versions", version] as const,
-    diff: (serviceId: string, from: number, to: number) =>
-      ["artifacts", serviceId, "diff", from, to] as const,
+    versions: (serviceId: string, scope?: ServiceScope) =>
+      ["artifacts", serviceId, "versions", ...scopeSegments(scope)] as const,
+    version: (serviceId: string, version: number, scope?: ServiceScope) =>
+      ["artifacts", serviceId, "versions", version, ...scopeSegments(scope)] as const,
+    diff: (
+      serviceId: string,
+      from: number,
+      to: number,
+      scope?: ServiceScope,
+    ) => ["artifacts", serviceId, "diff", from, to, ...scopeSegments(scope)] as const,
   },
 
   policies: {

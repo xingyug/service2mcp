@@ -129,11 +129,44 @@ def _build_grpc_unary_ir() -> ServiceIR:
     )
 
 
+def _build_placeholder_path_openapi_ir() -> ServiceIR:
+    return ServiceIR(
+        source_hash="d" * 64,
+        protocol="openapi",
+        service_name="placeholder-path-runtime",
+        service_description="OpenAPI runtime with required path placeholder",
+        base_url="https://placeholder.example.test",
+        auth=AuthConfig(type=AuthType.none),
+        operations=[
+            Operation(
+                id="getUser",
+                name="Get User",
+                description="Fetch a user by id.",
+                method="GET",
+                path="/users/{id}",
+                params=[Param(name="id", type="string", required=True)],
+                risk=RiskMetadata(
+                    risk_level=RiskLevel.safe,
+                    confidence=1.0,
+                    source=SourceType.extractor,
+                    writes_state=False,
+                    destructive=False,
+                    external_side_effect=False,
+                    idempotent=True,
+                ),
+                enabled=True,
+            )
+        ],
+    )
+
+
 @pytest.mark.asyncio
 async def test_streamable_http_tool_invoker_calls_runtime_over_http(
     monkeypatch: pytest.MonkeyPatch,
     unused_tcp_port: int,
 ) -> None:
+    monkeypatch.setenv("MCP_DISABLE_DNS_REBINDING_PROTECTION", "true")
+
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -185,6 +218,8 @@ async def test_streamable_http_tool_invoker_calls_runtime_over_http(
 async def test_streamable_http_tool_invoker_accepts_cluster_service_hosts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("MCP_DISABLE_DNS_REBINDING_PROTECTION", "true")
+
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -235,7 +270,10 @@ async def test_streamable_http_tool_invoker_accepts_cluster_service_hosts(
 @pytest.mark.asyncio
 async def test_streamable_http_tool_invoker_supports_native_grpc_stream_validation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("MCP_DISABLE_DNS_REBINDING_PROTECTION", "true")
+
     class StubGrpcStreamExecutor:
         async def invoke(
             self,
@@ -310,7 +348,10 @@ async def test_streamable_http_tool_invoker_supports_native_grpc_stream_validati
 @pytest.mark.asyncio
 async def test_streamable_http_tool_invoker_supports_native_grpc_unary_validation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("MCP_DISABLE_DNS_REBINDING_PROTECTION", "true")
+
     class StubGrpcUnaryExecutor:
         async def invoke(
             self,
@@ -378,3 +419,34 @@ async def test_streamable_http_tool_invoker_supports_native_grpc_unary_validatio
     assert report.overall_passed is True
     assert report.get_result("invocation_smoke").passed is True
     assert "ListItems" in report.get_result("invocation_smoke").details
+
+
+@pytest.mark.asyncio
+async def test_post_deploy_validator_rejects_default_placeholder_path_samples() -> None:
+    service_ir = _build_placeholder_path_openapi_ir()
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            json={"tools": [{"name": "getUser"}]} if request.url.path == "/tools" else {},
+            request=request,
+        )
+        if request.url.path in {"/healthz", "/readyz", "/tools"}
+        else httpx.Response(200, json={}, request=request)
+    )
+    invoked: list[tuple[str, dict[str, object]]] = []
+
+    async def tool_invoker(tool_name: str, arguments: dict[str, object]) -> dict[str, object]:
+        invoked.append((tool_name, arguments))
+        return {"status": "ok", "result": {"id": arguments["id"]}}
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        validator = PostDeployValidator(client=client, tool_invoker=tool_invoker)
+        report = await validator.validate(
+            "http://testserver",
+            service_ir,
+            sample_invocations=_build_sample_invocations(service_ir),
+        )
+
+    assert report.overall_passed is False
+    assert "synthetic placeholder" in report.get_result("invocation_smoke").details.lower()
+    assert invoked == []

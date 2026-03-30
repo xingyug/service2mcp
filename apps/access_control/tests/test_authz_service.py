@@ -371,8 +371,8 @@ class TestUpdatePolicy:
 
         assert result is None
 
-    async def test_updates_all_fields(self) -> None:
-        """Test lines 93-106: update_policy updates all provided fields."""
+    async def test_updates_mutable_fields_without_touching_created_by(self) -> None:
+        """update_policy should preserve immutable author metadata."""
         mock_session = AsyncMock()
         mock_policy = _mock_policy()
         mock_session.get.return_value = mock_policy
@@ -385,7 +385,6 @@ class TestUpdatePolicy:
             action_pattern="write_*",
             risk_threshold=RiskLevel.dangerous,
             decision="deny",
-            created_by="new-admin",
         )
         policy_id = uuid4()
 
@@ -396,7 +395,7 @@ class TestUpdatePolicy:
         assert mock_policy.action_pattern == "write_*"
         assert mock_policy.risk_threshold == "dangerous"
         assert mock_policy.decision == "deny"
-        assert mock_policy.created_by == "new-admin"
+        assert mock_policy.created_by == "admin"
 
         mock_session.commit.assert_called_once()
         mock_session.refresh.assert_called_once()

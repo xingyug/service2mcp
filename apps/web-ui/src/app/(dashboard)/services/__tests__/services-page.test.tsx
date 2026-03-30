@@ -110,4 +110,17 @@ describe("ServicesPage", () => {
     expect(screen.queryByText("Jackson SCIM (scim)")).not.toBeInTheDocument();
     expect(screen.queryByText("Directus REST (rest)")).not.toBeInTheDocument();
   });
+
+  it("matches the stable service_id in search results", async () => {
+    const user = userEvent.setup();
+
+    renderWithProviders(<ServicesPage />);
+
+    await user.type(screen.getByPlaceholderText("Search services…"), "svc-odata");
+
+    expect(screen.queryByText("Aria2 RPC (jsonrpc)")).not.toBeInTheDocument();
+    expect(screen.getByText("NorthBreeze (odata)")).toBeInTheDocument();
+    expect(screen.queryByText("Jackson SCIM (scim)")).not.toBeInTheDocument();
+    expect(screen.queryByText("Directus REST (rest)")).not.toBeInTheDocument();
+  });
 });

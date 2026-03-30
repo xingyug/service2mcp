@@ -12,7 +12,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
+from apps.access_control.authn.service import JWTSettings, build_service_jwt
 from apps.compiler_api.main import create_app
+from apps.compiler_api.route_publisher import NoopArtifactRoutePublisher
 from libs.db_models import Base
 from libs.ir.models import (
     AuthConfig,
@@ -31,6 +33,8 @@ from libs.registry_client import (
     ArtifactVersionUpdate,
     RegistryClient,
 )
+
+_TEST_ARTIFACT_REGISTRY_JWT_SETTINGS = JWTSettings(secret="integration-test-artifact-registry-jwt")
 
 
 def _to_asyncpg_url(connection_url: str) -> str:
@@ -90,6 +94,40 @@ def _build_ir(
     return service_ir.model_dump(mode="json")
 
 
+def _artifact_registry_auth_headers(subject: str = "registry-user") -> dict[str, str]:
+    return {
+        "Authorization": (
+            f"Bearer "
+            f"{build_service_jwt(subject=subject, jwt_settings=_TEST_ARTIFACT_REGISTRY_JWT_SETTINGS)}"
+        )
+    }
+
+
+def _build_route_config(
+    *,
+    service_id: str,
+    service_name: str,
+    version_number: int,
+) -> dict[str, object]:
+    return {
+        "service_id": service_id,
+        "service_name": service_name,
+        "namespace": "test-ns",
+        "version_number": version_number,
+        "default_route": {
+            "route_id": f"{service_id}-active",
+            "match": {"prefix": f"/{service_id}"},
+            "switch_strategy": "immediate",
+            "target_service": {"name": f"{service_id}-v{version_number}", "port": 8000},
+        },
+        "version_route": {
+            "route_id": f"{service_id}-v{version_number}",
+            "match": {"prefix": f"/{service_id}/versions/v{version_number}"},
+            "target_service": {"name": f"{service_id}-v{version_number}", "port": 8000},
+        },
+    }
+
+
 @pytest.fixture(scope="module")
 def postgres_container() -> Iterator[PostgresContainer]:
     with PostgresContainer("postgres:16-alpine") as container:
@@ -117,13 +155,21 @@ async def session_factory(
 
 @pytest.fixture
 def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
-    return create_app(session_factory=session_factory)
+    return create_app(
+        session_factory=session_factory,
+        jwt_settings=_TEST_ARTIFACT_REGISTRY_JWT_SETTINGS,
+        route_publisher=NoopArtifactRoutePublisher(),
+    )
 
 
 @pytest_asyncio.fixture
 async def http_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers=_artifact_registry_auth_headers(),
+    ) as client:
         yield client
 
 
@@ -205,9 +251,14 @@ async def test_artifact_registry_crud_filters_and_diff(http_client: httpx.AsyncC
 
     updated_v2 = await http_client.put(
         "/api/v1/artifacts/billing-api/versions/2",
+        params={"tenant": "team-a", "environment": "prod"},
         json={
             "deployment_revision": "rev-2",
-            "route_config": {"route_id": "billing-prod"},
+            "route_config": _build_route_config(
+                service_id="billing-api",
+                service_name="Billing API",
+                version_number=2,
+            ),
             "artifacts": [
                 {
                     "artifact_type": "manifest",
@@ -221,7 +272,10 @@ async def test_artifact_registry_crud_filters_and_diff(http_client: httpx.AsyncC
     assert updated_v2.json()["deployment_revision"] == "rev-2"
     assert updated_v2.json()["artifacts"][0]["artifact_type"] == "manifest"
 
-    activated_v2 = await http_client.post("/api/v1/artifacts/billing-api/versions/2/activate")
+    activated_v2 = await http_client.post(
+        "/api/v1/artifacts/billing-api/versions/2/activate",
+        params={"tenant": "team-a", "environment": "prod"},
+    )
     assert activated_v2.status_code == 200
     assert activated_v2.json()["is_active"] is True
 
@@ -240,7 +294,10 @@ async def test_artifact_registry_crud_filters_and_diff(http_client: httpx.AsyncC
     assert diff_response.json()["summary"] != "no changes"
     assert diff_response.json()["changed_operations"][0]["operation_id"] == "getAccount"
 
-    deleted_v1 = await http_client.delete("/api/v1/artifacts/billing-api/versions/1")
+    deleted_v1 = await http_client.delete(
+        "/api/v1/artifacts/billing-api/versions/1",
+        params={"tenant": "team-a", "environment": "prod"},
+    )
     assert deleted_v1.status_code == 204
 
     fetch_deleted = await http_client.get("/api/v1/artifacts/billing-api/versions/1")
@@ -278,6 +335,8 @@ async def test_registry_client_round_trip(http_client: httpx.AsyncClient) -> Non
             "ledger-api",
             1,
             ArtifactVersionUpdate(validation_report={"status": "passed"}),
+            tenant="team-b",
+            environment="prod",
         )
         assert updated.validation_report == {"status": "passed"}
 
@@ -288,13 +347,63 @@ async def test_registry_client_round_trip(http_client: httpx.AsyncClient) -> Non
         )
         assert [version.version_number for version in listed.versions] == [1]
 
-        fetched = await registry_client.get_version("ledger-api", 1)
+        fetched = await registry_client.get_version(
+            "ledger-api",
+            1,
+            tenant="team-b",
+            environment="prod",
+        )
         assert fetched.artifacts[0].content_hash == "ledger-ir"
 
         diff = await registry_client.diff_versions("ledger-api", from_version=1, to_version=1)
         assert diff.is_empty is True
 
-        await registry_client.delete_version("ledger-api", 1)
+        await registry_client.delete_version(
+            "ledger-api",
+            1,
+            tenant="team-b",
+            environment="prod",
+        )
 
     fetch_deleted = await http_client.get("/api/v1/artifacts/ledger-api/versions/1")
     assert fetch_deleted.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_version_re_reads_created_scope(http_client: httpx.AsyncClient) -> None:
+    team_a_payload = {
+        "service_id": "billing-api",
+        "version_number": 1,
+        "ir_json": _build_ir(
+            description="Team A billing.",
+            include_verbose_param=False,
+            tenant="team-a",
+            environment="prod",
+        ),
+        "tenant": "team-a",
+        "environment": "prod",
+    }
+    team_b_payload = {
+        "service_id": "billing-api",
+        "version_number": 1,
+        "ir_json": _build_ir(
+            description="Team B billing.",
+            include_verbose_param=False,
+            tenant="team-b",
+            environment="staging",
+        ),
+        "tenant": "team-b",
+        "environment": "staging",
+    }
+
+    created_team_a = await http_client.post("/api/v1/artifacts", json=team_a_payload)
+    assert created_team_a.status_code == 201
+    assert created_team_a.json()["tenant"] == "team-a"
+    assert created_team_a.json()["environment"] == "prod"
+
+    created_team_b = await http_client.post("/api/v1/artifacts", json=team_b_payload)
+    assert created_team_b.status_code == 201
+    assert created_team_b.json()["tenant"] == "team-b"
+    assert created_team_b.json()["environment"] == "staging"
+    assert created_team_b.json()["ir_json"]["tenant"] == "team-b"
+    assert created_team_b.json()["ir_json"]["environment"] == "staging"

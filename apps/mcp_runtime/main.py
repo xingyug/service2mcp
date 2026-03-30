@@ -34,6 +34,10 @@ from apps.mcp_runtime.proxy import (
 from apps.mcp_runtime.sql import SQLRuntimeExecutor
 from libs.ir.models import EventSupportLevel, EventTransport, Operation, ServiceIR
 from libs.observability.tracing import setup_tracer
+from libs.secret_refs import (
+    SecretReferenceCollisionError,
+    ensure_no_secret_ref_name_collisions,
+)
 
 
 @dataclass
@@ -82,6 +86,33 @@ def build_runtime_state(
         return runtime_state
 
     runtime_state.service_ir = service_ir
+    try:
+        ensure_no_secret_ref_name_collisions(
+            [
+                secret_ref
+                for secret_ref in (
+                    service_ir.auth.runtime_secret_ref,
+                    service_ir.auth.basic_password_ref,
+                    service_ir.auth.oauth2.client_id_ref
+                    if service_ir.auth.oauth2 is not None
+                    else None,
+                    service_ir.auth.oauth2.client_secret_ref
+                    if service_ir.auth.oauth2 is not None
+                    else None,
+                    service_ir.auth.mtls.cert_ref if service_ir.auth.mtls is not None else None,
+                    service_ir.auth.mtls.key_ref if service_ir.auth.mtls is not None else None,
+                    service_ir.auth.mtls.ca_ref if service_ir.auth.mtls is not None else None,
+                    service_ir.auth.request_signing.secret_ref
+                    if service_ir.auth.request_signing is not None
+                    else None,
+                )
+                if secret_ref
+            ],
+            context="runtime auth secret resolution",
+        )
+    except SecretReferenceCollisionError as exc:
+        runtime_state.load_error = str(exc)
+        return runtime_state
     setup_tracer(service_ir.service_name, enable_local=True)
     runtime_state.mcp_server = create_runtime_server(name=service_ir.service_name)
     resolved_sql_executor = sql_executor
@@ -108,7 +139,11 @@ def build_runtime_state(
         service_ir,
         tool_handler=runtime_state.proxy.invoke,
     )
-    register_ir_resources(runtime_state.mcp_server, service_ir)
+    register_ir_resources(
+        runtime_state.mcp_server,
+        service_ir,
+        tool_handler=runtime_state.proxy.invoke,
+    )
     register_ir_prompts(runtime_state.mcp_server, service_ir)
     for operation_id in runtime_state.registered_operations:
         runtime_state.observability.register_operation(operation_id)

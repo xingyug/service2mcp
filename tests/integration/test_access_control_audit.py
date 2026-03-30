@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from testcontainers.postgres import PostgresContainer
 
 from apps.access_control.authn.service import JWTSettings
+from apps.access_control.gateway_binding.client import InMemoryAPISIXAdminClient
 from apps.access_control.main import create_app as create_access_control_app
 from apps.compiler_api.dispatcher import InMemoryCompilationDispatcher
 from apps.compiler_api.main import create_app as create_compiler_api_app
@@ -88,6 +89,7 @@ def access_control_app(session_factory: async_sessionmaker[AsyncSession]) -> Fas
     return create_access_control_app(
         session_factory=session_factory,
         jwt_settings=JWTSettings(secret="test-secret"),
+        gateway_admin_client=InMemoryAPISIXAdminClient(),
     )
 
 
@@ -96,6 +98,7 @@ def compiler_api_app(session_factory: async_sessionmaker[AsyncSession]) -> FastA
     return create_compiler_api_app(
         session_factory=session_factory,
         compilation_dispatcher=InMemoryCompilationDispatcher(),
+        jwt_settings=JWTSettings(secret="test-secret"),
     )
 
 
@@ -109,7 +112,11 @@ async def access_control_client(access_control_app: FastAPI) -> AsyncIterator[ht
 @pytest_asyncio.fixture
 async def compiler_api_client(compiler_api_app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
     transport = httpx.ASGITransport(app=compiler_api_app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://compiler-api") as client:
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://compiler-api",
+        headers={"Authorization": f"Bearer {_make_test_jwt('compiler-user')}"},
+    ) as client:
         yield client
 
 

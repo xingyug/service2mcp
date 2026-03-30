@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from xml.etree import ElementTree
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ GRAPHQL_INTROSPECTION_PATH = FIXTURES_ROOT / "graphql_schemas" / "catalog_intros
 SOAP_WSDL_PATH = FIXTURES_ROOT / "wsdl" / "order_service.wsdl"
 _SOAP_ADDRESS_PATTERN = re.compile(r'location="[^"]+"')
 _SOAP_NS = "http://example.com/orders/wsdl"
+_GRAPHQL_DOCUMENT_START = re.compile(r"^\s*(query|mutation|\{)")
+_GRAPHQL_SUPPORTED_OPERATIONS = ("searchProducts", "adjustInventory")
 
 _GRAPHQL_INTROSPECTION = json.loads(GRAPHQL_INTROSPECTION_PATH.read_text(encoding="utf-8"))
 _SOAP_WSDL_TEMPLATE = SOAP_WSDL_PATH.read_text(encoding="utf-8")
@@ -62,9 +65,12 @@ async def rest_item_detail(item_id: str, request: Request) -> Response:
 
 @app.post("/graphql")
 async def graphql_endpoint(request: Request) -> Response:
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except json.JSONDecodeError:
+        return _graphql_error("Malformed JSON request body.")
     if not isinstance(payload, dict):
-        return JSONResponse({"errors": [{"message": "GraphQL request must be an object."}]})
+        return _graphql_error("GraphQL request must be an object.")
 
     query = str(payload.get("query", ""))
     operation_name = str(payload.get("operationName", "") or "")
@@ -72,7 +78,11 @@ async def graphql_endpoint(request: Request) -> Response:
     if not isinstance(variables, dict):
         variables = {}
 
-    if "IntrospectionQuery" in query:
+    operation_name, query_error = _resolve_graphql_operation(query, operation_name)
+    if query_error is not None:
+        return _graphql_error(query_error)
+
+    if operation_name == "IntrospectionQuery":
         return JSONResponse(_GRAPHQL_INTROSPECTION)
 
     if operation_name == "searchProducts":
@@ -93,7 +103,10 @@ async def graphql_endpoint(request: Request) -> Response:
 
     if operation_name == "adjustInventory":
         sku = str(variables.get("sku", "sku-1"))
-        delta = int(variables.get("delta", 0) or 0)
+        try:
+            delta = int(variables.get("delta", 0) or 0)
+        except (TypeError, ValueError):
+            return _graphql_error("adjustInventory.delta must be numeric.")
         return JSONResponse(
             {
                 "data": {
@@ -122,8 +135,16 @@ async def soap_wsdl(request: Request) -> Response:
 async def soap_order_service(request: Request) -> Response:
     body = await request.body()
     soap_action = request.headers.get("SOAPAction", "").strip('"')
+    parsed_body = _parse_xml_body(body)
+    if parsed_body is None:
+        return Response(
+            content=_soap_fault("Malformed SOAP XML request."),
+            status_code=500,
+            media_type="text/xml",
+        )
+    body_operation = _soap_body_operation(parsed_body)
 
-    if soap_action.endswith("/GetOrderStatus") or b"GetOrderStatusRequest" in body:
+    if soap_action.endswith("/GetOrderStatus") or body_operation == "GetOrderStatusRequest":
         return Response(
             content=_soap_success(
                 "GetOrderStatusResponse",
@@ -135,7 +156,7 @@ async def soap_order_service(request: Request) -> Response:
             media_type="text/xml",
         )
 
-    if soap_action.endswith("/SubmitOrder") or b"SubmitOrderRequest" in body:
+    if soap_action.endswith("/SubmitOrder") or body_operation == "SubmitOrderRequest":
         return Response(
             content=_soap_success(
                 "SubmitOrderResponse",
@@ -155,8 +176,59 @@ def _allow_response(allow_header: str) -> Response:
     return Response(status_code=200, headers={"Allow": allow_header})
 
 
+def _graphql_error(message: str) -> JSONResponse:
+    return JSONResponse({"errors": [{"message": message}]})
+
+
+def _resolve_graphql_operation(
+    query: str,
+    operation_name: str,
+) -> tuple[str, str | None]:
+    stripped_query = query.strip()
+    if not stripped_query:
+        return "", "GraphQL query must be a non-empty string."
+    if "__schema" in query:
+        return "IntrospectionQuery", None
+    if _GRAPHQL_DOCUMENT_START.match(query) is None or "{" not in query or "}" not in query:
+        return "", "Invalid GraphQL query."
+
+    matched_supported_operations = [
+        candidate for candidate in _GRAPHQL_SUPPORTED_OPERATIONS if candidate in query
+    ]
+    if operation_name:
+        if operation_name in _GRAPHQL_SUPPORTED_OPERATIONS:
+            if operation_name not in matched_supported_operations:
+                return "", "GraphQL query does not match operationName."
+            return operation_name, None
+        return operation_name, None
+
+    if len(matched_supported_operations) == 1:
+        return matched_supported_operations[0], None
+    if not matched_supported_operations:
+        return "", None
+    return "", "GraphQL operationName is required for ambiguous queries."
+
+
 def _rewrite_wsdl_endpoint(content: str, endpoint: str) -> str:
     return _SOAP_ADDRESS_PATTERN.sub(f'location="{endpoint}"', content, count=1)
+
+
+def _parse_xml_body(body: bytes) -> ElementTree.Element | None:
+    try:
+        return ElementTree.fromstring(body)
+    except ElementTree.ParseError:
+        return None
+
+
+def _soap_body_operation(root: ElementTree.Element) -> str | None:
+    for element in root.iter():
+        tag = element.tag
+        if not isinstance(tag, str):
+            continue
+        local_name = tag.rsplit("}", 1)[-1]
+        if local_name in {"GetOrderStatusRequest", "SubmitOrderRequest"}:
+            return local_name
+    return None
 
 
 def _soap_success(response_element: str, payload: dict[str, Any]) -> str:

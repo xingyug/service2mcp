@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
   Plus,
@@ -31,6 +31,7 @@ import {
   SidebarSeparator,
 } from "@/components/ui/sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { useAuthStore } from "@/stores/auth-store";
 
 interface NavItem {
   label: string;
@@ -92,6 +93,13 @@ function isActive(pathname: string, href: string): boolean {
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+  const logout = useAuthStore((state) => state.logout);
+
+  function handleLogout() {
+    logout();
+    router.replace("/login");
+  }
 
   return (
     <Sidebar collapsible="icon">
@@ -151,6 +159,7 @@ export function AppSidebar() {
                 tooltip="Logout"
                 size="sm"
                 className="w-auto"
+                onClick={handleLogout}
               >
                 <LogOut className="size-4" />
                 <span>Logout</span>

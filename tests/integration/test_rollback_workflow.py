@@ -87,34 +87,69 @@ class RegistryRollbackStore:
         self,
         service_id: str,
         version_number: int,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
     ) -> ArtifactVersionResponse | None:
         async with self._session_factory() as session:
             repository = ArtifactRegistryRepository(session)
-            return await repository.get_version(service_id, version_number)
+            return await repository.get_version(
+                service_id,
+                version_number,
+                tenant=tenant,
+                environment=environment,
+            )
 
-    async def get_active_version(self, service_id: str) -> ArtifactVersionResponse | None:
+    async def get_active_version(
+        self,
+        service_id: str,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
+    ) -> ArtifactVersionResponse | None:
         async with self._session_factory() as session:
             repository = ArtifactRegistryRepository(session)
-            return await repository.get_active_version(service_id)
+            return await repository.get_active_version(
+                service_id,
+                tenant=tenant,
+                environment=environment,
+            )
 
     async def update_version(
         self,
         service_id: str,
         version_number: int,
         payload: ArtifactVersionUpdate,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
     ) -> ArtifactVersionResponse | None:
         async with self._session_factory() as session:
             repository = ArtifactRegistryRepository(session)
-            return await repository.update_version(service_id, version_number, payload)
+            return await repository.update_version(
+                service_id,
+                version_number,
+                payload,
+                tenant=tenant,
+                environment=environment,
+            )
 
     async def activate_version(
         self,
         service_id: str,
         version_number: int,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
     ) -> ArtifactVersionResponse | None:
         async with self._session_factory() as session:
             repository = ArtifactRegistryRepository(session)
-            return await repository.activate_version(service_id, version_number)
+            return await repository.activate_version(
+                service_id,
+                version_number,
+                tenant=tenant,
+                environment=environment,
+            )
 
 
 class FakeRollbackDeployer:
@@ -237,6 +272,7 @@ async def test_rollback_reactivates_previous_version_and_serves_its_tools(
     assert result.target_version == 1
     assert result.deployment_revision == "deploy-petstore-v1"
     assert result.validation_report["overall_passed"] is True
+    assert result.protocol == "openapi"
 
     async with session_factory() as session:
         repository = ArtifactRegistryRepository(session)

@@ -20,7 +20,7 @@ from apps.access_control.authn.routes import (
     revoke_pat,
     validate_token,
 )
-from apps.access_control.authn.service import AuthenticationError, JWTSettings
+from apps.access_control.authn.service import AuthenticationError, JWTSettings, UserNotFoundError
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +30,7 @@ def _mock_audit_log():
 
     with patch("apps.access_control.authn.routes.AuditLogService") as mock_cls:
         mock_cls.return_value = AsyncMock()
-        yield
+        yield mock_cls
 
 
 class TestGetJwtSettings:
@@ -41,14 +41,14 @@ class TestGetJwtSettings:
         mock_request.app = mock_app
         mock_app.state = MagicMock()
 
-        # No jwt_settings attribute
-        del mock_app.state.jwt_settings
         mock_app.state.jwt_settings = None
+        mock_app.state.jwt_settings_error = None
 
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(HTTPException) as exc_info:
             get_jwt_settings(mock_request)
 
-        assert "JWT settings are not configured" in str(exc_info.value)
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail == "JWT settings are not configured."
 
     def test_returns_configured_settings(self):
         """Test successful JWT settings retrieval."""
@@ -77,6 +77,20 @@ class TestValidateToken:
 
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Invalid token"
+
+    async def test_jwt_validation_syncs_existing_user_roles(self):
+        service_mock = AsyncMock()
+        principal = TokenPrincipalResponse(
+            subject="alice",
+            token_type="jwt",
+            claims={"sub": "alice", "roles": ["admin"]},
+        )
+        service_mock.validate_token.return_value = principal
+
+        result = await validate_token(TokenValidationRequest(token="jwt_token"), service_mock)
+
+        assert result == principal
+        service_mock.sync_jwt_user_roles.assert_awaited_once_with(principal)
 
 
 class TestCreatePat:
@@ -128,9 +142,61 @@ class TestCreatePat:
         service_mock.create_pat.assert_awaited_once_with(
             username="alice",
             name="CI token",
-            email=None,
             commit=False,
         )
+        session.rollback.assert_awaited_once()
+
+    async def test_audit_failure_rolls_back_pat_creation_without_gateway_502(
+        self, _mock_audit_log
+    ):
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="alice",
+            token_type="jwt",
+            claims={"sub": "alice"},
+        )
+        created = MagicMock(id=uuid4(), token="pat_token")
+        service_mock.create_pat.return_value = created
+        _mock_audit_log.return_value.append_entry.side_effect = RuntimeError("audit broke")
+
+        with pytest.raises(RuntimeError, match="audit broke"):
+            await create_pat(
+                PATCreateRequest(username="alice", name="CI token"),
+                session,
+                service_mock,
+                gateway_binding_mock,
+                caller,
+            )
+
+        gateway_binding_mock.sync_pat_creation.assert_awaited_once_with(created, created.token)
+        gateway_binding_mock.reconcile.assert_awaited_once_with(session)
+        session.rollback.assert_awaited_once()
+
+    async def test_unknown_user_returns_not_found(self):
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        service_mock.create_pat.side_effect = UserNotFoundError("User 'ghost' not found.")
+        gateway_binding_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="ghost",
+            token_type="jwt",
+            claims={"sub": "ghost"},
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await create_pat(
+                PATCreateRequest(username="ghost", name="CI token"),
+                session,
+                service_mock,
+                gateway_binding_mock,
+                caller,
+            )
+
+        assert exc_info.value.status_code == 404
+        assert "ghost" in exc_info.value.detail
+        gateway_binding_mock.sync_pat_creation.assert_not_awaited()
         session.rollback.assert_awaited_once()
 
     async def test_list_pats_for_other_user_requires_admin(self):
@@ -226,6 +292,30 @@ class TestRevokePat:
         service_mock.revoke_pat.assert_awaited_once()
         session.rollback.assert_awaited_once()
 
+    async def test_audit_failure_rolls_back_pat_revocation_without_gateway_502(
+        self, _mock_audit_log
+    ):
+        session = AsyncMock()
+        service_mock = AsyncMock()
+        gateway_binding_mock = AsyncMock()
+        caller = TokenPrincipalResponse(
+            subject="alice",
+            token_type="jwt",
+            claims={"sub": "alice"},
+        )
+        pat_id = str(uuid4())
+        service_mock.get_pat.return_value = MagicMock(username="alice")
+        revoked = MagicMock(id=pat_id)
+        service_mock.revoke_pat.return_value = revoked
+        _mock_audit_log.return_value.append_entry.side_effect = RuntimeError("audit broke")
+
+        with pytest.raises(RuntimeError, match="audit broke"):
+            await revoke_pat(pat_id, session, service_mock, gateway_binding_mock, caller)
+
+        gateway_binding_mock.sync_pat_revocation.assert_awaited_once_with(revoked.id)
+        gateway_binding_mock.reconcile.assert_awaited_once_with(session)
+        session.rollback.assert_awaited_once()
+
 
 class TestCreatePatHappyPath:
     async def test_create_pat_success_commits_and_returns(self):
@@ -249,10 +339,10 @@ class TestCreatePatHappyPath:
         )
 
         assert result is created
+        service_mock.sync_jwt_user_roles.assert_awaited_once_with(caller, commit=False)
         service_mock.create_pat.assert_awaited_once_with(
             username="alice",
             name="CI token",
-            email=None,
             commit=False,
         )
         gateway_binding_mock.sync_pat_creation.assert_awaited_once_with(

@@ -37,7 +37,7 @@ import type { ServiceIR, RiskLevel, FieldSource } from "@/types/api";
 interface IREditorProps {
   ir: ServiceIR;
   readOnly?: boolean;
-  onSave?: (updatedIR: ServiceIR) => void;
+  onSave?: (updatedIR: ServiceIR) => void | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +432,7 @@ export function IREditor({ ir, readOnly = true, onSave }: IREditorProps) {
     JSON.stringify(ir, null, 2),
   );
   const [parseError, setParseError] = React.useState<string | null>(null);
+  const [saving, setSaving] = React.useState(false);
 
   // Reset editor value when ir changes
   React.useEffect(() => {
@@ -441,14 +442,17 @@ export function IREditor({ ir, readOnly = true, onSave }: IREditorProps) {
 
   const isReadOnly = readOnly || !editing;
 
-  function handleSave() {
+  async function handleSave() {
     try {
       const parsed = JSON.parse(editorValue) as ServiceIR;
       setParseError(null);
-      onSave?.(parsed);
+      setSaving(true);
+      await onSave?.(parsed);
       setEditing(false);
     } catch (e) {
       setParseError((e as Error).message);
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -552,9 +556,9 @@ export function IREditor({ ir, readOnly = true, onSave }: IREditorProps) {
                 </Button>
               )}
               {editing && (
-                <Button size="sm" onClick={handleSave}>
+                <Button size="sm" onClick={() => void handleSave()} disabled={saving}>
                   <Save className="mr-1 size-4" />
-                  Save
+                  {saving ? "Saving…" : "Save"}
                 </Button>
               )}
               <Button variant="outline" size="sm" onClick={handleDownload}>

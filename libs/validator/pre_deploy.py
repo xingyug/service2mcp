@@ -2,23 +2,37 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Self
+from urllib.parse import urlencode
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from libs.ir.models import (
+    AuthConfig,
     AuthType,
     EventSupportLevel,
     EventTransport,
     GrpcStreamMode,
     ServiceIR,
 )
+from libs.secret_refs import MissingSecretReferenceError, resolve_secret_ref
 from libs.validator.audit import ToolAuditSummary
 
 _APPROVED_STREAM_TRANSPORTS = {EventTransport.sse, EventTransport.websocket}
+
+
+def _has_primary_auth_reference(auth: AuthConfig) -> bool:
+    return any(
+        (
+            auth.compile_time_secret_ref,
+            auth.runtime_secret_ref,
+            auth.basic_password_ref,
+        )
+    )
 
 
 class ValidationResult(BaseModel):
@@ -154,26 +168,69 @@ class PreDeployValidator:
                 duration_ms=self._duration_ms(started_at),
             )
 
+        if auth.mtls is not None:
+            try:
+                resolve_secret_ref(
+                    auth.mtls.cert_ref,
+                    purpose="mTLS client certificate",
+                    context="pre-deploy auth smoke",
+                )
+                resolve_secret_ref(
+                    auth.mtls.key_ref,
+                    purpose="mTLS client key",
+                    context="pre-deploy auth smoke",
+                )
+                if auth.mtls.ca_ref:
+                    resolve_secret_ref(
+                        auth.mtls.ca_ref,
+                        purpose="mTLS CA bundle",
+                        context="pre-deploy auth smoke",
+                    )
+            except MissingSecretReferenceError as exc:
+                return ValidationResult(
+                    stage="auth_smoke",
+                    passed=False,
+                    details=str(exc),
+                    duration_ms=self._duration_ms(started_at),
+                )
+            details.append("mTLS secret references resolved.")
+
+        if auth.request_signing is not None:
+            try:
+                resolve_secret_ref(
+                    auth.request_signing.secret_ref,
+                    purpose="request signing secret",
+                    context="pre-deploy auth smoke",
+                )
+            except MissingSecretReferenceError as exc:
+                return ValidationResult(
+                    stage="auth_smoke",
+                    passed=False,
+                    details=str(exc),
+                    duration_ms=self._duration_ms(started_at),
+                )
+            details.append("Request signing secret resolved.")
+
         if auth.type is AuthType.oauth2:
             oauth_result = await self._validate_oauth2_endpoint(service_ir, started_at)
             if not oauth_result.passed:
                 return oauth_result
             details.append(oauth_result.details)
         elif auth.type is not AuthType.none:
-            if not auth.compile_time_secret_ref and not auth.runtime_secret_ref:
+            if not _has_primary_auth_reference(auth):
                 return ValidationResult(
                     stage="auth_smoke",
                     passed=False,
                     details=(
                         "Auth configuration requires a compile_time_secret_ref or "
-                        "runtime_secret_ref."
+                        "runtime_secret_ref (or basic_password_ref for basic auth)."
                     ),
                     duration_ms=self._duration_ms(started_at),
                 )
             details.append("Primary auth configuration includes a secret reference.")
 
         if auth.mtls is not None:
-            details.append("mTLS certificate references configured.")
+            details.append("mTLS configuration present.")
 
         if auth.request_signing is not None:
             details.append("Request signing configuration present.")
@@ -193,11 +250,52 @@ class PreDeployValidator:
         auth = service_ir.auth
         token_url: str | None
         if auth.oauth2 is not None:
-            token_url = auth.oauth2.token_url
-            details_prefix = "OAuth2 client credentials endpoint reachable"
+            oauth2 = auth.oauth2
+            token_url = oauth2.token_url
+            try:
+                client_id = (
+                    oauth2.client_id
+                    if oauth2.client_id is not None
+                    else resolve_secret_ref(
+                        oauth2.client_id_ref or "",
+                        purpose="oauth2 client id",
+                        context="pre-deploy auth smoke",
+                    )
+                )
+                client_secret = resolve_secret_ref(
+                    oauth2.client_secret_ref,
+                    purpose="oauth2 client secret",
+                    context="pre-deploy auth smoke",
+                )
+            except MissingSecretReferenceError as exc:
+                return ValidationResult(
+                    stage="auth_smoke",
+                    passed=False,
+                    details=str(exc),
+                    duration_ms=self._duration_ms(started_at),
+                )
+
+            form_payload: dict[str, str] = {"grant_type": "client_credentials"}
+            if oauth2.scopes:
+                form_payload["scope"] = " ".join(oauth2.scopes)
+            if oauth2.audience:
+                form_payload["audience"] = oauth2.audience
+
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+            if oauth2.client_auth_method == "client_secret_basic":
+                encoded = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode("ascii")
+                headers["Authorization"] = f"Basic {encoded}"
+            else:
+                form_payload["client_id"] = client_id
+                form_payload["client_secret"] = client_secret
+
+            request_content = urlencode(form_payload)
+            details_prefix = "OAuth2 client credentials token exchange succeeded"
         else:
             token_url = auth.oauth2_token_url
-            details_prefix = "Auth token endpoint reachable"
+            request_content = urlencode({"grant_type": "client_credentials"})
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+            details_prefix = "Auth token endpoint accepted POST probe"
 
         if not token_url:
             return ValidationResult(
@@ -219,7 +317,12 @@ class PreDeployValidator:
             )
 
         try:
-            response = await self._client.get(token_url)
+            response = await self._client.post(
+                token_url,
+                content=request_content,
+                headers=headers,
+                follow_redirects=False,
+            )
         except httpx.RequestError as exc:
             return ValidationResult(
                 stage="auth_smoke",
@@ -228,7 +331,7 @@ class PreDeployValidator:
                 duration_ms=self._duration_ms(started_at),
             )
 
-        if response.status_code == 404 or response.status_code >= 500:
+        if not response.is_success:
             return ValidationResult(
                 stage="auth_smoke",
                 passed=False,
@@ -238,6 +341,30 @@ class PreDeployValidator:
                 ),
                 duration_ms=self._duration_ms(started_at),
             )
+
+        if auth.oauth2 is not None:
+            try:
+                payload = response.json()
+            except Exception:
+                return ValidationResult(
+                    stage="auth_smoke",
+                    passed=False,
+                    details=(
+                        "Auth smoke test received a non-JSON response from token endpoint: "
+                        f"HTTP {response.status_code}"
+                    ),
+                    duration_ms=self._duration_ms(started_at),
+                )
+            if not isinstance(payload, dict) or not isinstance(payload.get("access_token"), str):
+                return ValidationResult(
+                    stage="auth_smoke",
+                    passed=False,
+                    details=(
+                        "Auth smoke test did not receive an access_token from token endpoint: "
+                        f"HTTP {response.status_code}"
+                    ),
+                    duration_ms=self._duration_ms(started_at),
+                )
 
         return ValidationResult(
             stage="auth_smoke",

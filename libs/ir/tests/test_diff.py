@@ -3,7 +3,18 @@
 from typing import Any
 
 from libs.ir.diff import ParamChange, compute_diff
-from libs.ir.models import Operation, Param, RiskLevel, RiskMetadata, ServiceIR
+from libs.ir.models import (
+    EventDescriptor,
+    EventSupportLevel,
+    EventTransport,
+    Operation,
+    Param,
+    PromptDefinition,
+    ResourceDefinition,
+    RiskLevel,
+    RiskMetadata,
+    ServiceIR,
+)
 
 
 def _base_ir(**overrides: Any) -> ServiceIR:
@@ -358,3 +369,124 @@ class TestDiffSummary:
         assert diff.summary == "~1 changed"
         assert not diff.added_operations
         assert not diff.removed_operations
+
+
+class TestDiffExtendedSurfaces:
+    def test_top_level_service_changes_are_reported(self) -> None:
+        a = _base_ir(base_url="https://old.example.com")
+        b = _base_ir(base_url="https://new.example.com")
+
+        diff = compute_diff(a, b)
+
+        service_diff = next(
+            operation for operation in diff.changed_operations if operation.operation_id == "__service__"
+        )
+        assert ("base_url", "https://old.example.com", "https://new.example.com") in service_diff.changes
+
+    def test_response_contract_changes_are_reported(self) -> None:
+        a = _base_ir(
+            operations=[_op("get_user", response_schema={"type": "object", "properties": {"name": {"type": "string"}}})]
+        )
+        b = _base_ir(
+            operations=[_op("get_user", response_schema={"type": "object", "properties": {"email": {"type": "string"}}})]
+        )
+
+        diff = compute_diff(a, b)
+
+        op_diff = next(operation for operation in diff.changed_operations if operation.operation_id == "get_user")
+        assert any(
+            isinstance(change, tuple) and change[0] == "response_schema" for change in op_diff.changes
+        )
+
+    def test_request_execution_contract_changes_are_reported(self) -> None:
+        a = _base_ir(
+            operations=[
+                _op(
+                    "submit",
+                    method="POST",
+                    request_body_mode="json",
+                    body_param_name="body",
+                )
+            ]
+        )
+        b = _base_ir(
+            operations=[
+                _op(
+                    "submit",
+                    method="POST",
+                    request_body_mode="multipart",
+                    body_param_name="payload",
+                )
+            ]
+        )
+
+        diff = compute_diff(a, b)
+
+        op_diff = next(operation for operation in diff.changed_operations if operation.operation_id == "submit")
+        fields = {
+            change[0]
+            for change in op_diff.changes
+            if isinstance(change, tuple)
+        }
+        assert {"request_body_mode", "body_param_name"} <= fields
+
+    def test_resource_prompt_and_event_changes_are_reported(self) -> None:
+        a = _base_ir(
+            resource_definitions=[
+                ResourceDefinition(
+                    id="catalog",
+                    name="catalog",
+                    uri="service://catalog",
+                    content_type="static",
+                    content="old",
+                )
+            ],
+            prompt_definitions=[
+                PromptDefinition(
+                    id="summarize",
+                    name="summarize",
+                    template="Old template",
+                )
+            ],
+            event_descriptors=[
+                EventDescriptor(
+                    id="inventory",
+                    name="inventory",
+                    transport=EventTransport.sse,
+                    support=EventSupportLevel.unsupported,
+                )
+            ],
+        )
+        b = _base_ir(
+            resource_definitions=[
+                ResourceDefinition(
+                    id="catalog",
+                    name="catalog",
+                    uri="service://catalog",
+                    content_type="static",
+                    content="new",
+                )
+            ],
+            prompt_definitions=[
+                PromptDefinition(
+                    id="summarize",
+                    name="summarize",
+                    template="New template",
+                )
+            ],
+            event_descriptors=[
+                EventDescriptor(
+                    id="inventory",
+                    name="inventory",
+                    transport=EventTransport.sse,
+                    support=EventSupportLevel.supported,
+                )
+            ],
+        )
+
+        diff = compute_diff(a, b)
+        operation_ids = {operation.operation_id for operation in diff.changed_operations}
+
+        assert "__resource_definitions__" in operation_ids
+        assert "__prompt_definitions__" in operation_ids
+        assert "__event_descriptors__" in operation_ids

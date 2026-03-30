@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { ErrorState } from "@/components/ui/error-state";
 import {
   Dialog,
   DialogContent,
@@ -47,18 +48,12 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import {
-  Collapsible,
-  CollapsibleTrigger,
-  CollapsibleContent,
-} from "@/components/ui/collapsible";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { useServices } from "@/hooks/use-api";
 import { artifactApi, gatewayApi } from "@/lib/api-client";
 import {
-  buildDeploymentHistory,
   buildPreviousRoutes,
   findActiveArtifactVersion,
   findArtifactVersion,
@@ -67,6 +62,7 @@ import {
 import type {
   ArtifactVersionResponse,
   GatewayRouteDocument,
+  GatewayPreviousRoutes,
   ReconcileResponse,
   ServiceSummary,
 } from "@/types/api";
@@ -80,17 +76,9 @@ type RouteStatus = "synced" | "drifted" | "error";
 interface ServiceRoute {
   service: ServiceSummary;
   status: RouteStatus;
-  lastSynced?: string;
+  artifactTimestamp?: string;
   routeConfig?: Record<string, unknown>;
-}
-
-interface DeploymentEntry {
-  id: string;
-  timestamp: string;
-  serviceName: string;
-  fromVersion: number | null;
-  toVersion: number | null;
-  action: "deploy" | "rollback" | "delete";
+  versionLoadError?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +186,20 @@ function OverviewCards({
   );
 }
 
-function RouteConfigViewer({ config }: { config?: Record<string, unknown> }) {
+function RouteConfigViewer({
+  config,
+  errorMessage,
+}: {
+  config?: Record<string, unknown>;
+  errorMessage?: string;
+}) {
+  if (errorMessage) {
+    return (
+      <p className="py-2 text-sm text-destructive">
+        {errorMessage}
+      </p>
+    );
+  }
   if (!config) {
     return (
       <p className="py-2 text-sm text-muted-foreground">
@@ -270,87 +271,21 @@ function ReconcileResults({
   );
 }
 
-function DeploymentHistory({ entries }: { entries: DeploymentEntry[] }) {
-  const [open, setOpen] = React.useState(false);
-
-  const actionColors: Record<string, string> = {
-    deploy: "bg-green-500",
-    rollback: "bg-yellow-500",
-    delete: "bg-red-500",
-  };
-
+function GatewayHistoryNotice() {
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger
-        render={
-          <button
-            type="button"
-            className="flex w-full items-center gap-2 rounded-lg border bg-card px-4 py-3 text-left font-semibold transition-colors hover:bg-muted/30"
-          />
-        }
-      >
-        {open ? (
-          <ChevronDown className="size-4 text-muted-foreground" />
-        ) : (
-          <ChevronRight className="size-4 text-muted-foreground" />
-        )}
-        <Clock className="size-4 text-muted-foreground" />
-        Deployment History
-        <Badge variant="secondary" className="ml-auto">
-          {entries.length}
-        </Badge>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="mt-2 rounded-lg border bg-card p-4">
-          {entries.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No deployment history available.
-            </p>
-          ) : (
-            <div className="relative ml-4 border-l-2 border-muted pl-6">
-              {entries.map((entry) => (
-                <div key={entry.id} className="relative mb-4 last:mb-0">
-                  <div
-                    className={cn(
-                      "absolute -left-[31px] top-1 size-3 rounded-full ring-2 ring-background",
-                      actionColors[entry.action] ?? "bg-gray-500",
-                    )}
-                  />
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="text-xs text-muted-foreground">
-                      {relativeTime(entry.timestamp)}
-                    </span>
-                    <span className="font-medium">{entry.serviceName}</span>
-                    <span className="text-muted-foreground">
-                      {entry.fromVersion != null
-                        ? `v${entry.fromVersion}`
-                        : "—"}{" "}
-                      →{" "}
-                      {entry.toVersion != null
-                        ? `v${entry.toVersion}`
-                        : "—"}
-                    </span>
-                    <span
-                      className={cn(
-                        "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
-                        entry.action === "deploy" &&
-                          "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
-                        entry.action === "rollback" &&
-                          "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300",
-                        entry.action === "delete" &&
-                          "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
-                      )}
-                    >
-                      {entry.action}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+    <Card className="p-4">
+      <div className="flex items-start gap-3">
+        <Clock className="mt-0.5 size-4 text-muted-foreground" />
+        <div className="space-y-1">
+          <h2 className="text-sm font-semibold">Gateway Deployment History</h2>
+          <p className="text-sm text-muted-foreground">
+            Unavailable. The system does not currently persist gateway
+            sync/rollback/delete events, so this page no longer fabricates a
+            deployment timeline from artifact creation timestamps.
+          </p>
         </div>
-      </CollapsibleContent>
-    </Collapsible>
+      </div>
+    </Card>
   );
 }
 
@@ -359,10 +294,12 @@ function DeploymentHistory({ entries }: { entries: DeploymentEntry[] }) {
 // ---------------------------------------------------------------------------
 
 export default function GatewayPage() {
-  const { data: servicesData, isLoading, refetch } = useServices();
+  const { data: servicesData, isLoading, error, refetch } = useServices();
   const services = React.useMemo(() => servicesData?.services ?? [], [servicesData]);
   const [artifactVersionsByService, setArtifactVersionsByService] =
     React.useState<Record<string, ArtifactVersionResponse[]>>({});
+  const [artifactVersionErrorsByService, setArtifactVersionErrorsByService] =
+    React.useState<Record<string, string>>({});
   const [gatewayRoutesById, setGatewayRoutesById] = React.useState<
     Record<string, GatewayRouteDocument>
   >({});
@@ -387,21 +324,49 @@ export default function GatewayPage() {
     async (serviceList: ServiceSummary[]) => {
       if (serviceList.length === 0) {
         setArtifactVersionsByService({});
+        setArtifactVersionErrorsByService({});
         return;
       }
 
-      const versions = await Promise.all(
+      const results = await Promise.all(
         serviceList.map(async (service) => {
           try {
             const response = await artifactApi.listVersions(service.service_id);
-            return [service.service_id, response.versions] as const;
-          } catch {
-            return [service.service_id, []] as const;
+            return {
+              serviceId: service.service_id,
+              versions: response.versions,
+              error: undefined,
+            } as const;
+          } catch (error) {
+            return {
+              serviceId: service.service_id,
+              versions: undefined,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : "Unknown artifact version error",
+            } as const;
           }
         }),
       );
 
-      setArtifactVersionsByService(Object.fromEntries(versions));
+      setArtifactVersionsByService(
+        Object.fromEntries(
+          results
+            .filter((result) => result.error == null)
+            .map((result) => [result.serviceId, result.versions ?? []]),
+        ),
+      );
+      setArtifactVersionErrorsByService(
+        Object.fromEntries(
+          results
+            .filter((result) => result.error != null)
+            .map((result) => [
+              result.serviceId,
+              `Failed to load artifact versions: ${result.error}`,
+            ]),
+        ),
+      );
     },
     [],
   );
@@ -451,31 +416,56 @@ export default function GatewayPage() {
   const serviceRoutes: ServiceRoute[] = React.useMemo(
     () =>
       services.map((service) => {
+        const versionLoadError = artifactVersionErrorsByService[service.service_id];
         const versions = artifactVersionsByService[service.service_id] ?? [];
         const activeVersion = findActiveArtifactVersion(versions);
 
         return {
           service,
-          status: gatewayRoutesLoadFailed
+          status: gatewayRoutesLoadFailed || versionLoadError
             ? "error"
             : inferRouteStatus(activeVersion?.route_config, gatewayRoutesById),
-          lastSynced: activeVersion?.created_at ?? service.last_compiled,
+          artifactTimestamp: activeVersion?.created_at ?? service.last_compiled,
           routeConfig: activeVersion?.route_config,
+          versionLoadError,
         };
       }),
-    [artifactVersionsByService, gatewayRoutesById, gatewayRoutesLoadFailed, services],
+    [
+      artifactVersionErrorsByService,
+      artifactVersionsByService,
+      gatewayRoutesById,
+      gatewayRoutesLoadFailed,
+      services,
+    ],
   );
 
-  const deploymentHistory = React.useMemo<DeploymentEntry[]>(
-    () => buildDeploymentHistory(services, artifactVersionsByService),
-    [artifactVersionsByService, services],
-  );
+  React.useEffect(() => {
+    if (!rollbackDialogOpen || !selectedServiceId || selectedVersion) {
+      return;
+    }
+
+    const previousVersion = previousVersionForService(
+      artifactVersionsByService[selectedServiceId] ?? [],
+    );
+    if (previousVersion) {
+      setSelectedVersion(String(previousVersion.version_number));
+    }
+  }, [
+    artifactVersionsByService,
+    rollbackDialogOpen,
+    selectedServiceId,
+    selectedVersion,
+  ]);
 
   const counts = React.useMemo(() => {
     const c = { synced: 0, drifted: 0, error: 0 };
     for (const route of serviceRoutes) c[route.status]++;
     return c;
   }, [serviceRoutes]);
+  const servicesErrorMessage =
+    error instanceof Error
+      ? error.message
+      : "The services request did not succeed.";
 
   async function getArtifactVersionsForService(serviceId: string) {
     const cached = artifactVersionsByService[serviceId];
@@ -483,12 +473,52 @@ export default function GatewayPage() {
       return cached;
     }
 
-    const response = await artifactApi.listVersions(serviceId);
-    setArtifactVersionsByService((prev) => ({
-      ...prev,
-      [serviceId]: response.versions,
-    }));
-    return response.versions;
+    try {
+      const response = await artifactApi.listVersions(serviceId);
+      setArtifactVersionsByService((prev) => ({
+        ...prev,
+        [serviceId]: response.versions,
+      }));
+      setArtifactVersionErrorsByService((prev) => {
+        const next = { ...prev };
+        delete next[serviceId];
+        return next;
+      });
+      return response.versions;
+    } catch (error) {
+      setArtifactVersionErrorsByService((prev) => ({
+        ...prev,
+        [serviceId]: `Failed to load artifact versions: ${
+          error instanceof Error ? error.message : "Unknown artifact version error"
+        }`,
+      }));
+      throw error;
+    }
+  }
+
+  function gatewayPreviousRoutesForService(
+    serviceId: string,
+  ): GatewayPreviousRoutes {
+    return Object.fromEntries(
+      Object.entries(gatewayRoutesById).filter(
+        ([, route]) => route.service_id === serviceId,
+      ),
+    );
+  }
+
+  function previousVersionForService(
+    versions: ArtifactVersionResponse[],
+  ): ArtifactVersionResponse | undefined {
+    const currentVersion =
+      findActiveArtifactVersion(versions) ??
+      versions.find((version) => version.is_active);
+    if (!currentVersion) {
+      return undefined;
+    }
+
+    return [...versions]
+      .filter((version) => version.version_number < currentVersion.version_number)
+      .sort((left, right) => right.version_number - left.version_number)[0];
   }
 
   function defaultVersionForService(serviceId?: string): string {
@@ -505,13 +535,13 @@ export default function GatewayPage() {
       return "";
     }
 
-    const service = services.find((item) => item.service_id === serviceId);
-    const activeVersion = service?.active_version;
-    if (!activeVersion || activeVersion <= 1) {
+    const versions = artifactVersionsByService[serviceId] ?? [];
+    const previousVersion = previousVersionForService(versions);
+    if (!previousVersion) {
       return "";
     }
 
-    return String(activeVersion - 1);
+    return String(previousVersion.version_number);
   }
 
   const toggleRow = (id: string) => {
@@ -554,7 +584,7 @@ export default function GatewayPage() {
 
       const result = await gatewayApi.syncRoutes({
         route_config: targetVersion.route_config,
-        previous_routes: {},
+        previous_routes: gatewayPreviousRoutesForService(selectedServiceId),
       });
       toast.success(
         `Synced ${result.service_routes_synced} route(s) for ${selectedServiceId}.`,
@@ -584,7 +614,8 @@ export default function GatewayPage() {
 
       const targetVersionNumber =
         Number(selectedVersion) ||
-        Math.max(currentVersion.version_number - 1, 0);
+        previousVersionForService(versions)?.version_number ||
+        0;
       if (targetVersionNumber < 1) {
         throw new Error("No previous version is available to roll back to.");
       }
@@ -650,10 +681,25 @@ export default function GatewayPage() {
     setSyncDialogOpen(true);
   };
 
-  const openRollbackDialog = (serviceId?: string) => {
+  const openRollbackDialog = async (serviceId?: string) => {
     setSelectedServiceId(serviceId ?? "");
     setSelectedVersion(rollbackVersionForService(serviceId));
     setRollbackDialogOpen(true);
+    if (!serviceId) {
+      return;
+    }
+
+    try {
+      const versions = await getArtifactVersionsForService(serviceId);
+      const previousVersion = previousVersionForService(versions);
+      setSelectedVersion(
+        previousVersion ? String(previousVersion.version_number) : "",
+      );
+    } catch (err) {
+      toast.error(
+        `Failed to load versions: ${err instanceof Error ? err.message : "Unknown error"}`,
+      );
+    }
   };
 
   const openDeleteDialog = (serviceId?: string) => {
@@ -704,6 +750,24 @@ export default function GatewayPage() {
       {/* Reconciliation Results */}
       <ReconcileResults result={reconcileResult} />
 
+      {gatewayRoutesLoadFailed && (
+        <Card className="border-destructive/50 bg-destructive/5 p-4 text-sm text-destructive">
+          Failed to load live gateway routes. Route status is unavailable until the
+          gateway route listing succeeds.
+        </Card>
+      )}
+
+      {Object.keys(artifactVersionErrorsByService).length > 0 && (
+        <Card className="border-destructive/50 bg-destructive/5 p-4 text-sm text-destructive">
+          Failed to load artifact versions for{" "}
+          {Object.keys(artifactVersionErrorsByService)
+            .sort()
+            .join(", ")}
+          . Those services are shown as errors instead of being treated as having
+          empty version histories.
+        </Card>
+      )}
+
       {/* Overview Cards */}
       {isLoading ? (
         <div className="grid gap-4 sm:grid-cols-3">
@@ -711,6 +775,14 @@ export default function GatewayPage() {
             <Skeleton key={i} className="h-20 rounded-lg" />
           ))}
         </div>
+      ) : error ? (
+        <ErrorState
+          title="Failed to load services"
+          message={servicesErrorMessage}
+          onAction={() => {
+            void refreshGatewayState();
+          }}
+        />
       ) : (
         <OverviewCards
           synced={counts.synced}
@@ -719,54 +791,56 @@ export default function GatewayPage() {
         />
       )}
 
-      {/* Route Actions */}
-      <div className="flex flex-wrap gap-2">
-        <Button variant="outline" size="sm" onClick={() => openSyncDialog()}>
-          <Upload className="size-4" />
-          Sync Routes
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => openRollbackDialog()}>
-          <Undo2 className="size-4" />
-          Rollback
-        </Button>
-        <Button
-          variant="destructive"
-          size="sm"
-          onClick={() => openDeleteDialog()}
-        >
-          <Trash2 className="size-4" />
-          Delete Routes
-        </Button>
-      </div>
+      {!error && (
+        <>
+          {/* Route Actions */}
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => openSyncDialog()}>
+              <Upload className="size-4" />
+              Sync Routes
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => openRollbackDialog()}>
+              <Undo2 className="size-4" />
+              Rollback
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => openDeleteDialog()}
+            >
+              <Trash2 className="size-4" />
+              Delete Routes
+            </Button>
+          </div>
 
-      {/* Service Routes Table */}
-      <Card>
-        <div className="p-4 pb-0">
-          <h2 className="text-lg font-semibold">Service Routes</h2>
-        </div>
-        <div className="p-4">
-          {isLoading ? (
-            <div className="space-y-2">
-              {[1, 2, 3, 4].map((i) => (
-                <Skeleton key={i} className="h-12 rounded-md" />
-              ))}
+          {/* Service Routes Table */}
+          <Card>
+            <div className="p-4 pb-0">
+              <h2 className="text-lg font-semibold">Service Routes</h2>
             </div>
-          ) : serviceRoutes.length === 0 ? (
-            <div className="py-8 text-center">
-              <Route className="mx-auto mb-2 size-8 text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">
-                No service routes found.
-              </p>
-            </div>
-          ) : (
-            <Table>
+            <div className="p-4">
+              {isLoading ? (
+                <div className="space-y-2">
+                  {[1, 2, 3, 4].map((i) => (
+                    <Skeleton key={i} className="h-12 rounded-md" />
+                  ))}
+                </div>
+              ) : serviceRoutes.length === 0 ? (
+                <div className="py-8 text-center">
+                  <Route className="mx-auto mb-2 size-8 text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">
+                    No service routes found.
+                  </p>
+                </div>
+              ) : (
+                <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-8" />
                   <TableHead>Service Name</TableHead>
                   <TableHead>Version</TableHead>
                   <TableHead>Route Status</TableHead>
-                  <TableHead>Last Synced</TableHead>
+                  <TableHead>Artifact Timestamp</TableHead>
                   <TableHead className="w-10" />
                 </TableRow>
               </TableHeader>
@@ -788,6 +862,11 @@ export default function GatewayPage() {
                         </TableCell>
                         <TableCell className="font-medium">
                           {route.service.name}
+                          {route.versionLoadError && (
+                            <p className="mt-1 text-xs font-normal text-destructive">
+                              Artifact versions unavailable
+                            </p>
+                          )}
                         </TableCell>
                         <TableCell>
                           {route.service.active_version != null ? (
@@ -802,7 +881,7 @@ export default function GatewayPage() {
                         </TableCell>
                         <TableCell>{statusBadge(route.status)}</TableCell>
                         <TableCell className="text-sm text-muted-foreground">
-                          {relativeTime(route.lastSynced)}
+                          {relativeTime(route.artifactTimestamp)}
                         </TableCell>
                         <TableCell>
                           <DropdownMenu>
@@ -864,7 +943,10 @@ export default function GatewayPage() {
                             <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                               Route Configuration
                             </h4>
-                            <RouteConfigViewer config={route.routeConfig} />
+                            <RouteConfigViewer
+                              config={route.routeConfig}
+                              errorMessage={route.versionLoadError}
+                            />
                           </TableCell>
                         </TableRow>
                       )}
@@ -872,13 +954,14 @@ export default function GatewayPage() {
                   );
                 })}
               </TableBody>
-            </Table>
-          )}
-        </div>
-      </Card>
+                </Table>
+              )}
+            </div>
+          </Card>
+        </>
+      )}
 
-      {/* Deployment History (F-025) */}
-      <DeploymentHistory entries={deploymentHistory} />
+      <GatewayHistoryNotice />
 
       {/* Sync Routes Dialog */}
       <Dialog open={syncDialogOpen} onOpenChange={setSyncDialogOpen}>

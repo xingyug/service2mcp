@@ -141,7 +141,7 @@ async def test_unreachable_auth_endpoint_fails_auth_smoke() -> None:
         runtime_secret_ref="inventory-oauth-secret",
     )
     ir = _build_ir(auth=auth)
-    respx.get("https://auth.example.com/oauth/token").mock(
+    respx.post("https://auth.example.com/oauth/token").mock(
         side_effect=httpx.ConnectError("connection refused")
     )
 
@@ -159,7 +159,15 @@ async def test_unreachable_auth_endpoint_fails_auth_smoke() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_advanced_auth_config_passes_when_oauth2_endpoint_is_reachable() -> None:
+async def test_advanced_auth_config_passes_when_oauth2_token_exchange_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INVENTORY_CLIENT_ID", "inventory-client")
+    monkeypatch.setenv("INVENTORY_CLIENT_SECRET", "inventory-secret")
+    monkeypatch.setenv("INVENTORY_MTLS_CERT", "/tmp/cert.pem")
+    monkeypatch.setenv("INVENTORY_MTLS_KEY", "/tmp/key.pem")
+    monkeypatch.setenv("INVENTORY_MTLS_CA", "/tmp/ca.pem")
+    monkeypatch.setenv("INVENTORY_SIGNING_SECRET", "signing-secret")
     auth = AuthConfig(
         type=AuthType.oauth2,
         oauth2=OAuth2ClientCredentialsConfig(
@@ -177,8 +185,8 @@ async def test_advanced_auth_config_passes_when_oauth2_endpoint_is_reachable() -
         request_signing=RequestSigningConfig(secret_ref="inventory-signing-secret"),
     )
     ir = _build_ir(auth=auth)
-    respx.get("https://auth.example.com/oauth/token").mock(
-        return_value=httpx.Response(200, json={"status": "ok"})
+    route = respx.post("https://auth.example.com/oauth/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "token"})
     )
 
     validator = PreDeployValidator()
@@ -191,8 +199,17 @@ async def test_advanced_auth_config_passes_when_oauth2_endpoint_is_reachable() -
     assert report.get_result("schema").passed is True
     assert report.get_result("auth_smoke").passed is True
     assert (
-        "oauth2 client credentials endpoint reachable"
+        "oauth2 client credentials token exchange succeeded"
         in report.get_result("auth_smoke").details.lower()
+    )
+    assert "mtls secret references resolved" in report.get_result("auth_smoke").details.lower()
+    assert "request signing secret resolved" in report.get_result("auth_smoke").details.lower()
+    request = route.calls[0].request
+    assert request.method == "POST"
+    assert request.headers["Content-Type"] == "application/x-www-form-urlencoded"
+    assert request.headers["Authorization"].startswith("Basic ")
+    assert request.content.decode() == (
+        "grant_type=client_credentials&scope=inventory.read&audience=inventory-api"
     )
 
 
@@ -556,6 +573,23 @@ async def test_non_none_auth_without_secret_refs_fails() -> None:
     assert "compile_time_secret_ref or runtime_secret_ref" in auth_detail
 
 
+@pytest.mark.asyncio
+async def test_basic_auth_with_password_ref_passes_secret_check() -> None:
+    auth = AuthConfig(
+        type=AuthType.basic,
+        basic_username="svc-user",
+        basic_password_ref="basic-password",
+    )
+    ir = _build_ir(auth=auth)
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("auth_smoke").passed is True
+
+
 # ---------------------------------------------------------------------------
 # OAuth2 missing token_url (line 203)
 # ---------------------------------------------------------------------------
@@ -599,13 +633,17 @@ async def test_oauth2_with_token_url_but_no_secret_refs_fails() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Token endpoint returns 404 or 500 (line 232)
+# Token endpoint returns unhealthy statuses
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_token_endpoint_returning_404_fails() -> None:
+async def test_token_endpoint_returning_404_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CID", "inventory-client")
+    monkeypatch.setenv("CSEC", "inventory-secret")
     auth = AuthConfig(
         type=AuthType.oauth2,
         oauth2=OAuth2ClientCredentialsConfig(
@@ -615,7 +653,7 @@ async def test_token_endpoint_returning_404_fails() -> None:
         ),
     )
     ir = _build_ir(auth=auth)
-    respx.get("https://auth.example.com/token").mock(
+    respx.post("https://auth.example.com/token").mock(
         return_value=httpx.Response(404)
     )
     validator = PreDeployValidator()
@@ -631,7 +669,11 @@ async def test_token_endpoint_returning_404_fails() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_token_endpoint_returning_500_fails() -> None:
+async def test_token_endpoint_returning_500_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CID", "inventory-client")
+    monkeypatch.setenv("CSEC", "inventory-secret")
     auth = AuthConfig(
         type=AuthType.oauth2,
         oauth2=OAuth2ClientCredentialsConfig(
@@ -641,7 +683,7 @@ async def test_token_endpoint_returning_500_fails() -> None:
         ),
     )
     ir = _build_ir(auth=auth)
-    respx.get("https://auth.example.com/token").mock(
+    respx.post("https://auth.example.com/token").mock(
         return_value=httpx.Response(500)
     )
     validator = PreDeployValidator()
@@ -653,6 +695,134 @@ async def test_token_endpoint_returning_500_fails() -> None:
     assert report.get_result("auth_smoke").passed is False
     assert "unhealthy response" in report.get_result("auth_smoke").details.lower()
     assert "500" in report.get_result("auth_smoke").details
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [302, 400, 401, 405])
+@respx.mock
+async def test_token_endpoint_non_success_statuses_fail(
+    status_code: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CID", "inventory-client")
+    monkeypatch.setenv("CSEC", "inventory-secret")
+    auth = AuthConfig(
+        type=AuthType.oauth2,
+        oauth2=OAuth2ClientCredentialsConfig(
+            token_url="https://auth.example.com/token",
+            client_id_ref="cid",
+            client_secret_ref="csec",
+        ),
+    )
+    ir = _build_ir(auth=auth)
+    response_headers = {"location": "https://auth.example.com/redirected"} if status_code == 302 else {}
+    respx.post("https://auth.example.com/token").mock(
+        return_value=httpx.Response(status_code, headers=response_headers)
+    )
+
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("auth_smoke").passed is False
+    assert "unhealthy response" in report.get_result("auth_smoke").details.lower()
+    assert str(status_code) in report.get_result("auth_smoke").details
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_advanced_auth_config_fails_when_oauth2_secret_ref_is_missing() -> None:
+    auth = AuthConfig(
+        type=AuthType.oauth2,
+        oauth2=OAuth2ClientCredentialsConfig(
+            token_url="https://auth.example.com/oauth/token",
+            client_id_ref="inventory-client-id",
+            client_secret_ref="inventory-client-secret",
+        ),
+    )
+    ir = _build_ir(auth=auth)
+    route = respx.post("https://auth.example.com/oauth/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "token"})
+    )
+
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("auth_smoke").passed is False
+    assert "oauth2 client id" in report.get_result("auth_smoke").details.lower()
+    assert route.called is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_advanced_auth_config_fails_when_mtls_secret_ref_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INVENTORY_CLIENT_ID", "inventory-client")
+    monkeypatch.setenv("INVENTORY_CLIENT_SECRET", "inventory-secret")
+    auth = AuthConfig(
+        type=AuthType.oauth2,
+        oauth2=OAuth2ClientCredentialsConfig(
+            token_url="https://auth.example.com/oauth/token",
+            client_id_ref="inventory-client-id",
+            client_secret_ref="inventory-client-secret",
+        ),
+        mtls=MTLSConfig(
+            cert_ref="inventory-mtls-cert",
+            key_ref="inventory-mtls-key",
+        ),
+    )
+    ir = _build_ir(auth=auth)
+    route = respx.post("https://auth.example.com/oauth/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "token"})
+    )
+
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("auth_smoke").passed is False
+    assert "mtls client certificate" in report.get_result("auth_smoke").details.lower()
+    assert route.called is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_advanced_auth_config_fails_when_request_signing_secret_ref_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INVENTORY_CLIENT_ID", "inventory-client")
+    monkeypatch.setenv("INVENTORY_CLIENT_SECRET", "inventory-secret")
+    auth = AuthConfig(
+        type=AuthType.oauth2,
+        oauth2=OAuth2ClientCredentialsConfig(
+            token_url="https://auth.example.com/oauth/token",
+            client_id_ref="inventory-client-id",
+            client_secret_ref="inventory-client-secret",
+        ),
+        request_signing=RequestSigningConfig(secret_ref="inventory-signing-secret"),
+    )
+    ir = _build_ir(auth=auth)
+    route = respx.post("https://auth.example.com/oauth/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "token"})
+    )
+
+    validator = PreDeployValidator()
+    try:
+        report = await validator.validate(ir)
+    finally:
+        await validator.aclose()
+
+    assert report.get_result("auth_smoke").passed is False
+    assert "request signing secret" in report.get_result("auth_smoke").details.lower()
+    assert route.called is False
 
 
 # ---------------------------------------------------------------------------

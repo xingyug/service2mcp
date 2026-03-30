@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -15,6 +16,7 @@ from apps.access_control.gateway_binding.client import (
     InMemoryAPISIXAdminClient as InMemoryGatewayAdminClient,
 )
 from apps.access_control.gateway_binding.service import (
+    GatewayBindingNotConfiguredError,
     GatewayBindingService,
     _consumer_id,
     _policy_binding_id,
@@ -59,22 +61,35 @@ def _route_config(
     service_id: str = "svc-1",
     service_name: str = "Test",
     namespace: str = "default",
+    version_number: int = 1,
+    tenant: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, object]:
-    return {
+    route_id_base = service_id
+    if tenant:
+        route_id_base = f"{route_id_base}-tenant-{tenant.lower().replace(' ', '-')}"
+    if environment:
+        route_id_base = f"{route_id_base}-env-{environment.lower().replace(' ', '-')}"
+    route_config: dict[str, object] = {
         "service_id": service_id,
         "service_name": service_name,
         "namespace": namespace,
-        "version_number": 1,
+        "version_number": version_number,
         "default_route": {
-            "route_id": f"default-{service_id}",
+            "route_id": f"{route_id_base}-active",
             "target_service": {"host": "10.0.0.1", "port": 8080},
         },
         "version_route": {
-            "route_id": f"version-{service_id}-v1",
+            "route_id": f"{route_id_base}-v{version_number}",
             "target_service": {"host": "10.0.0.1", "port": 8080},
-            "match": {"headers": {"x-version": "v1"}},
+            "match": {"headers": {"x-version": f"v{version_number}"}},
         },
     }
+    if tenant is not None:
+        route_config["tenant"] = tenant
+    if environment is not None:
+        route_config["environment"] = environment
+    return route_config
 
 
 class TestConsumerId:
@@ -94,31 +109,43 @@ class TestServiceRouteDocuments:
         cfg = _route_config()
         docs = _service_route_documents(cfg)
         assert len(docs) == 2
-        assert f"default-{cfg['service_id']}" in docs
-        assert f"version-{cfg['service_id']}-v1" in docs
+        assert f"{cfg['service_id']}-active" in docs
+        assert f"{cfg['service_id']}-v1" in docs
 
     def test_no_default_route(self) -> None:
         cfg = _route_config()
         docs = _service_route_documents(cfg, include_default=False)
         assert len(docs) == 1
-        assert f"default-{cfg['service_id']}" not in docs
+        assert f"{cfg['service_id']}-active" not in docs
 
     def test_no_version_route(self) -> None:
         cfg = _route_config()
         docs = _service_route_documents(cfg, include_version=False)
         assert len(docs) == 1
-        assert f"version-{cfg['service_id']}-v1" not in docs
+        assert f"{cfg['service_id']}-v1" not in docs
 
     def test_route_document_has_required_fields(self) -> None:
         cfg = _route_config()
         docs = _service_route_documents(cfg)
-        doc = docs[f"default-{cfg['service_id']}"]
-        assert doc["route_id"] == f"default-{cfg['service_id']}"
+        doc = docs[f"{cfg['service_id']}-active"]
+        assert doc["route_id"] == f"{cfg['service_id']}-active"
         assert doc["route_type"] == "default"
         assert doc["service_id"] == "svc-1"
         assert doc["service_name"] == "Test"
         assert doc["namespace"] == "default"
         assert doc["target_service"]["host"] == "10.0.0.1"
+
+    def test_route_document_preserves_scope(self) -> None:
+        cfg = _route_config(tenant="Team A", environment="Prod")
+        docs = _service_route_documents(cfg)
+
+        assert "svc-1-tenant-team-a-env-prod-active" in docs
+        assert docs["svc-1-tenant-team-a-env-prod-active"]["tenant"] == "Team A"
+        assert docs["svc-1-tenant-team-a-env-prod-active"]["environment"] == "Prod"
+
+    def test_invalid_top_level_route_config_raises(self) -> None:
+        with pytest.raises(RuntimeError, match="Invalid gateway route configuration"):
+            _service_route_documents({"service_id": "svc-1", "service_name": "Test"})
 
 
 class TestSyncPatCreation:
@@ -187,6 +214,115 @@ class TestSyncServiceRoutes:
         result = await svc.sync_service_routes(cfg)
         assert len(result["previous_routes"]) == 2
 
+    @pytest.mark.asyncio
+    async def test_deletes_stale_version_routes_for_same_service(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        current_cfg = _route_config(version_number=7)
+        target_cfg = _route_config(version_number=3)
+
+        await svc.sync_service_routes(current_cfg)
+        result = await svc.sync_service_routes(target_cfg)
+
+        routes = await client.list_routes()
+        assert "svc-1-v7" not in routes
+        assert "svc-1-v3" in routes
+        assert result["service_routes_deleted"] == 1
+        assert "svc-1-v7" in result["previous_routes"]
+
+    @pytest.mark.asyncio
+    async def test_keeps_routes_for_other_scope_with_same_service_id(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        prod_cfg = _route_config(tenant="team-a", environment="prod")
+        staging_cfg = _route_config(tenant="team-a", environment="staging")
+
+        await svc.sync_service_routes(prod_cfg)
+        result = await svc.sync_service_routes(staging_cfg)
+
+        routes = await client.list_routes()
+        assert "svc-1-tenant-team-a-env-prod-active" in routes
+        assert "svc-1-tenant-team-a-env-prod-v1" in routes
+        assert "svc-1-tenant-team-a-env-staging-active" in routes
+        assert "svc-1-tenant-team-a-env-staging-v1" in routes
+        assert result["service_routes_deleted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_invalid_nested_route_definition_raises(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        cfg = _route_config()
+        default_route = cfg["default_route"]
+        assert isinstance(default_route, dict)
+        default_route.pop("target_service")
+
+        with pytest.raises(RuntimeError, match="Invalid gateway route configuration"):
+            await svc.sync_service_routes(cfg)
+
+    @pytest.mark.asyncio
+    async def test_missing_required_route_definition_field_raises(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        cfg = _route_config()
+        default_route = cfg["default_route"]
+        assert isinstance(default_route, dict)
+        default_route.pop("route_id")
+
+        with pytest.raises(RuntimeError, match="Invalid gateway route configuration"):
+            await svc.sync_service_routes(cfg)
+
+    @pytest.mark.asyncio
+    async def test_ignores_foreign_previous_routes_when_pruning_stale_routes(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        cfg = _route_config()
+        foreign_route = {
+            "route_id": "foreign-admin",
+            "route_type": "default",
+            "service_id": "admin-ui",
+            "service_name": "Admin UI",
+            "namespace": "default",
+            "target_service": {"host": "10.0.0.9", "port": 8080},
+        }
+        await client.upsert_route(route_id="foreign-admin", document=foreign_route)
+
+        result = await svc.sync_service_routes(
+            cfg,
+            previous_routes={"foreign-admin": foreign_route},
+        )
+
+        assert result["service_routes_deleted"] == 0
+        routes = await client.list_routes()
+        assert "foreign-admin" in routes
+
+    @pytest.mark.asyncio
+    async def test_uses_canonical_route_ids_instead_of_request_route_ids(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        cfg = _route_config()
+        default_route = cfg["default_route"]
+        version_route = cfg["version_route"]
+        assert isinstance(default_route, dict)
+        assert isinstance(version_route, dict)
+        default_route["route_id"] = "foreign-admin"
+        version_route["route_id"] = "foreign-version"
+        foreign_route = {
+            "route_id": "foreign-admin",
+            "route_type": "default",
+            "service_id": "admin-ui",
+            "service_name": "Admin UI",
+            "namespace": "default",
+            "target_service": {"host": "10.0.0.9", "port": 8080},
+        }
+        await client.upsert_route(route_id="foreign-admin", document=foreign_route)
+
+        result = await svc.sync_service_routes(cfg)
+
+        assert result["route_ids"] == ["svc-1-active", "svc-1-v1"]
+        routes = await client.list_routes()
+        assert "foreign-admin" in routes
+        assert routes["foreign-admin"].document == foreign_route
+
 
 class TestDeleteServiceRoutes:
     @pytest.mark.asyncio
@@ -197,8 +333,36 @@ class TestDeleteServiceRoutes:
         await svc.sync_service_routes(cfg)
         result = await svc.delete_service_routes(cfg)
         assert result["service_routes_deleted"] == 2
+        assert len(result["previous_routes"]) == 2
         routes = await client.list_routes()
         assert len(routes) == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_uses_canonical_route_ids(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        cfg = _route_config()
+        default_route = cfg["default_route"]
+        version_route = cfg["version_route"]
+        assert isinstance(default_route, dict)
+        assert isinstance(version_route, dict)
+        default_route["route_id"] = "foreign-admin"
+        version_route["route_id"] = "foreign-version"
+        foreign_route = {
+            "route_id": "foreign-admin",
+            "route_type": "default",
+            "service_id": "admin-ui",
+            "service_name": "Admin UI",
+            "namespace": "default",
+            "target_service": {"host": "10.0.0.9", "port": 8080},
+        }
+        await client.upsert_route(route_id="foreign-admin", document=foreign_route)
+
+        result = await svc.delete_service_routes(cfg)
+
+        assert result["route_ids"] == ["svc-1-active", "svc-1-v1"]
+        routes = await client.list_routes()
+        assert "foreign-admin" in routes
 
 
 class TestRollbackServiceRoutes:
@@ -234,6 +398,30 @@ class TestRollbackServiceRoutes:
         routes = await client.list_routes()
         assert len(routes) == len(previous)
 
+    @pytest.mark.asyncio
+    async def test_rollback_ignores_foreign_previous_routes(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        cfg = _route_config()
+        await svc.sync_service_routes(cfg)
+        foreign_route = {
+            "route_id": "foreign-admin",
+            "route_type": "default",
+            "service_id": "admin-ui",
+            "service_name": "Admin UI",
+            "namespace": "default",
+            "target_service": {"host": "10.0.0.9", "port": 8080},
+        }
+
+        result = await svc.rollback_service_routes(
+            cfg,
+            {"foreign-admin": foreign_route},
+        )
+
+        assert result["service_routes_synced"] == 0
+        routes = await client.list_routes()
+        assert "foreign-admin" not in routes
+
 
 class TestConfigureGatewayBindingService:
     def test_attaches_service(self) -> None:
@@ -243,12 +431,28 @@ class TestConfigureGatewayBindingService:
         assert hasattr(state, "gateway_binding_service")
         assert isinstance(state.gateway_binding_service, GatewayBindingService)
 
+    def test_records_configuration_error_when_env_missing(self) -> None:
+        state = SimpleNamespace()
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GATEWAY_ADMIN_URL", None)
+            configure_gateway_binding_service(state)
+
+        assert getattr(state, "gateway_binding_service", None) is None
+        assert "GATEWAY_ADMIN_URL" in state.gateway_binding_error
+
 
 class TestResolveGatewayBindingService:
-    def test_creates_if_missing(self) -> None:
+    def test_raises_when_gateway_binding_is_unconfigured(self) -> None:
         state = SimpleNamespace()
-        svc = resolve_gateway_binding_service(state)
-        assert isinstance(svc, GatewayBindingService)
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GATEWAY_ADMIN_URL", None)
+            with pytest.raises(
+                GatewayBindingNotConfiguredError,
+                match="GATEWAY_ADMIN_URL must be configured",
+            ):
+                resolve_gateway_binding_service(state)
 
     def test_reuses_existing(self) -> None:
         state = SimpleNamespace()
@@ -273,11 +477,37 @@ class TestListServiceRoutes:
     async def test_returns_sorted_documents(self) -> None:
         client = InMemoryGatewayAdminClient()
         svc = GatewayBindingService(client)
-        await client.upsert_route(route_id="z-route", document={"name": "z"})
-        await client.upsert_route(route_id="a-route", document={"name": "a"})
-        await client.upsert_route(route_id="m-route", document={"name": "m"})
+        for route_id in ("z-route", "a-route", "m-route"):
+            await client.upsert_route(
+                route_id=route_id,
+                document={
+                    "route_id": route_id,
+                    "route_type": "default",
+                    "service_id": route_id,
+                    "service_name": route_id.upper(),
+                    "namespace": "default",
+                    "target_service": {"host": "10.0.0.1", "port": 8080},
+                },
+            )
         result = await svc.list_service_routes()
-        assert result == [{"name": "a"}, {"name": "m"}, {"name": "z"}]
+        assert [document["route_id"] for document in result] == ["a-route", "m-route", "z-route"]
+
+    @pytest.mark.asyncio
+    async def test_filters_out_unmanaged_route_documents(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        cfg = _route_config()
+        managed_docs = _service_route_documents(cfg)
+        await client.upsert_route(
+            route_id="external-route",
+            document={"uri": "/manual"},
+        )
+        for route_id, document in managed_docs.items():
+            await client.upsert_route(route_id=route_id, document=document)
+
+        result = await svc.list_service_routes()
+
+        assert result == [managed_docs[route_id] for route_id in sorted(managed_docs)]
 
 
 def _mock_session(
@@ -353,6 +583,22 @@ class TestReconcile:
         assert "pat-orphan" not in consumers
 
     @pytest.mark.asyncio
+    async def test_keeps_unmanaged_consumers(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_consumer(
+            consumer_id="external-consumer",
+            username="ghost",
+            credential="old_hash",
+            metadata={},
+        )
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session())
+
+        assert result["consumers_deleted"] == 0
+        consumers = await client.list_consumers()
+        assert "external-consumer" in consumers
+
+    @pytest.mark.asyncio
     async def test_resyncs_credential_mismatch(self) -> None:
         pat_id, user_id = uuid4(), uuid4()
         pat = SimpleNamespace(
@@ -397,6 +643,32 @@ class TestReconcile:
         assert result["consumers_deleted"] == 0
 
     @pytest.mark.asyncio
+    async def test_resyncs_consumer_username_or_metadata_drift(self) -> None:
+        pat_id, user_id = uuid4(), uuid4()
+        now = datetime.now(UTC)
+        pat = SimpleNamespace(
+            id=pat_id, user_id=user_id, token_hash="same_hash",
+            name="my-pat", created_at=now, revoked_at=None,
+        )
+        user = SimpleNamespace(id=user_id, username="alice")
+
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_consumer(
+            consumer_id=f"pat-{pat_id}",
+            username="tampered",
+            credential="same_hash",
+            metadata={"username": "tampered", "pat_name": "wrong", "created_at": now.isoformat()},
+        )
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(pats_users=[(pat, user)]))
+
+        assert result["consumers_synced"] == 1
+        consumer = (await client.list_consumers())[f"pat-{pat_id}"]
+        assert consumer.username == "alice"
+        assert consumer.metadata["username"] == "alice"
+        assert consumer.metadata["pat_name"] == "my-pat"
+
+    @pytest.mark.asyncio
     async def test_syncs_missing_policy_bindings(self) -> None:
         policy_id = uuid4()
         policy = SimpleNamespace(
@@ -426,6 +698,19 @@ class TestReconcile:
         assert result["policy_bindings_deleted"] == 1
         bindings = await client.list_policy_bindings()
         assert "policy-orphan" not in bindings
+
+    @pytest.mark.asyncio
+    async def test_keeps_unmanaged_policy_bindings(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_policy_binding(
+            binding_id="external-binding", document={"old": True},
+        )
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session())
+
+        assert result["policy_bindings_deleted"] == 0
+        bindings = await client.list_policy_bindings()
+        assert "external-binding" in bindings
 
     @pytest.mark.asyncio
     async def test_resyncs_policy_document_mismatch(self) -> None:
@@ -460,15 +745,59 @@ class TestReconcile:
         assert len(routes) == 2
 
     @pytest.mark.asyncio
+    async def test_scopes_reconcile_route_ids_from_service_version_scope(self) -> None:
+        scoped_route_config = _route_config()
+        scoped_version = SimpleNamespace(
+            route_config=scoped_route_config,
+            is_active=True,
+            tenant="Team A",
+            environment="Prod",
+        )
+
+        client = InMemoryGatewayAdminClient()
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session(service_versions=[scoped_version]))
+
+        assert result["service_routes_synced"] == 2
+        routes = await client.list_routes()
+        assert "svc-1-tenant-team-a-env-prod-active" in routes
+        assert "svc-1-tenant-team-a-env-prod-v1" in routes
+        assert routes["svc-1-tenant-team-a-env-prod-active"].document["tenant"] == "Team A"
+        assert (
+            routes["svc-1-tenant-team-a-env-prod-active"].document["environment"] == "Prod"
+        )
+
+    @pytest.mark.asyncio
     async def test_deletes_orphan_routes(self) -> None:
         client = InMemoryGatewayAdminClient()
-        await client.upsert_route(route_id="orphan-route", document={"stale": True})
+        await client.upsert_route(
+            route_id="orphan-route",
+            document={
+                "route_id": "orphan-route",
+                "route_type": "default",
+                "service_id": "orphan-svc",
+                "service_name": "Orphan Service",
+                "namespace": "default",
+                "target_service": {"host": "10.0.0.2", "port": 8080},
+            },
+        )
         svc = GatewayBindingService(client)
         result = await svc.reconcile(_mock_session())
 
         assert result["service_routes_deleted"] == 1
         routes = await client.list_routes()
         assert "orphan-route" not in routes
+
+    @pytest.mark.asyncio
+    async def test_keeps_unmanaged_routes(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        await client.upsert_route(route_id="external-route", document={"stale": True})
+        svc = GatewayBindingService(client)
+        result = await svc.reconcile(_mock_session())
+
+        assert result["service_routes_deleted"] == 0
+        routes = await client.list_routes()
+        assert "external-route" in routes
 
     @pytest.mark.asyncio
     async def test_resyncs_route_document_mismatch(self) -> None:
@@ -479,7 +808,13 @@ class TestReconcile:
         route_id = next(iter(expected_docs))
 
         client = InMemoryGatewayAdminClient()
-        await client.upsert_route(route_id=route_id, document={"stale": True})
+        await client.upsert_route(
+            route_id=route_id,
+            document={
+                **expected_docs[route_id],
+                "target_service": {"host": "10.0.0.9", "port": 9000},
+            },
+        )
         svc = GatewayBindingService(client)
         result = await svc.reconcile(_mock_session(service_versions=[sv]))
 
@@ -508,8 +843,7 @@ class TestReconcile:
 
         assert result["service_routes_synced"] == 1
         routes = await client.list_routes()
-        route_ids = list(routes.keys())
-        assert all("version" in rid for rid in route_ids)
+        assert list(routes.keys()) == ["svc-1-v1"]
 
     @pytest.mark.asyncio
     async def test_full_reconcile_mixed(self) -> None:
@@ -538,7 +872,17 @@ class TestReconcile:
         await client.upsert_policy_binding(
             binding_id="policy-orphan", document={"old": True},
         )
-        await client.upsert_route(route_id="orphan-route", document={"old": True})
+        await client.upsert_route(
+            route_id="orphan-route",
+            document={
+                "route_id": "orphan-route",
+                "route_type": "default",
+                "service_id": "orphan-svc",
+                "service_name": "Orphan Service",
+                "namespace": "default",
+                "target_service": {"host": "10.0.0.2", "port": 8080},
+            },
+        )
 
         svc = GatewayBindingService(client)
         result = await svc.reconcile(
@@ -555,6 +899,22 @@ class TestReconcile:
         assert result["policy_bindings_deleted"] == 1
         assert result["service_routes_synced"] == 2
         assert result["service_routes_deleted"] == 1
+
+    @pytest.mark.asyncio
+    async def test_sync_service_routes_refuses_unmanaged_route_collision(self) -> None:
+        client = InMemoryGatewayAdminClient()
+        cfg = _route_config()
+        await client.upsert_route(
+            route_id="svc-1-active",
+            document={"uri": "/manual"},
+        )
+        svc = GatewayBindingService(client)
+
+        with pytest.raises(
+            RuntimeError,
+            match="Refusing to overwrite unmanaged gateway route svc-1-active",
+        ):
+            await svc.sync_service_routes(cfg)
 
 
 class TestDisposeGatewayBindingService:

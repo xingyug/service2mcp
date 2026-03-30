@@ -12,6 +12,7 @@ from apps.compiler_worker.models import (
     CompilationEventRecord,
     CompilationJobRecord,
     CompilationRequest,
+    public_compilation_options,
 )
 
 
@@ -29,6 +30,7 @@ class CompilationCreateRequest(CompilerApiModel):
     source_hash: str | None = None
     filename: str | None = None
     created_by: str | None = None
+    service_id: str | None = None
     service_name: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
 
@@ -47,6 +49,7 @@ class CompilationCreateRequest(CompilerApiModel):
             source_hash=self.source_hash,
             filename=self.filename,
             created_by=self.created_by,
+            service_id=self.service_id,
             service_name=self.service_name,
             options=dict(self.options),
         )
@@ -64,9 +67,12 @@ class CompilationJobResponse(CompilerApiModel):
     error_detail: str | None = None
     options: dict[str, Any] | None = None
     created_by: str | None = None
+    service_id: str | None = None
     service_name: str | None = None
     created_at: datetime
     updated_at: datetime
+    tenant: str | None = None
+    environment: str | None = None
 
     @classmethod
     def from_record(cls, record: CompilationJobRecord) -> CompilationJobResponse:
@@ -78,11 +84,14 @@ class CompilationJobResponse(CompilerApiModel):
             status=record.status.value,
             current_stage=record.current_stage.value if record.current_stage is not None else None,
             error_detail=record.error_detail,
-            options=record.options,
+            options=public_compilation_options(record.options),
             created_by=record.created_by,
+            service_id=record.service_name,
             service_name=record.service_name,
             created_at=record.created_at,
             updated_at=record.updated_at,
+            tenant=record.tenant,
+            environment=record.environment,
         )
 
 
@@ -119,6 +128,7 @@ class ServiceSummaryResponse(CompilerApiModel):
 
     service_id: str
     active_version: int
+    version_count: int
     service_name: str
     service_description: str | None = None
     tool_count: int

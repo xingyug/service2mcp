@@ -43,6 +43,7 @@ import {
   useCompilation,
   useCreateCompilation,
   useRetryCompilation,
+  useRollbackCompilation,
   useServices,
   useService,
   useArtifactVersions,
@@ -191,6 +192,84 @@ describe("use-api hooks", () => {
     expect(compilationApi.retry).toHaveBeenCalledWith("job-1", "validate");
   });
 
+  it("useRetryCompilation invalidates the list and original detail query", async () => {
+    const newJob = { job_id: "job-2", status: "pending" };
+    (compilationApi.retry as ReturnType<typeof vi.fn>).mockResolvedValue(newJob);
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const setQueryDataSpy = vi.spyOn(queryClient, "setQueryData");
+
+    function Wrapper({ children }: { children: React.ReactNode }) {
+      return (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+    }
+
+    const { result } = renderHook(() => useRetryCompilation(), {
+      wrapper: Wrapper,
+    });
+
+    result.current.mutate({ jobId: "job-1", fromStage: "validate" });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(setQueryDataSpy).toHaveBeenCalledWith(
+      ["compilations", "job-2"],
+      newJob,
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["compilations"], exact: true }),
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["compilations", "job-1"] }),
+    );
+  });
+
+  it("useRollbackCompilation invalidates the list and original detail query", async () => {
+    const newJob = { job_id: "job-3", status: "pending" };
+    (compilationApi.rollback as ReturnType<typeof vi.fn>).mockResolvedValue(newJob);
+
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const setQueryDataSpy = vi.spyOn(queryClient, "setQueryData");
+
+    function Wrapper({ children }: { children: React.ReactNode }) {
+      return (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+    }
+
+    const { result } = renderHook(() => useRollbackCompilation(), {
+      wrapper: Wrapper,
+    });
+
+    result.current.mutate("job-1");
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(setQueryDataSpy).toHaveBeenCalledWith(
+      ["compilations", "job-3"],
+      newJob,
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["compilations"], exact: true }),
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: ["compilations", "job-1"] }),
+    );
+  });
+
   // -----------------------------------------------------------------------
   // useServices
   // -----------------------------------------------------------------------
@@ -235,8 +314,22 @@ describe("use-api hooks", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
-    expect(serviceApi.get).toHaveBeenCalledWith("svc-1");
+    expect(serviceApi.get).toHaveBeenCalledWith("svc-1", undefined);
     expect(result.current.data).toEqual(data);
+  });
+
+  it("useService passes scope to serviceApi.get", async () => {
+    const data = { id: "svc-1", name: "Scoped Service" };
+    const scope = { tenant: "acme", environment: "prod" };
+    (serviceApi.get as ReturnType<typeof vi.fn>).mockResolvedValue(data);
+
+    const { result } = renderHook(() => useService("svc-1", scope), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(serviceApi.get).toHaveBeenCalledWith("svc-1", scope);
   });
 
   it("useService is disabled when serviceId is empty", async () => {
@@ -261,7 +354,20 @@ describe("use-api hooks", () => {
     });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(artifactApi.listVersions).toHaveBeenCalledWith("svc-1");
+    expect(artifactApi.listVersions).toHaveBeenCalledWith("svc-1", undefined);
+  });
+
+  it("useArtifactVersions passes scope to artifactApi.listVersions", async () => {
+    const data = { versions: [{ version: 1 }] };
+    const scope = { tenant: "acme", environment: "prod" };
+    (artifactApi.listVersions as ReturnType<typeof vi.fn>).mockResolvedValue(data);
+
+    const { result } = renderHook(() => useArtifactVersions("svc-1", scope), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(artifactApi.listVersions).toHaveBeenCalledWith("svc-1", scope);
   });
 
   it("useArtifactVersions is disabled when serviceId is empty", async () => {
@@ -286,6 +392,22 @@ describe("use-api hooks", () => {
     expect(artifactApi.diff).not.toHaveBeenCalled();
   });
 
+  it("useArtifactDiff passes scope to artifactApi.diff", async () => {
+    const data = { changed_operations: [] };
+    const scope = { tenant: "acme", environment: "prod" };
+    (artifactApi.diff as ReturnType<typeof vi.fn>).mockResolvedValue(data);
+
+    const { result } = renderHook(
+      () => useArtifactDiff("svc-1", 1, 2, scope),
+      {
+        wrapper: createWrapper(),
+      },
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(artifactApi.diff).toHaveBeenCalledWith("svc-1", 1, 2, scope);
+  });
+
   // -----------------------------------------------------------------------
   // usePolicies
   // -----------------------------------------------------------------------
@@ -300,6 +422,19 @@ describe("use-api hooks", () => {
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(policyApi.list).toHaveBeenCalledWith(undefined);
+  });
+
+  it("usePolicies includes subject_type in filtered queries", async () => {
+    const data = { policies: [] };
+    const filters = { subject_type: "role", subject_id: "editor" };
+    (policyApi.list as ReturnType<typeof vi.fn>).mockResolvedValue(data);
+
+    const { result } = renderHook(() => usePolicies(filters), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(policyApi.list).toHaveBeenCalledWith(filters);
   });
 
   // -----------------------------------------------------------------------

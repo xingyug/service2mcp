@@ -16,6 +16,11 @@ from apps.compiler_worker.models import (
     RetryPolicy,
     StageDefinition,
     StageExecutionResult,
+    compilation_rollback_request,
+    compilation_request_replay,
+    public_compilation_options,
+    store_compilation_rollback_request,
+    store_compilation_request_options,
 )
 
 
@@ -99,6 +104,7 @@ class TestCompilationRequest:
             source_hash="abc123",
             filename="spec.yaml",
             created_by="user1",
+            service_id="billing-api",
             service_name="my-service",
             options={"key": "value"},
             job_id=job_id,
@@ -109,6 +115,7 @@ class TestCompilationRequest:
         assert restored.source_hash == req.source_hash
         assert restored.filename == req.filename
         assert restored.created_by == req.created_by
+        assert restored.service_id == req.service_id
         assert restored.service_name == req.service_name
         assert restored.options == req.options
         assert restored.job_id == req.job_id
@@ -136,6 +143,68 @@ class TestCompilationRequest:
         assert req.source_content is None
         assert req.options == {}
         assert req.job_id is None
+
+    def test_store_options_persists_internal_replay_metadata(self) -> None:
+        req = CompilationRequest(
+            source_url=None,
+            source_content="openapi: 3.0.0",
+            filename="spec.yaml",
+            service_id="billing-api",
+            options={"tenant": "team-a"},
+        )
+
+        stored = store_compilation_request_options(req)
+
+        assert stored == {
+            "tenant": "team-a",
+            "__compiler_request_replay": {
+                "source_content": "openapi: 3.0.0",
+                "filename": "spec.yaml",
+                "service_id": "billing-api",
+            },
+        }
+        assert public_compilation_options(stored) == {"tenant": "team-a"}
+        assert compilation_request_replay(stored) == {
+            "source_content": "openapi: 3.0.0",
+            "filename": "spec.yaml",
+            "service_id": "billing-api",
+        }
+
+    def test_store_rollback_request_persists_internal_metadata(self) -> None:
+        source_job_id = uuid4()
+
+        stored = store_compilation_rollback_request(
+            {"tenant": "team-a"},
+            source_job_id=source_job_id,
+            service_id="billing-api",
+            target_version=2,
+            tenant="team-a",
+            environment="prod",
+        )
+
+        assert public_compilation_options(stored) == {"tenant": "team-a"}
+        assert compilation_rollback_request(stored) == {
+            "source_job_id": source_job_id,
+            "service_id": "billing-api",
+            "target_version": 2,
+            "tenant": "team-a",
+            "environment": "prod",
+        }
+
+    def test_compilation_rollback_request_rejects_invalid_payload(self) -> None:
+        assert compilation_rollback_request({"__compiler_rollback_request": "invalid"}) is None
+        assert (
+            compilation_rollback_request(
+                {
+                    "__compiler_rollback_request": {
+                        "source_job_id": "not-a-uuid",
+                        "service_id": "billing-api",
+                        "target_version": 2,
+                    }
+                }
+            )
+            is None
+        )
 
 
 class TestStageExecutionResult:

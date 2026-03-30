@@ -1152,3 +1152,17 @@ class TestAuthConfigValidator:
     def test_custom_header_without_header_name(self):
         with pytest.raises(ValidationError, match="custom_header.*header_name"):
             AuthConfig(type=AuthType.custom_header)
+
+    def test_basic_username_requires_password_ref(self):
+        with pytest.raises(ValidationError, match="basic_username and basic_password_ref"):
+            AuthConfig(type=AuthType.basic, basic_username="svc-user")
+
+    def test_oauth2_requires_client_id_or_ref(self):
+        with pytest.raises(ValidationError, match="client_id or client_id_ref"):
+            AuthConfig(
+                type=AuthType.oauth2,
+                oauth2=OAuth2ClientCredentialsConfig(
+                    token_url="https://auth.example.com/token",
+                    client_secret_ref="oauth-client-secret",
+                ),
+            )

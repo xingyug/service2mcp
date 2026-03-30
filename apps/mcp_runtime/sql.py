@@ -69,7 +69,10 @@ class SQLRuntimeExecutor:
             value = arguments[column_name]
             column = table.c.get(column_name)
             if column is None:
-                continue
+                raise ToolError(
+                    f"SQL query operation {operation.id} requested filter column {column_name!r} "
+                    f"that is not present in relation {config.relation_name}."
+                )
             if isinstance(value, list):
                 statement = statement.where(column.in_(value))
                 continue
@@ -101,7 +104,7 @@ class SQLRuntimeExecutor:
         values = {
             column_name: arguments[column_name]
             for column_name in config.insertable_columns
-            if column_name in arguments and arguments[column_name] is not None
+            if column_name in arguments
         }
         if not values:
             raise ToolError(

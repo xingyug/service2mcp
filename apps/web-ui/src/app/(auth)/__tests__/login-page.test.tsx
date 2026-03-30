@@ -111,9 +111,10 @@ describe("LoginPage", () => {
       status: 200,
       json: () =>
         Promise.resolve({
-          subject: "admin",
+          subject: "admin@example.com",
           token_type: "jwt",
           claims: {
+            preferred_username: "admin",
             email: "admin@example.com",
             roles: ["admin"],
           },
@@ -131,9 +132,10 @@ describe("LoginPage", () => {
     await waitFor(() => {
       expect(mockLogin).toHaveBeenCalledWith("jwt-token-123", {
         username: "admin",
-        subject: "admin",
+        subject: "admin@example.com",
         tokenType: "jwt",
         claims: {
+          preferred_username: "admin",
           email: "admin@example.com",
           roles: ["admin"],
         },
@@ -229,7 +231,7 @@ describe("LoginPage", () => {
       status: 200,
       json: () =>
         Promise.resolve({
-          subject: "admin",
+          subject: "opaque-subject",
           token_type: "jwt",
           claims: {},
         }),
@@ -244,10 +246,51 @@ describe("LoginPage", () => {
     await user.click(screen.getByRole("button", { name: "Sign in with JWT" }));
 
     await waitFor(() => {
-      expect(mockLogin).toHaveBeenCalledWith(
-        "submitted-jwt",
-        expect.objectContaining({ username: "admin" }),
-      );
+      expect(mockLogin).toHaveBeenCalledWith("submitted-jwt", {
+        username: undefined,
+        subject: "opaque-subject",
+        tokenType: "jwt",
+        claims: {},
+        email: undefined,
+        roles: undefined,
+      });
+    });
+  });
+
+  it("stores PAT roles after successful PAT validation", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          subject: "admin",
+          username: "admin",
+          token_type: "pat",
+          claims: {
+            roles: ["admin"],
+          },
+        }),
+    } as Response);
+
+    render(<LoginPage />);
+
+    await user.click(screen.getByRole("tab", { name: "PAT Token" }));
+    await user.type(
+      screen.getByLabelText("Personal Access Token", { selector: "input" }),
+      "submitted-pat",
+    );
+    await user.click(screen.getByRole("button", { name: "Sign in with PAT" }));
+
+    await waitFor(() => {
+      expect(mockLogin).toHaveBeenCalledWith("submitted-pat", {
+        username: "admin",
+        subject: "admin",
+        tokenType: "pat",
+        claims: { roles: ["admin"] },
+        email: undefined,
+        roles: ["admin"],
+      });
     });
   });
 

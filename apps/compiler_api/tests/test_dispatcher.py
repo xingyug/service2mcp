@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from apps.compiler_api.dispatcher import (
     CallbackCompilationDispatcher,
     InMemoryCompilationDispatcher,
+    UnconfiguredCompilationDispatcher,
     _resolve_default_dispatcher,
     configure_compilation_dispatcher,
     get_compilation_dispatcher,
@@ -66,11 +67,12 @@ class TestCallbackCompilationDispatcher:
 
 
 class TestResolveDefaultDispatcher:
-    def test_defaults_to_in_memory(self) -> None:
+    def test_defaults_to_unconfigured_dispatcher(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("WORKFLOW_ENGINE", None)
             dispatcher = _resolve_default_dispatcher()
-        assert isinstance(dispatcher, InMemoryCompilationDispatcher)
+        assert isinstance(dispatcher, UnconfiguredCompilationDispatcher)
+        assert dispatcher.workflow_engine is None
 
     def test_celery_engine(self) -> None:
         from apps.compiler_api.dispatcher import CeleryCompilationDispatcher
@@ -79,10 +81,11 @@ class TestResolveDefaultDispatcher:
             dispatcher = _resolve_default_dispatcher()
         assert isinstance(dispatcher, CeleryCompilationDispatcher)
 
-    def test_unknown_engine_falls_through_to_in_memory(self) -> None:
+    def test_unknown_engine_returns_unconfigured_dispatcher(self) -> None:
         with patch.dict(os.environ, {"WORKFLOW_ENGINE": "temporal"}):
             dispatcher = _resolve_default_dispatcher()
-        assert isinstance(dispatcher, InMemoryCompilationDispatcher)
+        assert isinstance(dispatcher, UnconfiguredCompilationDispatcher)
+        assert dispatcher.workflow_engine == "temporal"
 
 
 class TestConfigureAndGetDispatcher:
@@ -99,7 +102,7 @@ class TestConfigureAndGetDispatcher:
             configure_compilation_dispatcher(app)
         assert isinstance(
             getattr(app.state, "compilation_dispatcher"),
-            InMemoryCompilationDispatcher,
+            UnconfiguredCompilationDispatcher,
         )
 
     def test_get_dispatcher_returns_configured(self) -> None:
@@ -141,6 +144,22 @@ class TestCeleryCompilationDispatcher:
             await dispatcher.enqueue(_request())
 
 
+class TestUnconfiguredCompilationDispatcher:
+    @pytest.mark.asyncio
+    async def test_enqueue_raises_when_workflow_engine_missing(self) -> None:
+        dispatcher = UnconfiguredCompilationDispatcher()
+
+        with pytest.raises(RuntimeError, match="WORKFLOW_ENGINE=celery"):
+            await dispatcher.enqueue(_request())
+
+    @pytest.mark.asyncio
+    async def test_enqueue_raises_for_unsupported_engine(self) -> None:
+        dispatcher = UnconfiguredCompilationDispatcher(workflow_engine="temporal")
+
+        with pytest.raises(RuntimeError, match="Unsupported WORKFLOW_ENGINE 'temporal'"):
+            await dispatcher.enqueue(_request())
+
+
 class TestGetDispatcherFallback:
     def test_fallback_creates_and_caches_dispatcher(self) -> None:
         """Dispatcher with no preset state falls back to _resolve_default_dispatcher()."""
@@ -163,7 +182,7 @@ class TestGetDispatcherFallback:
             os.environ.pop("WORKFLOW_ENGINE", None)
             dispatcher = get_compilation_dispatcher(mock_request)
 
-        assert isinstance(dispatcher, InMemoryCompilationDispatcher)
+        assert isinstance(dispatcher, UnconfiguredCompilationDispatcher)
         # Second call should return same cached instance
         dispatcher2 = get_compilation_dispatcher(mock_request)
         assert dispatcher2 is dispatcher

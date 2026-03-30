@@ -180,8 +180,8 @@ spec:
     spec:
       containers:
         - name: gateway-admin-mock
-          image: "{{ .Values.images.accessControl.repository }}:{{ .Values.images.accessControl.tag }}"
-          imagePullPolicy: {{ .Values.images.accessControl.pullPolicy }}
+          image: "{{ .Values.images.gatewayAdminMock.repository }}:{{ .Values.images.gatewayAdminMock.tag }}"
+          imagePullPolicy: {{ .Values.images.gatewayAdminMock.pullPolicy }}
           command:
             - sh
             - -lc

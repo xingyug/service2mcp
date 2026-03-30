@@ -151,10 +151,11 @@ class ReflectionGrpcStreamExecutor:
 
 
 def _method_full_name(rpc_path: str) -> str:
-    trimmed = rpc_path.lstrip("/")
-    service_name, _, method_name = trimmed.partition("/")
-    if not service_name or not method_name:
+    trimmed = rpc_path.removeprefix("/")
+    parts = trimmed.split("/")
+    if len(parts) != 2 or not all(parts):
         raise ToolError(f"grpc_stream rpc_path {rpc_path!r} is invalid.")
+    service_name, method_name = parts
     return f"{service_name}.{method_name}"
 
 
@@ -162,7 +163,7 @@ def _request_payload(arguments: dict[str, Any]) -> dict[str, Any]:
     payload = arguments.get("payload")
     if isinstance(payload, dict):
         return payload
-    return {key: value for key, value in arguments.items() if value is not None}
+    return dict(arguments)
 
 
 def _prime_service_descriptor(pool: DescriptorPool, method_full_name: str) -> None:

@@ -48,13 +48,14 @@ class JudgeEvaluation:
     average_completeness: float
     average_clarity: float
     average_overall: float
+    quality_threshold: float = 0.6
     scores: list[ToolQualityScore] = field(default_factory=list)
     low_quality_tools: list[str] = field(default_factory=list)
 
     @property
     def quality_passed(self) -> bool:
-        """True if average overall quality is above 0.6 threshold."""
-        return self.average_overall >= 0.6
+        """True if average overall quality is above the configured threshold."""
+        return self.average_overall >= self.quality_threshold
 
 
 JUDGE_PROMPT_TEMPLATE = """\
@@ -98,6 +99,8 @@ class LLMJudge:
         batch_size: int = 10,
         low_quality_threshold: float = 0.5,
     ) -> None:
+        if batch_size <= 0:
+            raise ValueError("LLMJudge batch_size must be greater than zero.")
         self._client = client
         self._batch_size = batch_size
         self._low_quality_threshold = low_quality_threshold
@@ -110,32 +113,22 @@ class LLMJudge:
         """
         enabled_ops = [op for op in ir.operations if op.enabled]
         if not enabled_ops:
-            return JudgeEvaluation(
-                service_name=ir.service_name,
-                tools_evaluated=0,
-                average_accuracy=0.0,
-                average_completeness=0.0,
-                average_clarity=0.0,
-                average_overall=0.0,
-            )
+            return self._empty_evaluation(ir.service_name)
 
         all_scores: list[ToolQualityScore] = []
         for batch in self._batch_operations(enabled_ops):
             try:
                 batch_scores = self._evaluate_batch(ir, batch)
-                all_scores.extend(batch_scores)
-            except Exception:
+            except Exception as exc:
                 logger.warning("LLM judge evaluation failed for batch", exc_info=True)
+                batch_scores = self._failed_batch_scores(
+                    batch,
+                    feedback=f"LLM judge batch failed: {exc}",
+                )
+            all_scores.extend(batch_scores)
 
         if not all_scores:
-            return JudgeEvaluation(
-                service_name=ir.service_name,
-                tools_evaluated=0,
-                average_accuracy=0.0,
-                average_completeness=0.0,
-                average_clarity=0.0,
-                average_overall=0.0,
-            )
+            return self._empty_evaluation(ir.service_name)
 
         avg_accuracy = sum(s.accuracy for s in all_scores) / len(all_scores)
         avg_completeness = sum(s.completeness for s in all_scores) / len(all_scores)
@@ -153,6 +146,7 @@ class LLMJudge:
             average_completeness=avg_completeness,
             average_clarity=avg_clarity,
             average_overall=avg_overall,
+            quality_threshold=self._low_quality_threshold,
             scores=all_scores,
             low_quality_tools=low_quality,
         )
@@ -208,14 +202,23 @@ class LLMJudge:
             data = json.loads(text)
             if not isinstance(data, list):
                 logger.warning("LLM judge response is not a JSON array")
-                return []
+                return self._failed_batch_scores(
+                    batch,
+                    feedback="LLM judge response was not a JSON array.",
+                )
 
             op_map = {op.id: op for op in batch}
-            scores: list[ToolQualityScore] = []
+            scores_by_id: dict[str, ToolQualityScore] = {}
 
             for item in data:
+                if not isinstance(item, dict):
+                    logger.warning("LLM judge response item is not an object: %r", item)
+                    continue
                 op_id = item.get("operation_id", "")
                 if op_id not in op_map:
+                    continue
+                if op_id in scores_by_id:
+                    logger.warning("LLM judge response contained duplicate score for %s", op_id)
                     continue
 
                 try:
@@ -226,24 +229,66 @@ class LLMJudge:
                     accuracy = completeness = clarity = 0.5
                 overall = accuracy * 0.35 + completeness * 0.35 + clarity * 0.30
                 feedback = item.get("feedback", "")
+                if not isinstance(feedback, str):
+                    feedback = str(feedback)
 
-                scores.append(
-                    ToolQualityScore(
-                        operation_id=op_id,
-                        tool_name=op_map[op_id].name,
-                        accuracy=accuracy,
-                        completeness=completeness,
-                        clarity=clarity,
-                        overall=round(overall, 3),
-                        feedback=feedback,
-                    )
+                scores_by_id[op_id] = ToolQualityScore(
+                    operation_id=op_id,
+                    tool_name=op_map[op_id].name,
+                    accuracy=accuracy,
+                    completeness=completeness,
+                    clarity=clarity,
+                    overall=round(overall, 3),
+                    feedback=feedback,
                 )
 
+            scores: list[ToolQualityScore] = []
+            for operation in batch:
+                score = scores_by_id.get(operation.id)
+                if score is None:
+                    score = self._failed_score(
+                        operation,
+                        feedback="LLM judge response omitted this operation.",
+                    )
+                scores.append(score)
             return scores
 
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             logger.warning("Failed to parse LLM judge response", exc_info=True)
-            return []
+            return self._failed_batch_scores(
+                batch,
+                feedback="Failed to parse LLM judge response.",
+            )
+
+    def _empty_evaluation(self, service_name: str) -> JudgeEvaluation:
+        return JudgeEvaluation(
+            service_name=service_name,
+            tools_evaluated=0,
+            average_accuracy=0.0,
+            average_completeness=0.0,
+            average_clarity=0.0,
+            average_overall=0.0,
+            quality_threshold=self._low_quality_threshold,
+        )
+
+    def _failed_score(self, operation: Operation, *, feedback: str) -> ToolQualityScore:
+        return ToolQualityScore(
+            operation_id=operation.id,
+            tool_name=operation.name,
+            accuracy=0.0,
+            completeness=0.0,
+            clarity=0.0,
+            overall=0.0,
+            feedback=feedback,
+        )
+
+    def _failed_batch_scores(
+        self,
+        batch: list[Operation],
+        *,
+        feedback: str,
+    ) -> list[ToolQualityScore]:
+        return [self._failed_score(operation, feedback=feedback) for operation in batch]
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:

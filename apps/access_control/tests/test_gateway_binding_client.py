@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from apps.access_control.gateway_binding.client import (
+    GatewayAdminConfigurationError,
     GatewayConsumer,
     GatewayPolicyBinding,
     GatewayRoute,
@@ -162,8 +163,8 @@ class TestItemsFromPayload:
 
     def test_missing_items_key(self) -> None:
         payload = {"other": "data"}
-        result = _items_from_payload(payload)
-        assert result == []
+        with pytest.raises(RuntimeError, match="missing an items list"):
+            _items_from_payload(payload)
 
     def test_non_list_items_raises(self) -> None:
         payload = {"items": "not-a-list"}
@@ -180,22 +181,26 @@ class TestItemsFromPayload:
 
 
 class TestLoadGatewayAdminClientFromEnv:
-    def test_returns_in_memory_when_no_env(self) -> None:
+    def test_raises_when_no_env(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            # Remove GATEWAY_ADMIN_URL if present
-            os.environ.pop("GATEWAY_ADMIN_URL", None)
-            client = load_gateway_admin_client_from_env()
-            assert isinstance(client, InMemoryAPISIXAdminClient)
+            with pytest.raises(
+                GatewayAdminConfigurationError,
+                match="GATEWAY_ADMIN_URL must be configured",
+            ):
+                load_gateway_admin_client_from_env()
 
     def test_returns_http_client_when_env_set(self) -> None:
         with patch.dict(os.environ, {"GATEWAY_ADMIN_URL": "http://localhost:9080"}):
             client = load_gateway_admin_client_from_env()
             assert isinstance(client, HTTPGatewayAdminClient)
 
-    def test_empty_url_returns_in_memory(self) -> None:
+    def test_empty_url_raises(self) -> None:
         with patch.dict(os.environ, {"GATEWAY_ADMIN_URL": "  "}):
-            client = load_gateway_admin_client_from_env()
-            assert isinstance(client, InMemoryAPISIXAdminClient)
+            with pytest.raises(
+                GatewayAdminConfigurationError,
+                match="GATEWAY_ADMIN_URL must be configured",
+            ):
+                load_gateway_admin_client_from_env()
 
 
 # Additional tests to cover uncovered lines in gateway_binding/client.py
@@ -325,6 +330,97 @@ class TestHTTPGatewayAdminClientSpecificMethods:
 
         with pytest.raises(httpx.HTTPStatusError):
             await client.list_routes()
+
+    async def test_list_routes_missing_items_raises(self):
+        """Successful list responses must still contain an items collection."""
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        client = HTTPGatewayAdminClient(base_url="http://test:9080")
+        client._client.request = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={},
+                request=httpx.Request("GET", "http://test:9080/admin/routes"),
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="missing an items list"):
+            await client.list_routes()
+
+    async def test_list_routes_invalid_json_raises(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = HTTPGatewayAdminClient(base_url="http://test:9080")
+        response = MagicMock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.side_effect = ValueError("bad json")
+        client._client.request = AsyncMock(return_value=response)
+
+        with pytest.raises(RuntimeError, match="invalid JSON"):
+            await client.list_routes()
+
+    async def test_list_consumers_missing_required_field_raises(self):
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        client = HTTPGatewayAdminClient(base_url="http://test:9080")
+        client._client.request = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"items": [{"consumer_id": "c1", "username": "alice"}]},
+                request=httpx.Request("GET", "http://test:9080/admin/consumers"),
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="missing required field 'credential'"):
+            await client.list_consumers()
+
+    async def test_list_policy_bindings_non_object_document_raises(self):
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        client = HTTPGatewayAdminClient(base_url="http://test:9080")
+        client._client.request = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={"items": [{"binding_id": "b1", "document": "oops"}]},
+                request=httpx.Request("GET", "http://test:9080/admin/policy-bindings"),
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="field 'document' must be an object"):
+            await client.list_policy_bindings()
+
+    async def test_list_consumers_non_object_metadata_raises(self):
+        from unittest.mock import AsyncMock
+
+        import httpx
+
+        client = HTTPGatewayAdminClient(base_url="http://test:9080")
+        client._client.request = AsyncMock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "consumer_id": "c1",
+                            "username": "alice",
+                            "credential": "key-1",
+                            "metadata": "oops",
+                        }
+                    ]
+                },
+                request=httpx.Request("GET", "http://test:9080/admin/consumers"),
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="field 'metadata' must be an object"):
+            await client.list_consumers()
 
     async def test_upsert_route_error(self):
         """Test line 239-240: upsert_route error handling."""

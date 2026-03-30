@@ -3,8 +3,10 @@ import type {
   CompilationJobResponse,
   CompilationStage,
   CompilationStatus,
+  ServiceScope,
   ServiceSummary,
   ArtifactVersionResponse,
+  ArtifactVersionUpdateRequest,
   ArtifactDiffResponse,
   TokenValidationRequest,
   TokenPrincipal,
@@ -24,6 +26,11 @@ import type {
   Operation,
   ServiceIR,
 } from "@/types/api";
+import {
+  appendServiceScope,
+  normalizeServiceScope,
+  serviceScopeSearchParams,
+} from "@/lib/service-scope";
 
 type RawCompilationJobResponse = {
   id: string;
@@ -33,12 +40,16 @@ type RawCompilationJobResponse = {
   error_detail?: string | null;
   created_at: string;
   updated_at: string;
+  service_id?: string | null;
   service_name?: string | null;
+  tenant?: string | null;
+  environment?: string | null;
 };
 
 type RawServiceSummary = {
   service_id: string;
   active_version: number;
+  version_count: number;
   service_name: string;
   service_description?: string | null;
   tool_count: number;
@@ -60,6 +71,8 @@ type RawArtifactVersionResponse = {
   ir_json: ServiceIR;
   created_at: string;
   route_config?: Record<string, unknown> | null;
+  tenant?: string | null;
+  environment?: string | null;
 };
 
 type RawArtifactVersionListResponse = {
@@ -93,6 +106,7 @@ type RawArtifactDiffResponse = {
 
 type RawTokenPrincipal = {
   subject: string;
+  username?: string | null;
   token_type: string;
   claims: Record<string, unknown>;
 };
@@ -108,6 +122,9 @@ type RawPATResponse = {
 
 type RawPATListResponse = {
   items: RawPATResponse[];
+  total?: number;
+  page?: number;
+  page_size?: number;
 };
 
 type RawPolicyResponse = {
@@ -252,11 +269,18 @@ function readStringArrayClaim(
 }
 
 function normalizeTokenPrincipal(raw: RawTokenPrincipal): TokenPrincipal {
+  const username =
+    raw.username ??
+    readStringClaim(raw.claims, "preferred_username") ??
+    readStringClaim(raw.claims, "username") ??
+    readStringClaim(raw.claims, "cognito:username") ??
+    readStringClaim(raw.claims, "login") ??
+    (raw.token_type === "pat" ? raw.subject : undefined);
   return {
     subject: raw.subject,
     token_type: raw.token_type,
     claims: raw.claims,
-    username: raw.subject,
+    username,
     email: readStringClaim(raw.claims, "email"),
     roles: readStringArrayClaim(raw.claims, "roles"),
   };
@@ -329,6 +353,11 @@ function normalizeCompilationJob(
 ): CompilationJobResponse {
   const currentStage = normalizeCompilationStage(raw.current_stage);
   const status = normalizeCompilationStatus(raw.status);
+  const scope = normalizeServiceScope({
+    tenant: raw.tenant ?? undefined,
+    environment: raw.environment ?? undefined,
+  });
+  const serviceId = raw.service_id ?? raw.service_name ?? undefined;
   const isTerminal =
     raw.status === "succeeded" ||
     raw.status === "failed" ||
@@ -343,9 +372,13 @@ function normalizeCompilationJob(
     created_at: raw.created_at,
     completed_at: isTerminal ? raw.updated_at : undefined,
     error_message: raw.error_detail ?? undefined,
-    artifacts: raw.service_name
+    service_id: serviceId,
+    service_name: raw.service_name ?? undefined,
+    tenant: scope?.tenant,
+    environment: scope?.environment,
+    artifacts: serviceId
       ? {
-          ir_id: raw.service_name,
+          ir_id: serviceId,
         }
       : undefined,
   };
@@ -358,7 +391,7 @@ function normalizeServiceSummary(raw: RawServiceSummary): ServiceSummary {
     protocol: raw.protocol ?? "unknown",
     tool_count: raw.tool_count,
     active_version: raw.active_version,
-    version_count: Math.max(raw.active_version ?? 1, 1),
+    version_count: Math.max(raw.version_count ?? 0, 0),
     last_compiled: raw.created_at,
     tenant: raw.tenant ?? undefined,
     environment: raw.environment ?? undefined,
@@ -368,13 +401,37 @@ function normalizeServiceSummary(raw: RawServiceSummary): ServiceSummary {
 function normalizeArtifactVersion(
   raw: RawArtifactVersionResponse,
 ): ArtifactVersionResponse {
+  const scope = normalizeServiceScope({
+    tenant: raw.tenant ?? undefined,
+    environment: raw.environment ?? undefined,
+  });
   return {
     service_id: raw.service_id,
     version_number: raw.version_number,
     ir: raw.ir_json,
     is_active: raw.is_active,
     created_at: raw.created_at,
-    route_config: raw.route_config ?? undefined,
+    route_config: applyScopeToRouteConfig(raw.route_config, scope),
+    tenant: scope?.tenant,
+    environment: scope?.environment,
+  };
+}
+
+function applyScopeToRouteConfig(
+  routeConfig: Record<string, unknown> | null | undefined,
+  scope?: ServiceScope,
+): Record<string, unknown> | undefined {
+  if (!routeConfig) {
+    return undefined;
+  }
+  const normalizedScope = normalizeServiceScope(scope);
+  if (!normalizedScope) {
+    return routeConfig;
+  }
+  return {
+    ...routeConfig,
+    tenant: normalizedScope.tenant,
+    environment: normalizedScope.environment,
   };
 }
 
@@ -446,9 +503,16 @@ function normalizeArtifactDiff(
   };
 }
 
-function fetchRawArtifactVersion(serviceId: string, version: number) {
+function fetchRawArtifactVersion(
+  serviceId: string,
+  version: number,
+  scope?: ServiceScope,
+) {
   return fetchAPI<RawArtifactVersionResponse>(
-    `${COMPILER_API}/api/v1/artifacts/${serviceId}/versions/${version}`,
+    appendServiceScope(
+      `${COMPILER_API}/api/v1/artifacts/${serviceId}/versions/${version}`,
+      scope,
+    ),
   );
 }
 
@@ -487,17 +551,17 @@ export const compilationApi = {
 
   retry(jobId: string, fromStage?: string) {
     const params = fromStage ? `?from_stage=${encodeURIComponent(fromStage)}` : "";
-    return fetchAPI<CompilationJobResponse>(
+    return fetchAPI<RawCompilationJobResponse>(
       `${COMPILER_API}/api/v1/compilations/${jobId}/retry${params}`,
       { method: "POST" },
-    );
+    ).then(normalizeCompilationJob);
   },
 
   rollback(jobId: string) {
-    return fetchAPI<CompilationJobResponse>(
+    return fetchAPI<RawCompilationJobResponse>(
       `${COMPILER_API}/api/v1/compilations/${jobId}/rollback`,
       { method: "POST" },
-    );
+    ).then(normalizeCompilationJob);
   },
 };
 
@@ -507,12 +571,8 @@ export const compilationApi = {
 
 export const serviceApi = {
   list(filters?: { tenant?: string; environment?: string }) {
-    const params = new URLSearchParams();
-    if (filters?.tenant) params.set("tenant", filters.tenant);
-    if (filters?.environment) params.set("environment", filters.environment);
-    const qs = params.toString();
     return fetchAPI<RawServiceListResponse>(
-      `${COMPILER_API}/api/v1/services${qs ? `?${qs}` : ""}`,
+      appendServiceScope(`${COMPILER_API}/api/v1/services`, filters),
     ).then((raw) => ({
       services: (Array.isArray(raw.services) ? raw.services : []).map(
         normalizeServiceSummary,
@@ -520,9 +580,9 @@ export const serviceApi = {
     }));
   },
 
-  get(serviceId: string) {
+  get(serviceId: string, scope?: ServiceScope) {
     return fetchAPI<RawServiceSummary>(
-      `${COMPILER_API}/api/v1/services/${serviceId}`,
+      appendServiceScope(`${COMPILER_API}/api/v1/services/${serviceId}`, scope),
     ).then(normalizeServiceSummary);
   },
 };
@@ -532,9 +592,12 @@ export const serviceApi = {
 // ---------------------------------------------------------------------------
 
 export const artifactApi = {
-  listVersions(serviceId: string) {
+  listVersions(serviceId: string, scope?: ServiceScope) {
     return fetchAPI<RawArtifactVersionListResponse>(
-      `${COMPILER_API}/api/v1/artifacts/${serviceId}/versions`,
+      appendServiceScope(
+        `${COMPILER_API}/api/v1/artifacts/${serviceId}/versions`,
+        scope,
+      ),
     ).then((raw) => ({
       versions: (Array.isArray(raw.versions) ? raw.versions : []).map(
         normalizeArtifactVersion,
@@ -542,31 +605,58 @@ export const artifactApi = {
     }));
   },
 
-  getVersion(serviceId: string, version: number) {
-    return fetchRawArtifactVersion(serviceId, version).then(normalizeArtifactVersion);
+  getVersion(serviceId: string, version: number, scope?: ServiceScope) {
+    return fetchRawArtifactVersion(serviceId, version, scope).then(
+      normalizeArtifactVersion,
+    );
   },
 
-  activateVersion(serviceId: string, version: number) {
+  updateVersion(
+    serviceId: string,
+    version: number,
+    payload: ArtifactVersionUpdateRequest,
+    scope?: ServiceScope,
+  ) {
     return fetchAPI<RawArtifactVersionResponse>(
-      `${COMPILER_API}/api/v1/artifacts/${serviceId}/versions/${version}/activate`,
+      appendServiceScope(
+        `${COMPILER_API}/api/v1/artifacts/${serviceId}/versions/${version}`,
+        scope,
+      ),
+      { method: "PUT", body: JSON.stringify(payload) },
+    ).then(normalizeArtifactVersion);
+  },
+
+  activateVersion(serviceId: string, version: number, scope?: ServiceScope) {
+    return fetchAPI<RawArtifactVersionResponse>(
+      appendServiceScope(
+        `${COMPILER_API}/api/v1/artifacts/${serviceId}/versions/${version}/activate`,
+        scope,
+      ),
       { method: "POST" },
     ).then(normalizeArtifactVersion);
   },
 
-  deleteVersion(serviceId: string, version: number) {
+  deleteVersion(serviceId: string, version: number, scope?: ServiceScope) {
     return fetchAPI<void>(
-      `${COMPILER_API}/api/v1/artifacts/${serviceId}/versions/${version}`,
+      appendServiceScope(
+        `${COMPILER_API}/api/v1/artifacts/${serviceId}/versions/${version}`,
+        scope,
+      ),
       { method: "DELETE" },
     );
   },
 
-  diff(serviceId: string, from: number, to: number) {
+  diff(serviceId: string, from: number, to: number, scope?: ServiceScope) {
+    const params = serviceScopeSearchParams(scope);
+    params.set("from", String(from));
+    params.set("to", String(to));
+
     return Promise.all([
       fetchAPI<RawArtifactDiffResponse>(
-        `${COMPILER_API}/api/v1/artifacts/${serviceId}/diff?from=${from}&to=${to}`,
+        `${COMPILER_API}/api/v1/artifacts/${serviceId}/diff?${params.toString()}`,
       ),
-      fetchRawArtifactVersion(serviceId, from),
-      fetchRawArtifactVersion(serviceId, to),
+      fetchRawArtifactVersion(serviceId, from, scope),
+      fetchRawArtifactVersion(serviceId, to, scope),
     ]).then(([rawDiff, fromVersion, toVersion]) =>
       normalizeArtifactDiff(rawDiff, fromVersion, toVersion),
     );
@@ -595,12 +685,19 @@ export const authApi = {
     }).then(normalizePAT);
   },
 
-  listPATs(username: string) {
-    const params = new URLSearchParams({ username });
+  listPATs(username: string, page = 1, pageSize = 100) {
+    const params = new URLSearchParams({
+      username,
+      page: String(page),
+      page_size: String(pageSize),
+    });
     return fetchAPI<RawPATListResponse>(
       `${ACCESS_CONTROL_API}/api/v1/authn/pats?${params.toString()}`,
     ).then((raw) => ({
       pats: raw.items.map(normalizePAT),
+      total: raw.total ?? raw.items.length,
+      page: raw.page ?? 1,
+      pageSize: raw.page_size ?? pageSize,
     }));
   },
 
@@ -624,8 +721,9 @@ export const policyApi = {
     }).then(normalizePolicy);
   },
 
-  list(filters?: { subject_id?: string; resource_id?: string }) {
+  list(filters?: { subject_type?: string; subject_id?: string; resource_id?: string }) {
     const params = new URLSearchParams();
+    if (filters?.subject_type) params.set("subject_type", filters.subject_type);
     if (filters?.subject_id) params.set("subject_id", filters.subject_id);
     if (filters?.resource_id) params.set("resource_id", filters.resource_id);
     const qs = params.toString();
@@ -661,10 +759,7 @@ export const policyApi = {
       `${ACCESS_CONTROL_API}/api/v1/authz/evaluate`,
       {
         method: "POST",
-        body: JSON.stringify({
-          ...req,
-          risk_level: req.risk_level ?? "safe",
-        }),
+        body: JSON.stringify(req),
       },
     ).then((raw) => ({
       decision: raw.decision as PolicyEvaluationResponse["decision"],
@@ -679,13 +774,17 @@ export const policyApi = {
 // ---------------------------------------------------------------------------
 
 export const auditApi = {
-  list(filters?: { actor?: string; action?: string; resource?: string; since?: string; until?: string }) {
+  list(
+    filters?: { actor?: string; action?: string; resource?: string; since?: string; until?: string },
+    options?: { include_all?: boolean },
+  ) {
     const params = new URLSearchParams();
     if (filters?.actor) params.set("actor", filters.actor);
     if (filters?.action) params.set("action", filters.action);
     if (filters?.resource) params.set("resource", filters.resource);
     if (filters?.since) params.set("start_at", filters.since);
     if (filters?.until) params.set("end_at", filters.until);
+    if (options?.include_all) params.set("include_all", "true");
     const qs = params.toString();
     return fetchAPI<RawAuditLogListResponse>(
       `${ACCESS_CONTROL_API}/api/v1/audit/logs${qs ? `?${qs}` : ""}`,
@@ -698,16 +797,7 @@ export const auditApi = {
     return fetchAPI<RawAuditLogEntry>(
       `${ACCESS_CONTROL_API}/api/v1/audit/logs/${encodeURIComponent(entryId)}`,
     )
-      .then(normalizeAuditLogEntry)
-      .catch(() =>
-        auditApi.list().then((response) => {
-          const entry = response.entries.find((item) => item.id === entryId);
-          if (!entry) {
-            throw new ApiError(404, `Audit entry ${entryId} not found`);
-          }
-          return entry;
-        }),
-      );
+      .then(normalizeAuditLogEntry);
   },
 };
 
@@ -769,17 +859,28 @@ export interface WorkflowResponse {
   id: string;
   service_id: string;
   version_number: number;
+   tenant?: string | null;
+   environment?: string | null;
   state: string;
-  review_notes: { operation_notes?: Record<string, string>; overall_note?: string } | null;
+  review_notes:
+    | {
+        operation_notes?: Record<string, string>;
+        overall_note?: string;
+        reviewed_operations?: string[];
+      }
+    | null;
   history: WorkflowHistoryEntry[];
   created_at: string;
   updated_at: string;
 }
 
 export const workflowApi = {
-  get(serviceId: string, versionNumber: number) {
+  get(serviceId: string, versionNumber: number, scope?: ServiceScope) {
     return fetchAPI<WorkflowResponse>(
-      `${COMPILER_API}/api/v1/workflows/${encodeURIComponent(serviceId)}/v/${versionNumber}`,
+      appendServiceScope(
+        `${COMPILER_API}/api/v1/workflows/${encodeURIComponent(serviceId)}/v/${versionNumber}`,
+        scope,
+      ),
     );
   },
 
@@ -789,9 +890,13 @@ export const workflowApi = {
     to: string,
     actor: string,
     comment?: string,
+    scope?: ServiceScope,
   ) {
     return fetchAPI<WorkflowResponse>(
-      `${COMPILER_API}/api/v1/workflows/${encodeURIComponent(serviceId)}/v/${versionNumber}/transition`,
+      appendServiceScope(
+        `${COMPILER_API}/api/v1/workflows/${encodeURIComponent(serviceId)}/v/${versionNumber}/transition`,
+        scope,
+      ),
       { method: "POST", body: JSON.stringify({ to, actor, comment }) },
     );
   },
@@ -801,16 +906,31 @@ export const workflowApi = {
     versionNumber: number,
     notes: Record<string, string>,
     overallNote?: string,
+    reviewedOperations?: string[],
+    scope?: ServiceScope,
   ) {
     return fetchAPI<WorkflowResponse>(
-      `${COMPILER_API}/api/v1/workflows/${encodeURIComponent(serviceId)}/v/${versionNumber}/notes`,
-      { method: "PUT", body: JSON.stringify({ notes, overall_note: overallNote }) },
+      appendServiceScope(
+        `${COMPILER_API}/api/v1/workflows/${encodeURIComponent(serviceId)}/v/${versionNumber}/notes`,
+        scope,
+      ),
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          notes,
+          overall_note: overallNote,
+          reviewed_operations: reviewedOperations ?? [],
+        }),
+      },
     );
   },
 
-  history(serviceId: string, versionNumber: number) {
+  history(serviceId: string, versionNumber: number, scope?: ServiceScope) {
     return fetchAPI<WorkflowHistoryEntry[]>(
-      `${COMPILER_API}/api/v1/workflows/${encodeURIComponent(serviceId)}/v/${versionNumber}/history`,
+      appendServiceScope(
+        `${COMPILER_API}/api/v1/workflows/${encodeURIComponent(serviceId)}/v/${versionNumber}/history`,
+        scope,
+      ),
     );
   },
 };

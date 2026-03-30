@@ -86,4 +86,28 @@ describe("DashboardPage", () => {
     expect(screen.getByText("50% success rate")).toBeInTheDocument();
     expect(screen.getByText("7")).toBeInTheDocument();
   });
+
+  it("marks system status as degraded when audit logs fail", () => {
+    mockUseServices.mockReturnValue({
+      data: { services: [] },
+      isLoading: false,
+      isError: false,
+    });
+    mockUseCompilations.mockReturnValue({
+      data: [],
+      isLoading: false,
+      isError: false,
+    });
+    mockUseAuditLogs.mockReturnValue({
+      data: { entries: [] },
+      isLoading: false,
+      isError: true,
+    });
+
+    render(<DashboardPage />);
+
+    expect(screen.getByText("Degraded")).toBeInTheDocument();
+    expect(screen.getByText("Some APIs unreachable")).toBeInTheDocument();
+    expect(screen.getByText("Failed to load audit logs.")).toBeInTheDocument();
+  });
 });

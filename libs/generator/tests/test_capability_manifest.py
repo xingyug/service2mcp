@@ -100,6 +100,7 @@ class TestBuildCapabilityManifest:
                     description="API schema",
                     uri="service:///petstore/schema",
                     mime_type="application/json",
+                    content='{"openapi":"3.1.0"}',
                 ),
             ],
         )
@@ -151,12 +152,14 @@ class TestBuildCapabilityManifest:
                     id="r1",
                     name="R1",
                     uri="service:///test/r1",
+                    content='{"name":"r1"}',
                 ),
                 ResourceDefinition(
                     id="r2",
                     name="R2",
                     uri="service:///test/r2",
                     mime_type="text/plain",
+                    content="hello",
                 ),
             ],
             prompt_definitions=[

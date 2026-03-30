@@ -52,9 +52,9 @@ describe("compilation-wizard helpers", () => {
       }),
     );
 
-    expect(request.options?.auth_config).toEqual({
+    expect(request.options?.auth).toEqual({
       type: "bearer",
-      compile_time_secret_ref: "secret://bearer",
+      runtime_secret_ref: "secret://bearer",
     });
   });
 
@@ -67,10 +67,10 @@ describe("compilation-wizard helpers", () => {
       }),
     );
 
-    expect(request.options?.auth_config).toEqual({
+    expect(request.options?.auth).toEqual({
       type: "basic",
-      username: "svc-user",
-      password_secret_ref: "secret://password",
+      basic_username: "svc-user",
+      basic_password_ref: "secret://password",
     });
   });
 
@@ -83,10 +83,11 @@ describe("compilation-wizard helpers", () => {
       }),
     );
 
-    expect(request.options?.auth_config).toEqual({
+    expect(request.options?.auth).toEqual({
       type: "api_key",
-      header_name: "X-API-Key",
-      compile_time_secret_ref: "secret://apikey",
+      api_key_param: "X-API-Key",
+      api_key_location: "header",
+      runtime_secret_ref: "secret://apikey",
     });
   });
 
@@ -99,10 +100,10 @@ describe("compilation-wizard helpers", () => {
       }),
     );
 
-    expect(request.options?.auth_config).toEqual({
+    expect(request.options?.auth).toEqual({
       type: "custom_header",
       header_name: "X-Custom-Auth",
-      compile_time_secret_ref: "secret://header",
+      runtime_secret_ref: "secret://header",
     });
   });
 
@@ -116,11 +117,13 @@ describe("compilation-wizard helpers", () => {
       }),
     );
 
-    expect(request.options?.auth_config).toEqual({
+    expect(request.options?.auth).toEqual({
       type: "oauth2",
-      token_url: "https://auth.example.com/token",
-      client_id: "client-id",
-      client_secret_ref: "secret://oauth2",
+      oauth2: {
+        token_url: "https://auth.example.com/token",
+        client_id: "client-id",
+        client_secret_ref: "secret://oauth2",
+      },
     });
   });
 

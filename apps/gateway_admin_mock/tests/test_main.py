@@ -146,6 +146,26 @@ class TestRoutes:
         assert data["route_id"] == "r1"
         assert data["document"]["target_service"]["name"] == "svc"
 
+    async def test_upsert_route_rejects_non_numeric_target_port(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        resp = await client.put(
+            "/admin/routes/r1",
+            json={"document": {"target_service": {"name": "svc", "port": "oops"}}},
+        )
+
+        assert resp.status_code == 422
+
+    async def test_upsert_route_rejects_missing_target_service_name(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        resp = await client.put(
+            "/admin/routes/r1",
+            json={"document": {"target_service": {"port": 8080}}},
+        )
+
+        assert resp.status_code == 422
+
     async def test_delete_route(self, client: httpx.AsyncClient) -> None:
         await client.put(
             "/admin/routes/r1",
@@ -297,6 +317,83 @@ class TestProxyGateway:
 
         resp = await client.post("/gateway/catalog/items", json={"name": "test"})
         assert resp.status_code == 201
+
+    async def test_proxy_respects_prefix_match(self, gateway_app, client: httpx.AsyncClient) -> None:
+        await client.put(
+            "/admin/routes/catalog-active",
+            json={
+                "document": {
+                    "match": {"prefix": "/catalog/versions/v2"},
+                    "target_service": {"name": "catalog", "port": 8080},
+                }
+            },
+        )
+
+        mock_transport = httpx.MockTransport(
+            lambda req: httpx.Response(200, json={"proxied": True})
+        )
+        gateway_app.state.upstream_overrides["catalog:8080"] = {
+            "base_url": "http://mock-catalog:8080",
+            "transport": mock_transport,
+        }
+
+        resp = await client.get("/gateway/catalog/items/123")
+        assert resp.status_code == 404
+        assert "did not match" in resp.json()["detail"]
+
+    async def test_proxy_respects_header_match(self, gateway_app, client: httpx.AsyncClient) -> None:
+        await client.put(
+            "/admin/routes/catalog-v2",
+            json={
+                "document": {
+                    "match": {"headers": {"x-tool-compiler-version": "9"}},
+                    "target_service": {"name": "catalog", "port": 8080},
+                }
+            },
+        )
+
+        mock_transport = httpx.MockTransport(
+            lambda req: httpx.Response(200, json={"proxied": True})
+        )
+        gateway_app.state.upstream_overrides["catalog:8080"] = {
+            "base_url": "http://mock-catalog:8080",
+            "transport": mock_transport,
+        }
+
+        resp = await client.get(
+            "/gateway/catalog/items/123",
+            headers={"x-tool-compiler-version": "2"},
+        )
+        assert resp.status_code == 404
+        assert "did not match" in resp.json()["detail"]
+
+    async def test_proxy_invalid_stored_route_document_returns_500(
+        self, gateway_app, client: httpx.AsyncClient
+    ) -> None:
+        gateway_app.state.routes["catalog-active"] = {
+            "route_id": "catalog-active",
+            "document": {"target_service": {"name": "catalog", "port": "oops"}},
+        }
+
+        resp = await client.get("/gateway/catalog")
+
+        assert resp.status_code == 500
+        data = resp.json()
+        assert "Stored route document is invalid" in data["detail"]
+
+    async def test_proxy_missing_target_service_returns_500(
+        self, gateway_app, client: httpx.AsyncClient
+    ) -> None:
+        gateway_app.state.routes["catalog-active"] = {
+            "route_id": "catalog-active",
+            "document": {},
+        }
+
+        resp = await client.get("/gateway/catalog")
+
+        assert resp.status_code == 500
+        data = resp.json()
+        assert "Stored route document is invalid" in data["detail"]
 
 
 class TestSelectRouteId:

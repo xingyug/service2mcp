@@ -35,13 +35,17 @@ class TestMethodFullName:
         with pytest.raises(ToolError, match="invalid"):
             _method_full_name("//Watch")
 
+    def test_multiple_slashes_raise(self) -> None:
+        with pytest.raises(ToolError, match="invalid"):
+            _method_full_name("/pkg.Svc/Watch/Extra")
+
 
 class TestRequestPayload:
     def test_returns_payload_dict(self) -> None:
         assert _request_payload({"payload": {"k": "v"}}) == {"k": "v"}
 
-    def test_filters_none_values(self) -> None:
-        assert _request_payload({"a": 1, "b": None}) == {"a": 1}
+    def test_preserves_none_values(self) -> None:
+        assert _request_payload({"a": 1, "b": None}) == {"a": 1, "b": None}
 
     def test_payload_non_dict_falls_through(self) -> None:
         assert _request_payload({"payload": 42, "x": "y"}) == {"payload": 42, "x": "y"}

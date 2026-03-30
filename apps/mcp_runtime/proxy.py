@@ -8,7 +8,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -43,6 +42,7 @@ from libs.ir.models import (
     TruncationPolicy,
 )
 from libs.observability.tracing import trace_span
+from libs.secret_refs import candidate_env_names, resolve_secret_ref
 
 logger = logging.getLogger(__name__)
 
@@ -511,12 +511,25 @@ class RuntimeProxy:
         ]
         if not descriptors:
             return None
-        if len(descriptors) > 1:
+        supported_descriptors = [
+            descriptor
+            for descriptor in descriptors
+            if descriptor.support is EventSupportLevel.supported
+        ]
+        if len(supported_descriptors) > 1:
             raise ToolError(
                 f"Operation {operation.id} has multiple streaming descriptors and "
                 "cannot be invoked unambiguously."
             )
-        descriptor = descriptors[0]
+        if not supported_descriptors:
+            declared_transports = ", ".join(
+                sorted({descriptor.transport.value for descriptor in descriptors})
+            )
+            raise ToolError(
+                f"Streaming transport(s) {declared_transports} for operation "
+                f"{operation.id} are declared but not enabled."
+            )
+        descriptor = supported_descriptors[0]
         if descriptor.support is not EventSupportLevel.supported:
             raise ToolError(
                 f"Streaming transport {descriptor.transport.value} for operation "
@@ -866,11 +879,13 @@ class RuntimeProxy:
         headers: dict[str, str],
         params: dict[str, Any] | None,
         payload: PreparedRequestPayload | None = None,
+        follow_redirects: bool = False,
     ) -> httpx.Response:
         client = self._get_client()
         return await client.request(
             method,
             url,
+            follow_redirects=follow_redirects,
             **self._build_request_kwargs(
                 headers=headers,
                 params=params,
@@ -949,7 +964,15 @@ class RuntimeProxy:
             header_prefix = auth.header_prefix or "Bearer"
             headers[header_name] = f"{header_prefix} {secret}".strip()
         elif auth.type == AuthType.basic:
-            secret = self._resolve_secret_value(auth, operation_id)
+            if auth.basic_username and auth.basic_password_ref:
+                password = self._resolve_secret_ref(
+                    auth.basic_password_ref,
+                    operation_id,
+                    purpose="basic auth password",
+                )
+                secret = f"{auth.basic_username}:{password}"
+            else:
+                secret = self._resolve_secret_value(auth, operation_id)
             encoded = base64.b64encode(secret.encode("utf-8")).decode("ascii")
             headers["Authorization"] = f"Basic {encoded}"
         elif auth.type == AuthType.api_key:
@@ -982,7 +1005,7 @@ class RuntimeProxy:
         cache_key = "|".join(
             [
                 oauth2.token_url,
-                oauth2.client_id_ref,
+                oauth2.client_id or oauth2.client_id_ref or "",
                 ",".join(sorted(oauth2.scopes)),
                 oauth2.audience or "",
             ]
@@ -1003,10 +1026,14 @@ class RuntimeProxy:
                 if expires_at is None or expires_at > now + 30:
                     return token
 
-            client_id = self._resolve_secret_ref(
-                oauth2.client_id_ref,
-                operation_id,
-                purpose="oauth2 client id",
+            client_id = (
+                oauth2.client_id
+                if oauth2.client_id is not None
+                else self._resolve_secret_ref(
+                    oauth2.client_id_ref or "",
+                    operation_id,
+                    purpose="oauth2 client id",
+                )
             )
             client_secret = self._resolve_secret_ref(
                 oauth2.client_secret_ref,
@@ -1066,7 +1093,12 @@ class RuntimeProxy:
         if response.status_code not in async_job.initial_status_codes:
             return response
 
-        status_url = _extract_async_status_url(async_job, response)
+        try:
+            status_url = _extract_async_status_url(async_job, response)
+        except _InvalidJsonPayloadError as exc:
+            raise ToolError(
+                f"Async kickoff for operation {operation_id} received invalid JSON: {exc}"
+            ) from exc
         if not status_url:
             raise ToolError(
                 f"Async job operation {operation_id} did not provide a pollable status URL."
@@ -1095,6 +1127,7 @@ class RuntimeProxy:
                 request_url,
                 headers=headers,
                 params=query_params or None,
+                follow_redirects=True,
             )
 
             try:
@@ -1104,8 +1137,13 @@ class RuntimeProxy:
                     f"Async poll for operation {operation_id} received invalid JSON: {exc}"
                 ) from exc
             normalized_status = status_value.lower() if status_value is not None else None
-            if normalized_status in success_states or normalized_status in failure_states:
+            if normalized_status in success_states:
                 return poll_response
+            if normalized_status in failure_states:
+                raise ToolError(
+                    f"Async job polling failed for operation {operation_id} "
+                    f"with terminal status {status_value!r}."
+                )
 
             if (
                 poll_response.status_code in async_job.initial_status_codes
@@ -1335,12 +1373,14 @@ class RuntimeProxy:
 
     @staticmethod
     def _resolve_secret_ref(secret_ref: str, operation_id: str, *, purpose: str) -> str:
-        for env_name in _candidate_env_names(secret_ref):
-            secret = os.getenv(env_name)
-            if secret:
-                return secret
-
-        raise ToolError(f"Missing {purpose} for operation {operation_id}: {secret_ref}.")
+        try:
+            return resolve_secret_ref(
+                secret_ref,
+                purpose=purpose,
+                context=f"operation {operation_id}",
+            )
+        except LookupError as exc:
+            raise ToolError(str(exc)) from exc
 
     @staticmethod
     def _graphql_error_message(
@@ -1375,9 +1415,11 @@ class RuntimeProxy:
         payload = _parse_response_payload(response)
         if not isinstance(payload, dict):
             return None
+        if "error" not in payload:
+            return None
         error = payload.get("error")
         if not isinstance(error, dict):
-            return None
+            return "OData response returned a malformed error envelope."
         code = error.get("code", "")
         message = error.get("message", "OData error")
         if isinstance(message, dict):
@@ -1395,9 +1437,11 @@ class RuntimeProxy:
         payload = _parse_response_payload(response)
         if not isinstance(payload, dict):
             return None
+        if "error" not in payload:
+            return None
         error = payload.get("error")
         if not isinstance(error, dict):
-            return None
+            return f"JSON-RPC operation {operation.id} returned a malformed error envelope."
         code = error.get("code", "")
         message = error.get("message", "JSON-RPC error")
         return f"JSON-RPC error ({code}): {message}" if code else f"JSON-RPC error: {message}"
@@ -1415,6 +1459,13 @@ class RuntimeProxy:
             return None
         schemas = payload.get("schemas")
         if not isinstance(schemas, list):
+            if schemas is not None and (
+                isinstance(schemas, str)
+                or "detail" in payload
+                or "status" in payload
+                or "scimType" in payload
+            ):
+                return "SCIM response returned a malformed error envelope."
             return None
         if not any("Error" in s for s in schemas if isinstance(s, str)):
             return None
@@ -1699,11 +1750,7 @@ def _to_websocket_url(url: str, query_params: dict[str, Any]) -> str:
 
 
 def _candidate_env_names(secret_ref: str) -> list[str]:
-    normalized = re.sub(r"\W+", "_", secret_ref).upper()
-    candidates = [secret_ref]
-    if normalized not in candidates:
-        candidates.append(normalized)
-    return candidates
+    return candidate_env_names(secret_ref)
 
 
 def _build_signing_payload(
@@ -1714,7 +1761,7 @@ def _build_signing_payload(
     body_for_signing: Any | None,
     timestamp: str,
 ) -> str:
-    path = urlsplit(url).path
+    path = urlsplit(url).path or "/"
     normalized_query = urlencode(
         sorted((str(key), _normalize_query_value(value)) for key, value in query_params.items())
     )
@@ -1739,12 +1786,12 @@ def _normalize_query_value(value: Any) -> str:
 
 def _parse_response_payload(response: httpx.Response) -> Any:
     content_type = response.headers.get("content-type", "")
-    if "json" in content_type:
+    normalized_content_type = content_type.lower()
+    if "json" in normalized_content_type:
         try:
             return response.json()
         except Exception:
             return response.text
-    normalized_content_type = content_type.lower()
     if any(
         normalized_content_type.startswith(textual) or textual in normalized_content_type
         for textual in _TEXTUAL_CONTENT_TYPES
@@ -2403,7 +2450,7 @@ def _maybe_parse_json_payload(response: httpx.Response) -> Any | None:
     error rather than silently degrading.
     """
     content_type = response.headers.get("content-type", "")
-    if "json" not in content_type:
+    if "json" not in content_type.lower():
         return None
     try:
         return response.json()

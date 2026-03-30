@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -21,6 +21,7 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/error-state";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
@@ -56,8 +57,15 @@ import { VersionDiffDialog } from "@/components/services/version-diff-dialog";
 import { ReviewStatusBadge } from "@/components/review/review-status-badge";
 import { useService, useArtifactVersions } from "@/hooks/use-api";
 import { artifactApi, gatewayApi } from "@/lib/api-client";
+import { inferRouteStatus } from "@/lib/gateway-route-config";
 import { queryKeys } from "@/lib/query-keys";
-import type { Operation, ServiceIR } from "@/types/api";
+import { serviceScopeFromSearchParams } from "@/lib/service-scope";
+import type {
+  GatewayRouteDocument,
+  Operation,
+  ServiceIR,
+  ServiceScope,
+} from "@/types/api";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -65,6 +73,27 @@ import type { Operation, ServiceIR } from "@/types/api";
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString();
+}
+
+function gatewayStatusBadge(status: "synced" | "drifted" | "error") {
+  if (status === "synced") {
+    return (
+      <Badge variant="default" className="bg-green-600">
+        Synced
+      </Badge>
+    );
+  }
+  if (status === "drifted") {
+    return (
+      <Badge
+        variant="secondary"
+        className="bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300"
+      >
+        Drifted
+      </Badge>
+    );
+  }
+  return <Badge variant="destructive">Error</Badge>;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,9 +199,15 @@ function ToolsTab({ operations }: { operations: Operation[] }) {
 // Tab: Versions
 // ---------------------------------------------------------------------------
 
-function VersionsTab({ serviceId }: { serviceId: string }) {
+function VersionsTab({
+  serviceId,
+  scope,
+}: {
+  serviceId: string;
+  scope?: ServiceScope;
+}) {
   const queryClient = useQueryClient();
-  const { data, isLoading } = useArtifactVersions(serviceId);
+  const { data, isLoading } = useArtifactVersions(serviceId, scope);
   const versions = data?.versions ?? [];
 
   const [deleteTarget, setDeleteTarget] = React.useState<number | null>(null);
@@ -184,10 +219,10 @@ function VersionsTab({ serviceId }: { serviceId: string }) {
   async function refreshVersionData() {
     await Promise.all([
       queryClient.invalidateQueries({
-        queryKey: queryKeys.artifacts.versions(serviceId),
+        queryKey: queryKeys.artifacts.versions(serviceId, scope),
       }),
       queryClient.invalidateQueries({
-        queryKey: queryKeys.services.detail(serviceId),
+        queryKey: queryKeys.services.detail(serviceId, scope),
       }),
       queryClient.invalidateQueries({
         queryKey: queryKeys.services.all,
@@ -202,7 +237,7 @@ function VersionsTab({ serviceId }: { serviceId: string }) {
 
     setDeleting(true);
     try {
-      await artifactApi.deleteVersion(serviceId, deleteTarget);
+      await artifactApi.deleteVersion(serviceId, deleteTarget, scope);
       toast.success(`Deleted version v${deleteTarget}.`);
       await refreshVersionData();
     } catch (error) {
@@ -218,7 +253,7 @@ function VersionsTab({ serviceId }: { serviceId: string }) {
   async function handleActivate(versionNumber: number) {
     setActivatingVersion(versionNumber);
     try {
-      await artifactApi.activateVersion(serviceId, versionNumber);
+      await artifactApi.activateVersion(serviceId, versionNumber, scope);
       toast.success(`Activated version v${versionNumber}.`);
       await refreshVersionData();
     } catch (error) {
@@ -251,7 +286,7 @@ function VersionsTab({ serviceId }: { serviceId: string }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-end">
-        <VersionDiffDialog serviceId={serviceId} />
+        <VersionDiffDialog serviceId={serviceId} scope={scope} />
       </div>
 
       <Table>
@@ -309,6 +344,7 @@ function VersionsTab({ serviceId }: { serviceId: string }) {
                   )}
                   <VersionDiffDialog
                     serviceId={serviceId}
+                    scope={scope}
                     initialFrom={v.version_number}
                     trigger={
                       <Button variant="ghost" size="xs">
@@ -372,8 +408,8 @@ function VersionsTab({ serviceId }: { serviceId: string }) {
 // Tab: IR
 // ---------------------------------------------------------------------------
 
-function IRTab({ serviceId }: { serviceId: string }) {
-  const { data, isLoading } = useArtifactVersions(serviceId);
+function IRTab({ serviceId, scope }: { serviceId: string; scope?: ServiceScope }) {
+  const { data, isLoading } = useArtifactVersions(serviceId, scope);
   const activeVersion = data?.versions?.find((v) => v.is_active);
   const ir: ServiceIR | undefined = activeVersion?.ir;
 
@@ -398,16 +434,67 @@ function IRTab({ serviceId }: { serviceId: string }) {
 
 function GatewayTab({
   serviceId,
+  scope,
   onShowVersions,
 }: {
   serviceId: string;
+  scope?: ServiceScope;
   onShowVersions: () => void;
 }) {
-  const { data, isLoading } = useArtifactVersions(serviceId);
+  const { data, isLoading } = useArtifactVersions(serviceId, scope);
   const activeVersion = data?.versions?.find((v) => v.is_active);
   const routeConfig = activeVersion?.route_config;
   const [syncing, setSyncing] = React.useState(false);
   const [reconciling, setReconciling] = React.useState(false);
+  const [gatewayRoutesById, setGatewayRoutesById] = React.useState<
+    Record<string, GatewayRouteDocument>
+  >({});
+  const [gatewayRoutesLoading, setGatewayRoutesLoading] = React.useState(true);
+  const [gatewayRoutesError, setGatewayRoutesError] = React.useState<string | null>(
+    null,
+  );
+
+  const serviceGatewayRoutes = React.useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(gatewayRoutesById).filter(
+          ([, route]) => route.service_id === serviceId,
+        ),
+      ),
+    [gatewayRoutesById, serviceId],
+  );
+
+  const routeStatus = gatewayRoutesError
+    ? "error"
+    : inferRouteStatus(routeConfig, serviceGatewayRoutes);
+
+  const refreshGatewayRoutes = React.useCallback(async () => {
+    setGatewayRoutesLoading(true);
+    setGatewayRoutesError(null);
+    try {
+      const response = await gatewayApi.listRoutes();
+      setGatewayRoutesById(
+        Object.fromEntries(
+          response.routes
+            .filter((route) => route.service_id === serviceId)
+            .map((route) => [route.route_id, route]),
+        ),
+      );
+    } catch (error) {
+      setGatewayRoutesById({});
+      setGatewayRoutesError(
+        `Failed to load live gateway routes: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      );
+    } finally {
+      setGatewayRoutesLoading(false);
+    }
+  }, [serviceId]);
+
+  React.useEffect(() => {
+    void refreshGatewayRoutes();
+  }, [refreshGatewayRoutes]);
 
   async function handleSync() {
     if (!routeConfig) {
@@ -415,13 +502,18 @@ function GatewayTab({
       onShowVersions();
       return;
     }
+    if (gatewayRoutesError) {
+      toast.error("Cannot sync while live gateway routes are unavailable.");
+      return;
+    }
 
     setSyncing(true);
     try {
       const result = await gatewayApi.syncRoutes({
         route_config: routeConfig,
-        previous_routes: {},
+        previous_routes: serviceGatewayRoutes,
       });
+      await refreshGatewayRoutes();
       toast.success(`Synced ${result.service_routes_synced} gateway route(s).`);
     } catch (error) {
       toast.error(
@@ -436,6 +528,7 @@ function GatewayTab({
     setReconciling(true);
     try {
       const result = await gatewayApi.reconcile();
+      await refreshGatewayRoutes();
       const totalChanged =
         result.consumers_synced +
         result.consumers_deleted +
@@ -489,10 +582,19 @@ function GatewayTab({
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">Status:</span>
-            <Badge variant="default" className="bg-green-600">
-              Active
-            </Badge>
+            {gatewayRoutesLoading ? (
+              <Badge variant="secondary">Checking…</Badge>
+            ) : (
+              gatewayStatusBadge(routeStatus)
+            )}
           </div>
+          {gatewayRoutesError ? (
+            <p className="text-sm text-destructive">{gatewayRoutesError}</p>
+          ) : routeStatus === "drifted" ? (
+            <p className="text-sm text-muted-foreground">
+              Live gateway routes do not match the stored route configuration.
+            </p>
+          ) : null}
           <ScrollArea className="h-64 rounded-lg border">
             <pre className="p-4 text-xs leading-relaxed">
               <code>{JSON.stringify(routeConfig, null, 2)}</code>
@@ -521,11 +623,16 @@ function GatewayTab({
 export default function ServiceDetailPage() {
   const params = useParams<{ serviceId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const serviceId = params.serviceId;
   const [activeTab, setActiveTab] = React.useState("tools");
+  const scope = serviceScopeFromSearchParams(searchParams);
 
-  const { data: service, isLoading, error } = useService(serviceId);
-  const { data: versionsData } = useArtifactVersions(serviceId);
+  const { data: service, isLoading, error } = useService(serviceId, scope);
+  const { data: versionsData, error: versionsError } = useArtifactVersions(
+    serviceId,
+    scope,
+  );
 
   const activeVersion = versionsData?.versions?.find((v) => v.is_active);
   const operations: Operation[] = activeVersion?.ir?.operations ?? [];
@@ -547,11 +654,35 @@ export default function ServiceDetailPage() {
           <ArrowLeft className="mr-1 size-4" />
           Back
         </Button>
-        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
-          {error
-            ? `Failed to load service: ${(error as Error).message}`
-            : "Service not found."}
-        </div>
+        <ErrorState
+          title={error ? "Failed to load service" : "Service not found"}
+          message={
+            error
+              ? error instanceof Error
+                ? error.message
+                : "The service detail request did not succeed."
+              : "Service not found."
+          }
+        />
+      </div>
+    );
+  }
+
+  if (versionsError) {
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={() => router.back()}>
+          <ArrowLeft className="mr-1 size-4" />
+          Back
+        </Button>
+        <ErrorState
+          title="Failed to load artifact versions"
+          message={
+            versionsError instanceof Error
+              ? versionsError.message
+              : "The artifact versions request did not succeed."
+          }
+        />
       </div>
     );
   }
@@ -581,6 +712,7 @@ export default function ServiceDetailPage() {
               <ReviewStatusBadge
                 serviceId={serviceId}
                 versionNumber={service.active_version!}
+                scope={scope}
               />
             </div>
           )}
@@ -589,9 +721,9 @@ export default function ServiceDetailPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() =>
+              onClick={() =>
               router.push(
-                `/compilations/new?service_name=${encodeURIComponent(service.name)}`,
+                `/compilations/new?service_id=${encodeURIComponent(serviceId)}&service_name=${encodeURIComponent(service.name)}`,
               )
             }
           >
@@ -637,16 +769,17 @@ export default function ServiceDetailPage() {
         </TabsContent>
 
         <TabsContent value="versions" className="mt-4">
-          <VersionsTab serviceId={serviceId} />
+          <VersionsTab serviceId={serviceId} scope={scope} />
         </TabsContent>
 
         <TabsContent value="ir" className="mt-4">
-          <IRTab serviceId={serviceId} />
+          <IRTab serviceId={serviceId} scope={scope} />
         </TabsContent>
 
         <TabsContent value="gateway" className="mt-4">
           <GatewayTab
             serviceId={serviceId}
+            scope={scope}
             onShowVersions={() => setActiveTab("versions")}
           />
         </TabsContent>

@@ -7,6 +7,7 @@ import {
   ChevronRight,
   MessageSquare,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -17,8 +18,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { RiskBadge } from "@/components/services/risk-badge";
-import type { ServiceIR, Operation } from "@/types/api";
-import { useWorkflowStore } from "@/stores/workflow-store";
+import type { ServiceIR, Operation, ServiceScope } from "@/types/api";
+import { useWorkflowStore, type WorkflowRecord } from "@/stores/workflow-store";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -28,6 +29,8 @@ interface ReviewPanelProps {
   ir: ServiceIR;
   serviceId: string;
   versionNumber: number;
+  scope?: ServiceScope;
+  workflow?: WorkflowRecord;
   readOnly?: boolean;
   onCompleteReview?: (notes: Record<string, string>, overallNote: string) => void;
 }
@@ -178,7 +181,15 @@ function OperationReviewRow({
 // Main component
 // ---------------------------------------------------------------------------
 
-export function ReviewPanel({ ir, serviceId, versionNumber, readOnly, onCompleteReview }: ReviewPanelProps) {
+export function ReviewPanel({
+  ir,
+  serviceId,
+  versionNumber,
+  scope,
+  workflow,
+  readOnly,
+  onCompleteReview,
+}: ReviewPanelProps) {
   const saveNotes = useWorkflowStore((s) => s.saveNotes);
   const [reviewed, setReviewed] = React.useState<Set<string>>(new Set());
   const [notes, setNotes] = React.useState<Record<string, string>>({});
@@ -190,6 +201,20 @@ export function ReviewPanel({ ir, serviceId, versionNumber, readOnly, onComplete
   const reviewedCount = reviewed.size;
   const progressPct = total > 0 ? Math.round((reviewedCount / total) * 100) : 0;
   const allReviewed = reviewedCount === total && total > 0;
+
+  React.useEffect(() => {
+    const savedNotes = workflow?.reviewNotes;
+    const reviewedOperations = savedNotes?.reviewed_operations ?? [];
+    setReviewed(
+      new Set(
+        reviewedOperations.filter((opId) =>
+          operations.some((operation) => operation.id === opId),
+        ),
+      ),
+    );
+    setNotes(savedNotes?.operation_notes ?? {});
+    setOverallNote(savedNotes?.overall_note ?? "");
+  }, [operations, workflow?.reviewNotes]);
 
   function toggleReviewed(opId: string) {
     setReviewed((prev) => {
@@ -207,9 +232,19 @@ export function ReviewPanel({ ir, serviceId, versionNumber, readOnly, onComplete
   async function handleComplete() {
     setSaving(true);
     try {
-      await saveNotes(serviceId, versionNumber, notes, overallNote || undefined);
-    } catch {
-      // best-effort — notes saved locally even if backend fails
+      await saveNotes(
+        serviceId,
+        versionNumber,
+        notes,
+        overallNote || undefined,
+        [...reviewed],
+        scope,
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to save review notes.",
+      );
+      return;
     } finally {
       setSaving(false);
     }
@@ -276,7 +311,11 @@ export function ReviewPanel({ ir, serviceId, versionNumber, readOnly, onComplete
 
       {/* Complete button */}
       {!readOnly && (
-        <Button disabled={!allReviewed || saving} onClick={handleComplete} className="w-full">
+        <Button
+          disabled={!allReviewed || saving}
+          onClick={() => void handleComplete()}
+          className="w-full"
+        >
           <CheckSquare className="mr-1.5 size-4" />
           {saving
             ? "Saving…"

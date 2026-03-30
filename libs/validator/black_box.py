@@ -131,6 +131,13 @@ def _risk_matches(op: Operation, truth: EndpointTruth) -> bool:
         return False
     if risk.destructive is not None and risk.destructive != truth.destructive:
         return False
+    if (
+        risk.external_side_effect is not None
+        and risk.external_side_effect != truth.external_side_effect
+    ):
+        return False
+    if risk.idempotent is not None and risk.idempotent != truth.idempotent:
+        return False
     return True
 
 
@@ -300,7 +307,8 @@ def evaluate_black_box(
     discovered_paths = [op.path for op in ir.operations if op.path and op.enabled]
 
     # Failure patterns
-    failure_patterns = _identify_failure_patterns(unmatched_gt, list(ir.operations))
+    enabled_operations = [op for op in ir.operations if op.enabled]
+    failure_patterns = _identify_failure_patterns(unmatched_gt, enabled_operations)
 
     return BlackBoxReport(
         target_name=target_name or ir.service_name,
@@ -308,7 +316,7 @@ def evaluate_black_box(
         protocol=ir.protocol,
         ground_truth_count=gt_count,
         resource_groups=resource_groups,
-        discovered_operations=len([op for op in ir.operations if op.enabled]),
+        discovered_operations=len(enabled_operations),
         discovered_paths=discovered_paths,
         matched_endpoints=matched_endpoints,
         unmatched_ground_truth=unmatched_gt,

@@ -16,6 +16,7 @@ from apps.compiler_worker.models import (
     RetryPolicy,
     StageDefinition,
     StageExecutionResult,
+    store_compilation_checkpoint,
 )
 from apps.compiler_worker.observability import CompilationObservability
 from apps.compiler_worker.workflows.compile_workflow import (
@@ -41,7 +42,7 @@ class FakeJobStore:
         job_id: UUID | None = None,
     ) -> UUID:
         resolved = job_id or uuid4()
-        self.jobs[resolved] = {"status": "pending"}
+        self.jobs[resolved] = {"status": "pending", "options": dict(request.options)}
         return resolved
 
     async def mark_job_running(
@@ -98,6 +99,23 @@ class FakeJobStore:
             }
         )
 
+    async def update_checkpoint(
+        self,
+        job_id: UUID,
+        *,
+        payload: dict[str, object],
+        protocol: str | None,
+        service_name: str | None,
+        completed_stage: CompilationStage,
+    ) -> None:
+        self.jobs[job_id]["options"] = store_compilation_checkpoint(
+            self.jobs[job_id].get("options"),
+            payload=payload,
+            protocol=protocol,
+            service_name=service_name,
+            completed_stage=completed_stage.value,
+        )
+
 
 class FakeActivities:
     """In-memory activities satisfying CompilationActivities protocol."""
@@ -107,12 +125,14 @@ class FakeActivities:
         self.stage_errors: dict[CompilationStage, list[Exception]] = {}
         self.rollback_calls: list[CompilationStage] = []
         self.rollback_errors: dict[CompilationStage, Exception] = {}
+        self.run_calls: list[CompilationStage] = []
 
     async def run_stage(
         self,
         stage: CompilationStage,
         context: CompilationContext,
     ) -> StageExecutionResult:
+        self.run_calls.append(stage)
         errors = self.stage_errors.get(stage, [])
         if errors:
             raise errors.pop(0)
@@ -234,6 +254,41 @@ class TestCompilationWorkflowSuccess:
         assert CompilationEventType.STAGE_STARTED in event_types
         assert CompilationEventType.STAGE_SUCCEEDED in event_types
         assert CompilationEventType.JOB_SUCCEEDED in event_types
+
+    @pytest.mark.asyncio
+    async def test_resume_from_stage_uses_persisted_checkpoint(self) -> None:
+        store = FakeJobStore()
+        activities = FakeActivities()
+        activities.stage_results[CompilationStage.VALIDATE_IR] = StageExecutionResult(
+            context_updates={"validated": True},
+        )
+        stages = (
+            StageDefinition(stage=CompilationStage.EXTRACT),
+            StageDefinition(stage=CompilationStage.ENHANCE),
+            StageDefinition(stage=CompilationStage.VALIDATE_IR),
+        )
+        checkpointed_options = store_compilation_checkpoint(
+            {
+                "from_stage": "validate_ir",
+                "__compiler_request_replay": {
+                    "source_content": "openapi: 3.0.0",
+                },
+            },
+            payload={
+                "source_content": "openapi: 3.0.0",
+                "service_ir": {"service_name": "Billing API"},
+            },
+            protocol="openapi",
+            service_name="billing-api",
+            completed_stage="enhance",
+        )
+        wf = CompilationWorkflow(store=store, activities=activities, stage_definitions=stages)
+        result = await wf.run(
+            CompilationRequest(source_content="openapi: 3.0.0", options=checkpointed_options)
+        )
+
+        assert result.status == CompilationStatus.SUCCEEDED
+        assert activities.run_calls == [CompilationStage.VALIDATE_IR]
 
 
 class TestCompilationWorkflowRetry:

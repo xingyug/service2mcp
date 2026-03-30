@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, FileCheck } from "lucide-react";
 import { toast } from "sonner";
@@ -8,6 +9,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ErrorState } from "@/components/ui/error-state";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -19,6 +21,9 @@ import { IREditor } from "@/components/services/ir-editor";
 import { VersionDiff } from "@/components/services/version-diff";
 import { ProtocolBadge } from "@/components/services/protocol-badge";
 import { useService, useArtifactVersions } from "@/hooks/use-api";
+import { artifactApi } from "@/lib/api-client";
+import { queryKeys } from "@/lib/query-keys";
+import { serviceScopeFromSearchParams } from "@/lib/service-scope";
 import { useWorkflowStore, type WorkflowState } from "@/stores/workflow-store";
 
 // ---------------------------------------------------------------------------
@@ -28,14 +33,37 @@ import { useWorkflowStore, type WorkflowState } from "@/stores/workflow-store";
 export default function ReviewPage() {
   const params = useParams<{ serviceId: string }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const searchParams = useSearchParams();
   const serviceId = params.serviceId;
+  const scope = serviceScopeFromSearchParams(searchParams);
 
   const versionParam = searchParams.get("version");
-  const requestedVersion = versionParam ? Number(versionParam) : undefined;
+  const requestedVersion = React.useMemo(() => {
+    if (versionParam == null) {
+      return undefined;
+    }
+    const parsed = Number(versionParam);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return null;
+    }
+    return parsed;
+  }, [versionParam]);
+  const invalidRequestedVersion = versionParam !== null && requestedVersion === null;
 
-  const { data: service, isLoading: serviceLoading } = useService(serviceId);
-  const { data: versionsData, isLoading: versionsLoading } = useArtifactVersions(serviceId);
+  const {
+    data: service,
+    isLoading: serviceLoading,
+    error: serviceError,
+  } = useService(serviceId, scope);
+  const {
+    data: versionsData,
+    isLoading: versionsLoading,
+    error: versionsError,
+  } = useArtifactVersions(
+    serviceId,
+    scope,
+  );
   const versions = versionsData?.versions ?? [];
 
   // Determine which version to review
@@ -46,21 +74,42 @@ export default function ReviewPage() {
 
   const versionData = versions.find((v) => v.version_number === versionNumber);
   const ir = versionData?.ir;
+  const missingRequestedVersion =
+    !invalidRequestedVersion &&
+    !!versions.length &&
+    versionData == null;
 
   // Previous version for diff
-  const prevVersion = versions.find(
-    (v) => v.version_number === versionNumber - 1,
-  );
+  const prevVersion = [...versions]
+    .filter((version) => version.version_number < versionNumber)
+    .sort((left, right) => right.version_number - left.version_number)[0];
 
   // Workflow state — load from backend
   const loadWorkflow = useWorkflowStore((s) => s.loadWorkflow);
   const getWorkflow = useWorkflowStore((s) => s.getWorkflow);
 
   React.useEffect(() => {
-    loadWorkflow(serviceId, versionNumber);
-  }, [serviceId, versionNumber, loadWorkflow]);
+    if (
+      invalidRequestedVersion ||
+      missingRequestedVersion ||
+      versionsError ||
+      !versionData
+    ) {
+      return;
+    }
+    void loadWorkflow(serviceId, versionNumber, scope);
+  }, [
+    invalidRequestedVersion,
+    loadWorkflow,
+    missingRequestedVersion,
+    scope,
+    serviceId,
+    versionData,
+    versionNumber,
+    versionsError,
+  ]);
 
-  const workflow = getWorkflow(serviceId, versionNumber);
+  const workflow = getWorkflow(serviceId, versionNumber, scope);
   const currentState: WorkflowState = workflow?.state ?? "draft";
   const history = workflow?.history ?? [];
 
@@ -78,6 +127,31 @@ export default function ReviewPage() {
     toast.success(
       `Review completed with ${noteCount} operation note${noteCount !== 1 ? "s" : ""}. You can now approve or reject.`,
     );
+  }
+
+  async function handleSaveIR(updatedIR: NonNullable<typeof ir>) {
+    try {
+      await artifactApi.updateVersion(
+        serviceId,
+        versionNumber,
+        { ir_json: updatedIR },
+        scope,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.artifacts.versions(serviceId, scope),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.artifacts.version(serviceId, versionNumber, scope),
+        }),
+      ]);
+      toast.success("IR updated successfully.");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to save updated IR.";
+      toast.error(message);
+      throw new Error(message);
+    }
   }
 
   // Trigger re-render on state change
@@ -98,6 +172,25 @@ export default function ReviewPage() {
     );
   }
 
+  if (serviceError) {
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={() => router.back()}>
+          <ArrowLeft className="mr-1 size-4" />
+          Back
+        </Button>
+        <ErrorState
+          title="Failed to load service"
+          message={
+            serviceError instanceof Error
+              ? serviceError.message
+              : "The service detail request did not succeed."
+          }
+        />
+      </div>
+    );
+  }
+
   if (!service) {
     return (
       <div className="space-y-4">
@@ -105,9 +198,56 @@ export default function ReviewPage() {
           <ArrowLeft className="mr-1 size-4" />
           Back
         </Button>
-        <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
-          Service not found.
-        </div>
+        <ErrorState title="Service not found" message="Service not found." />
+      </div>
+    );
+  }
+
+  if (invalidRequestedVersion) {
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={() => router.back()}>
+          <ArrowLeft className="mr-1 size-4" />
+          Back
+        </Button>
+        <ErrorState
+          title="Invalid review version"
+          message="Choose a positive integer version number."
+        />
+      </div>
+    );
+  }
+
+  if (versionsError) {
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={() => router.back()}>
+          <ArrowLeft className="mr-1 size-4" />
+          Back
+        </Button>
+        <ErrorState
+          title="Failed to load artifact versions"
+          message={
+            versionsError instanceof Error
+              ? versionsError.message
+              : "The artifact versions request did not succeed."
+          }
+        />
+      </div>
+    );
+  }
+
+  if (missingRequestedVersion) {
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" onClick={() => router.back()}>
+          <ArrowLeft className="mr-1 size-4" />
+          Back
+        </Button>
+        <ErrorState
+          title="Review version not found"
+          message={`Review version v${versionNumber} was not found for this service.`}
+        />
       </div>
     );
   }
@@ -144,6 +284,7 @@ export default function ReviewPage() {
           <ApprovalWorkflow
             serviceId={serviceId}
             versionNumber={versionNumber}
+            scope={scope}
             currentState={currentState}
             onStateChange={handleStateChange}
             onEditIR={handleEditIR}
@@ -172,6 +313,8 @@ export default function ReviewPage() {
                   ir={ir}
                   serviceId={serviceId}
                   versionNumber={versionNumber}
+                  scope={scope}
+                  workflow={workflow}
                   readOnly={currentState !== "in_review"}
                   onCompleteReview={handleCompleteReview}
                 />
@@ -209,12 +352,16 @@ export default function ReviewPage() {
                 )}
               </CardTitle>
             </CardHeader>
-            <CardContent>
-              {ir ? (
-                <IREditor ir={ir} readOnly={!isEditable} />
-              ) : (
-                <p className="py-8 text-center text-sm text-muted-foreground">
-                  No IR available for this version.
+              <CardContent>
+                {ir ? (
+                  <IREditor
+                    ir={ir}
+                    readOnly={!isEditable}
+                    onSave={isEditable ? handleSaveIR : undefined}
+                  />
+                ) : (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    No IR available for this version.
                 </p>
               )}
             </CardContent>
@@ -227,13 +374,14 @@ export default function ReviewPage() {
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm">
-                  Version Diff — v{versionNumber - 1} → v{versionNumber}
+                  Version Diff — v{prevVersion.version_number} → v{versionNumber}
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <VersionDiff
                   serviceId={serviceId}
-                  fromVersion={versionNumber - 1}
+                  scope={scope}
+                  fromVersion={prevVersion.version_number}
                   toVersion={versionNumber}
                 />
               </CardContent>

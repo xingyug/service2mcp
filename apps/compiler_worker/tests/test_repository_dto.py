@@ -33,6 +33,8 @@ def _fake_job(**overrides: Any) -> SimpleNamespace:
         "options": {"key": "value"},
         "created_by": "user@example.com",
         "service_name": "Test API",
+        "tenant": "team-a",
+        "environment": "prod",
         "created_at": _utcnow(),
         "updated_at": _utcnow(),
     }
@@ -69,6 +71,8 @@ class TestToJobRecord:
         assert record.status == CompilationStatus.SUCCEEDED
         assert record.current_stage == CompilationStage.DEPLOY
         assert record.service_name == "Test API"
+        assert record.tenant == "team-a"
+        assert record.environment == "prod"
 
     def test_null_stage(self) -> None:
         job = _fake_job(current_stage=None)
@@ -187,3 +191,32 @@ class TestCreateJobIntegrityError:
         result = await store.create_job(request)
         assert result == job_id
         fake_session.rollback.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_job_populates_scope_columns(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from apps.compiler_worker.models import CompilationRequest
+
+        request = CompilationRequest(
+            service_name="test-svc",
+            source_url="https://example.com/api.yaml",
+            options={"tenant": "team-a", "environment": "prod"},
+        )
+
+        fake_session = AsyncMock()
+        fake_session.get = AsyncMock(return_value=None)
+        fake_session.add = MagicMock()
+        fake_session.commit = AsyncMock()
+
+        async_ctx = AsyncMock()
+        async_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+        async_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        store = SQLAlchemyCompilationJobStore(session_factory=MagicMock(return_value=async_ctx))
+
+        await store.create_job(request)
+
+        added_job = fake_session.add.call_args[0][0]
+        assert added_job.tenant == "team-a"
+        assert added_job.environment == "prod"

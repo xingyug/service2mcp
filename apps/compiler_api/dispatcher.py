@@ -38,6 +38,25 @@ class InMemoryCompilationDispatcher:
         self.submitted_requests.append(request)
 
 
+@dataclass(frozen=True)
+class UnconfiguredCompilationDispatcher:
+    """Fail-closed default dispatcher used when no real worker backend is configured."""
+
+    workflow_engine: str | None = None
+
+    async def enqueue(self, request: CompilationRequest) -> None:
+        del request
+        if self.workflow_engine:
+            raise RuntimeError(
+                f"Unsupported WORKFLOW_ENGINE {self.workflow_engine!r}; "
+                "configure a supported dispatcher backend."
+            )
+        raise RuntimeError(
+            "Compiler worker dispatcher is not configured; set WORKFLOW_ENGINE=celery "
+            "or inject an explicit dispatcher."
+        )
+
+
 @dataclass
 class CallbackCompilationDispatcher:
     """Dispatcher that forwards submissions to an async callback."""
@@ -90,7 +109,11 @@ def get_compilation_dispatcher(request: Request) -> CompilationDispatcher:
 
 
 def _resolve_default_dispatcher() -> CompilationDispatcher:
-    workflow_engine = os.getenv("WORKFLOW_ENGINE", "").strip().lower()
+    configured_engine = os.getenv("WORKFLOW_ENGINE")
+    workflow_engine = (configured_engine or "").strip().lower()
     if workflow_engine == "celery":
         return CeleryCompilationDispatcher()
-    return InMemoryCompilationDispatcher()
+    normalized_engine = configured_engine.strip() if configured_engine is not None else None
+    return UnconfiguredCompilationDispatcher(
+        workflow_engine=normalized_engine or None,
+    )

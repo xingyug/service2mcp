@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from apps.access_control.authn.models import TokenPrincipalResponse
 from apps.compiler_api.routes.workflows import (
     ReviewNotesUpdate,
     TransitionRequest,
@@ -19,16 +20,33 @@ from apps.compiler_api.routes.workflows import (
 )
 
 
+def _caller(
+    subject: str = "alice",
+    *,
+    username: str | None = None,
+) -> TokenPrincipalResponse:
+    return TokenPrincipalResponse(
+        subject=subject,
+        username=username,
+        token_type="jwt",
+        claims={"sub": subject},
+    )
+
+
 def _make_record(
     *,
     state: str = "draft",
     history: list | None = None,
     review_notes: dict | None = None,
+    tenant: str | None = None,
+    environment: str | None = None,
 ) -> MagicMock:
     record = MagicMock()
     record.id = uuid4()
     record.service_id = "svc-1"
     record.version_number = 1
+    record.tenant = tenant
+    record.environment = environment
     record.state = state
     record.review_notes = review_notes
     record.history = history or []
@@ -44,27 +62,56 @@ def _make_record(
 
 class TestGetWorkflow:
     async def test_returns_existing_workflow(self) -> None:
-        record = _make_record(state="in_review")
+        record = _make_record(state="in_review", tenant="team-a", environment="prod")
         session = AsyncMock()
 
         with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ) as require_existing, patch(
             "apps.compiler_api.routes.workflows._get_or_create",
             return_value=record,
-        ):
-            result = await get_workflow("svc-1", 1, session=session)
+        ) as get_or_create:
+            result = await get_workflow(
+                "svc-1",
+                1,
+                tenant="team-a",
+                environment="prod",
+                session=session,
+                _caller=_caller(),
+            )
 
         assert result.state == "in_review"
         assert result.service_id == "svc-1"
+        assert result.tenant == "team-a"
+        assert result.environment == "prod"
+        require_existing.assert_awaited_once_with(
+            session,
+            "svc-1",
+            1,
+            tenant="team-a",
+            environment="prod",
+        )
+        get_or_create.assert_awaited_once_with(
+            session,
+            "svc-1",
+            1,
+            tenant="team-a",
+            environment="prod",
+        )
 
     async def test_creates_draft_when_missing(self) -> None:
         new_record = _make_record(state="draft")
         session = AsyncMock()
 
         with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ), patch(
             "apps.compiler_api.routes.workflows._get_or_create",
             return_value=new_record,
         ):
-            result = await get_workflow("svc-1", 1, session=session)
+            result = await get_workflow("svc-1", 1, session=session, _caller=_caller())
 
         assert result.state == "draft"
         session.commit.assert_awaited_once()
@@ -82,11 +129,20 @@ class TestTransitionWorkflow:
         session.refresh = AsyncMock()
 
         with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ), patch(
             "apps.compiler_api.routes.workflows._get_or_create",
             return_value=record,
         ):
             payload = TransitionRequest(to="submitted", actor="alice")
-            result = await transition_workflow("svc-1", 1, payload, session=session)
+            result = await transition_workflow(
+                "svc-1",
+                1,
+                payload,
+                session=session,
+                caller=_caller(subject="alice@example.com", username="alice"),
+            )
 
         assert result.state == "submitted"
         session.commit.assert_awaited_once()
@@ -96,13 +152,22 @@ class TestTransitionWorkflow:
         session = AsyncMock()
 
         with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ), patch(
             "apps.compiler_api.routes.workflows._get_or_create",
             return_value=record,
         ):
             payload = TransitionRequest(to="approved", actor="alice")
 
             with pytest.raises(HTTPException) as exc_info:
-                await transition_workflow("svc-1", 1, payload, session=session)
+                await transition_workflow(
+                    "svc-1",
+                    1,
+                    payload,
+                    session=session,
+                    caller=_caller(),
+                )
 
         assert exc_info.value.status_code == 409
         assert "not allowed" in exc_info.value.detail
@@ -113,17 +178,26 @@ class TestTransitionWorkflow:
         session.refresh = AsyncMock()
 
         with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ), patch(
             "apps.compiler_api.routes.workflows._get_or_create",
             return_value=record,
         ):
             payload = TransitionRequest(to="approved", actor="bob", comment="LGTM")
-            result = await transition_workflow("svc-1", 1, payload, session=session)
+            result = await transition_workflow(
+                "svc-1",
+                1,
+                payload,
+                session=session,
+                caller=_caller(subject="reviewer@example.com", username="reviewer"),
+            )
 
         assert result.state == "approved"
         assert len(record.history) == 1
         assert record.history[0]["from"] == "in_review"
         assert record.history[0]["to"] == "approved"
-        assert record.history[0]["actor"] == "bob"
+        assert record.history[0]["actor"] == "reviewer"
         assert record.history[0]["comment"] == "LGTM"
 
     async def test_full_happy_path_transitions(self) -> None:
@@ -141,12 +215,83 @@ class TestTransitionWorkflow:
             session.refresh = AsyncMock()
 
             with patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ), patch(
                 "apps.compiler_api.routes.workflows._get_or_create",
                 return_value=record,
             ):
                 payload = TransitionRequest(to=to_state, actor="ci")
-                result = await transition_workflow("svc-1", 1, payload, session=session)
+                result = await transition_workflow(
+                    "svc-1",
+                    1,
+                    payload,
+                    session=session,
+                    caller=_caller(subject="ci@example.com", username="ci"),
+                )
             assert result.state == to_state, f"Expected {to_state} from {from_state}"
+
+    async def test_rejects_missing_service_version(self) -> None:
+        session = AsyncMock()
+        payload = TransitionRequest(to="submitted", actor="alice")
+
+        with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            side_effect=HTTPException(status_code=404, detail="missing"),
+        ), patch(
+            "apps.compiler_api.routes.workflows._get_or_create",
+        ) as get_or_create:
+            with pytest.raises(HTTPException) as exc_info:
+                await transition_workflow(
+                    "svc-1",
+                    99,
+                    payload,
+                    session=session,
+                    caller=_caller(),
+                )
+
+        assert exc_info.value.status_code == 404
+        get_or_create.assert_not_called()
+
+    async def test_uses_scope_when_transitioning(self) -> None:
+        record = _make_record(state="draft", tenant="team-a", environment="prod")
+        session = AsyncMock()
+        session.refresh = AsyncMock()
+
+        with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ) as require_existing, patch(
+            "apps.compiler_api.routes.workflows._get_or_create",
+            return_value=record,
+        ) as get_or_create:
+            payload = TransitionRequest(to="submitted", actor="alice")
+            result = await transition_workflow(
+                "svc-1",
+                1,
+                payload,
+                tenant="team-a",
+                environment="prod",
+                session=session,
+                caller=_caller(subject="alice@example.com", username="alice"),
+            )
+
+        assert result.tenant == "team-a"
+        assert result.environment == "prod"
+        require_existing.assert_awaited_once_with(
+            session,
+            "svc-1",
+            1,
+            tenant="team-a",
+            environment="prod",
+        )
+        get_or_create.assert_awaited_once_with(
+            session,
+            "svc-1",
+            1,
+            tenant="team-a",
+            environment="prod",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -161,18 +306,29 @@ class TestSaveReviewNotes:
         session.refresh = AsyncMock()
 
         with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ), patch(
             "apps.compiler_api.routes.workflows._get_or_create",
             return_value=record,
         ):
             payload = ReviewNotesUpdate(
                 notes={"op-1": "looks good", "op-2": "needs fix"},
                 overall_note="Ship it",
+                reviewed_operations=["op-1", "op-2"],
             )
-            result = await save_review_notes("svc-1", 1, payload, session=session)  # noqa: F841
+            result = await save_review_notes(
+                "svc-1",
+                1,
+                payload,
+                session=session,
+                _caller=_caller(),
+            )  # noqa: F841
 
         assert record.review_notes == {
             "operation_notes": {"op-1": "looks good", "op-2": "needs fix"},
             "overall_note": "Ship it",
+            "reviewed_operations": ["op-1", "op-2"],
         }
         session.commit.assert_awaited_once()
 
@@ -182,13 +338,57 @@ class TestSaveReviewNotes:
         session.refresh = AsyncMock()
 
         with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ), patch(
             "apps.compiler_api.routes.workflows._get_or_create",
             return_value=record,
         ):
             payload = ReviewNotesUpdate(notes={"op-1": "ok"})
-            await save_review_notes("svc-1", 1, payload, session=session)
+            await save_review_notes("svc-1", 1, payload, session=session, _caller=_caller())
 
         assert record.review_notes["overall_note"] is None
+        assert record.review_notes["reviewed_operations"] == []
+
+    async def test_uses_scope_when_saving_notes(self) -> None:
+        record = _make_record(tenant="team-a", environment="prod")
+        session = AsyncMock()
+        session.refresh = AsyncMock()
+
+        with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ) as require_existing, patch(
+            "apps.compiler_api.routes.workflows._get_or_create",
+            return_value=record,
+        ) as get_or_create:
+            payload = ReviewNotesUpdate(notes={"op-1": "ok"})
+            result = await save_review_notes(
+                "svc-1",
+                1,
+                payload,
+                tenant="team-a",
+                environment="prod",
+                session=session,
+                _caller=_caller(),
+            )
+
+        assert result.tenant == "team-a"
+        assert result.environment == "prod"
+        require_existing.assert_awaited_once_with(
+            session,
+            "svc-1",
+            1,
+            tenant="team-a",
+            environment="prod",
+        )
+        get_or_create.assert_awaited_once_with(
+            session,
+            "svc-1",
+            1,
+            tenant="team-a",
+            environment="prod",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -211,10 +411,13 @@ class TestGetWorkflowHistory:
         session = AsyncMock()
 
         with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ), patch(
             "apps.compiler_api.routes.workflows._get_or_create",
             return_value=record,
         ):
-            result = await get_workflow_history("svc-1", 1, session=session)
+            result = await get_workflow_history("svc-1", 1, session=session, _caller=_caller())
 
         assert len(result) == 1
         assert result[0].to == "submitted"
@@ -224,8 +427,47 @@ class TestGetWorkflowHistory:
         session = AsyncMock()
 
         with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ), patch(
             "apps.compiler_api.routes.workflows._get_or_create",
             return_value=record,
         ):
-            result = await get_workflow_history("svc-1", 1, session=session)
+            result = await get_workflow_history("svc-1", 1, session=session, _caller=_caller())
         assert result == []
+
+    async def test_uses_scope_when_loading_history(self) -> None:
+        record = _make_record(history=[], tenant="team-a", environment="prod")
+        session = AsyncMock()
+
+        with patch(
+            "apps.compiler_api.routes.workflows._require_existing_service_version",
+            return_value=None,
+        ) as require_existing, patch(
+            "apps.compiler_api.routes.workflows._get_or_create",
+            return_value=record,
+        ) as get_or_create:
+            result = await get_workflow_history(
+                "svc-1",
+                1,
+                tenant="team-a",
+                environment="prod",
+                session=session,
+                _caller=_caller(),
+            )
+
+        assert result == []
+        require_existing.assert_awaited_once_with(
+            session,
+            "svc-1",
+            1,
+            tenant="team-a",
+            environment="prod",
+        )
+        get_or_create.assert_awaited_once_with(
+            session,
+            "svc-1",
+            1,
+            tenant="team-a",
+            environment="prod",
+        )

@@ -14,12 +14,14 @@ spec:
   policyTypes:
     - Egress
   egress:
+{% for egress_port in egress_ports %}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
       ports:
         - protocol: TCP
-          port: {{ upstream_port }}
+          port: {{ egress_port }}
+{% endfor %}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

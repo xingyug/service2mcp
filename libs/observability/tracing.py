@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 # Lazy-initialised globals
 _tracer_provider: Any = None
 _is_configured: bool = False
+_configured_service_name: str | None = None
+_configured_endpoint: str | None = None
+_configured_enable_local: bool = False
 
 
 def setup_tracer(
@@ -37,16 +40,34 @@ def setup_tracer(
                   exporter endpoint is provided.
     """
     global _tracer_provider, _is_configured  # noqa: PLW0603
-
-    if _is_configured and _tracer_provider is not None:
-        return
+    global _configured_service_name, _configured_endpoint, _configured_enable_local  # noqa: PLW0603
 
     endpoint = endpoint or os.environ.get("OTEL_EXPORTER_ENDPOINT")
+
+    if (
+        _is_configured
+        and _tracer_provider is not None
+        and (
+            _configured_service_name is None
+            or (
+                _configured_service_name == service_name
+                and _configured_endpoint == endpoint
+                and _configured_enable_local == enable_local
+            )
+        )
+    ):
+        return
+
     if not endpoint and not enable_local:
         logger.info("OTEL_EXPORTER_ENDPOINT not set — tracing disabled (no-op mode)")
         _is_configured = False
+        _configured_service_name = None
+        _configured_endpoint = None
+        _configured_enable_local = False
         return
 
+    existing_provider = _tracer_provider
+    had_provider = existing_provider is not None
     try:
         from opentelemetry import trace
         from opentelemetry.sdk.resources import Resource
@@ -63,9 +84,13 @@ def setup_tracer(
             exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
             provider.add_span_processor(BatchSpanProcessor(exporter))
 
-        trace.set_tracer_provider(provider)
+        if not had_provider:
+            trace.set_tracer_provider(provider)
         _tracer_provider = provider
         _is_configured = True
+        _configured_service_name = service_name
+        _configured_endpoint = endpoint
+        _configured_enable_local = enable_local
         if endpoint:
             logger.info("OTel tracing configured for %s → %s", service_name, endpoint)
         else:
@@ -73,14 +98,26 @@ def setup_tracer(
     except ImportError:
         logger.warning("opentelemetry SDK not installed — tracing disabled")
         _is_configured = False
+        _tracer_provider = existing_provider
+        _configured_service_name = None
+        _configured_endpoint = None
+        _configured_enable_local = False
     except Exception:
         logger.warning("Failed to configure OTel tracing", exc_info=True)
         _is_configured = False
+        _tracer_provider = existing_provider
+        _configured_service_name = None
+        _configured_endpoint = None
+        _configured_enable_local = False
 
 
 def get_tracer(name: str) -> Any:
     """Return a tracer instance.  Returns a no-op tracer if not configured."""
-    if _is_configured:
+    if _is_configured and _tracer_provider is not None:
+        get_provider_tracer = getattr(_tracer_provider, "get_tracer", None)
+        if callable(get_provider_tracer):
+            return get_provider_tracer(name)
+
         from opentelemetry import trace
 
         return trace.get_tracer(name)

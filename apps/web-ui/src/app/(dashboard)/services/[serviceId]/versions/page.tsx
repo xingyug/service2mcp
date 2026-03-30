@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -18,6 +18,7 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -41,6 +42,7 @@ import { artifactApi } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { VersionDiffDialog } from "@/components/services/version-diff-dialog";
 import { IREditor } from "@/components/services/ir-editor";
+import { appendServiceScope, serviceScopeFromSearchParams } from "@/lib/service-scope";
 import type { ServiceIR } from "@/types/api";
 
 // ---------------------------------------------------------------------------
@@ -58,11 +60,13 @@ function formatDate(iso: string): string {
 export default function VersionsPage() {
   const params = useParams<{ serviceId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const serviceId = params.serviceId;
+  const scope = serviceScopeFromSearchParams(searchParams);
 
-  const { data: service } = useService(serviceId);
-  const { data, isLoading } = useArtifactVersions(serviceId);
+  const { data: service } = useService(serviceId, scope);
+  const { data, isLoading, error } = useArtifactVersions(serviceId, scope);
   const versions = data?.versions ?? [];
 
   // Delete confirmation
@@ -76,15 +80,15 @@ export default function VersionsPage() {
     : undefined;
 
   async function refreshVersionData() {
-    await Promise.all([
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.artifacts.versions(serviceId),
-      }),
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.services.detail(serviceId),
-      }),
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.services.all,
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.artifacts.versions(serviceId, scope),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.services.detail(serviceId, scope),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.services.all,
       }),
     ]);
   }
@@ -92,7 +96,7 @@ export default function VersionsPage() {
   async function handleDelete(version: number) {
     setDeleting(true);
     try {
-      await artifactApi.deleteVersion(serviceId, version);
+      await artifactApi.deleteVersion(serviceId, version, scope);
       toast.success(`Deleted version v${version}.`);
       await refreshVersionData();
     } catch (error) {
@@ -107,7 +111,7 @@ export default function VersionsPage() {
 
   async function handleActivate(version: number) {
     try {
-      await artifactApi.activateVersion(serviceId, version);
+      await artifactApi.activateVersion(serviceId, version, scope);
       toast.success(`Activated version v${version}.`);
       await refreshVersionData();
     } catch (error) {
@@ -130,6 +134,35 @@ export default function VersionsPage() {
     );
   }
 
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() =>
+              router.push(appendServiceScope(`/services/${serviceId}`, scope))
+            }
+          >
+            <ArrowLeft className="size-4" />
+          </Button>
+          <h1 className="text-xl font-bold">
+            {service?.name ?? "Service"} — Versions
+          </h1>
+        </div>
+        <ErrorState
+          title="Failed to load artifact versions"
+          message={
+            error instanceof Error
+              ? error.message
+              : "The artifact versions request did not succeed."
+          }
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -138,7 +171,9 @@ export default function VersionsPage() {
           <Button
             variant="ghost"
             size="icon-xs"
-            onClick={() => router.push(`/services/${serviceId}`)}
+            onClick={() =>
+              router.push(appendServiceScope(`/services/${serviceId}`, scope))
+            }
           >
             <ArrowLeft className="size-4" />
           </Button>
@@ -148,6 +183,7 @@ export default function VersionsPage() {
         </div>
         <VersionDiffDialog
           serviceId={serviceId}
+          scope={scope}
           trigger={
             <Button variant="outline" size="sm">
               <ArrowRightLeft className="mr-1 size-4" />
@@ -223,6 +259,7 @@ export default function VersionsPage() {
                     </Button>
                     <VersionDiffDialog
                       serviceId={serviceId}
+                      scope={scope}
                       initialFrom={v.version_number}
                       trigger={
                         <Button variant="ghost" size="xs">

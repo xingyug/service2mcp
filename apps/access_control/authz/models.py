@@ -29,7 +29,6 @@ class PolicyUpdateRequest(BaseModel):
     action_pattern: str | None = None
     risk_threshold: RiskLevel | None = None
     decision: str | None = Field(default=None, pattern="^(allow|deny|require_approval)$")
-    created_by: str | None = None
 
 
 class PolicyResponse(BaseModel):

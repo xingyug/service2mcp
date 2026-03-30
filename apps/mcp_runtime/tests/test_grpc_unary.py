@@ -39,10 +39,9 @@ class TestMethodFullName:
         with pytest.raises(ToolError, match="invalid"):
             _method_full_name("")
 
-    def test_multiple_slashes(self) -> None:
-        # partition splits on first /
-        result = _method_full_name("/pkg.Svc/Method/Extra")
-        assert result == "pkg.Svc.Method/Extra"
+    def test_multiple_slashes_raise(self) -> None:
+        with pytest.raises(ToolError, match="invalid"):
+            _method_full_name("/pkg.Svc/Method/Extra")
 
 
 class TestRequestPayload:
@@ -50,10 +49,10 @@ class TestRequestPayload:
         args = {"payload": {"field1": "value1"}, "other": "ignored"}
         assert _request_payload(args) == {"field1": "value1"}
 
-    def test_returns_non_none_args_without_payload(self) -> None:
+    def test_preserves_explicit_null_args_without_payload(self) -> None:
         args = {"field1": "value1", "field2": None, "field3": 42}
         result = _request_payload(args)
-        assert result == {"field1": "value1", "field3": 42}
+        assert result == {"field1": "value1", "field2": None, "field3": 42}
 
     def test_payload_non_dict_falls_through(self) -> None:
         args = {"payload": "not_a_dict", "field1": "value1"}
@@ -64,7 +63,7 @@ class TestRequestPayload:
         assert _request_payload({}) == {}
 
     def test_all_none_values(self) -> None:
-        assert _request_payload({"a": None, "b": None}) == {}
+        assert _request_payload({"a": None, "b": None}) == {"a": None, "b": None}
 
 
 class TestPrimeServiceDescriptor:

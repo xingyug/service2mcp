@@ -67,6 +67,28 @@ def _ir(operations: list[Operation] | None = None) -> ServiceIR:
     )
 
 
+class TestCreateRuntimeServer:
+    def test_enables_dns_rebinding_protection_by_default(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("MCP_DISABLE_DNS_REBINDING_PROTECTION", raising=False)
+
+        server = create_runtime_server("test")
+
+        assert server.settings.transport_security.enable_dns_rebinding_protection is True
+
+    def test_allows_explicit_dns_rebinding_opt_out(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("MCP_DISABLE_DNS_REBINDING_PROTECTION", "true")
+
+        server = create_runtime_server("test")
+
+        assert server.settings.transport_security.enable_dns_rebinding_protection is False
+
+
 class TestBuildToolFunction:
     @pytest.mark.asyncio
     async def test_generated_function_has_correct_signature(self) -> None:

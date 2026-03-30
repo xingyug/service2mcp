@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import gzip
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,7 +13,12 @@ import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from libs.ir import ServiceIR, serialize_ir
-from libs.ir.models import AuthConfig, EventSupportLevel, EventTransport
+from libs.ir.models import AuthConfig, EventSupportLevel, EventTransport, GrpcStreamMode
+from libs.secret_refs import (
+    ensure_no_secret_ref_name_collisions,
+    kubernetes_secret_key_name,
+    normalized_secret_ref_name,
+)
 
 DEFAULT_NAMESPACE = "default"
 DEFAULT_SERVICE_IR_PATH = "/config/service-ir.json.gz"
@@ -23,6 +27,9 @@ DEFAULT_RUNTIME_SECRET_NAME = "tool-compiler-runtime-secrets"
 _DNS_PORT = 53
 _MAX_RESOURCE_NAME_LENGTH = 63
 _TEMPLATE_DIRECTORY = Path(__file__).with_name("templates")
+_RESERVED_SELECTOR_LABELS = frozenset(
+    {"app.kubernetes.io/name", "app.kubernetes.io/instance"}
+)
 _TEMPLATE_ORDER = (
     "configmap.yaml.j2",
     "deployment.yaml.j2",
@@ -64,6 +71,12 @@ class GenericManifestConfig:
             raise ValueError("version_number must be >= 1 when provided.")
         if self.runtime_secret_name is not None and not self.runtime_secret_name.strip():
             raise ValueError("runtime_secret_name must not be empty when provided.")
+        reserved_label_keys = sorted(_RESERVED_SELECTOR_LABELS & self.labels.keys())
+        if reserved_label_keys:
+            reserved = ", ".join(reserved_label_keys)
+            raise ValueError(
+                f"labels must not override reserved selector labels: {reserved}."
+            )
 
 
 @dataclass(frozen=True)
@@ -94,8 +107,15 @@ def generate_generic_manifests(
 ) -> GeneratedManifestSet:
     """Generate the generic-mode manifest set for a ServiceIR."""
 
-    base_resource_name = _resource_name(service_ir.service_name, config.name_suffix)
-    resource_name = _versioned_resource_name(base_resource_name, config.version_number)
+    _validate_runtime_secret_configuration(
+        service_ir.auth,
+        runtime_secret_name=config.runtime_secret_name,
+    )
+    resource_name = runtime_service_name(
+        service_ir.service_name,
+        config.version_number,
+        name_suffix=config.name_suffix,
+    )
     selector_labels = {
         "app.kubernetes.io/name": resource_name,
         "app.kubernetes.io/instance": resource_name,
@@ -115,7 +135,7 @@ def generate_generic_manifests(
         service_ir,
         config=config,
         resource_name=resource_name,
-        route_base_name=_route_base_name(service_ir, config),
+        route_base_name=_route_identity_base(service_ir, config),
     )
     runtime_secret_envs = _runtime_secret_envs(
         service_ir.auth,
@@ -125,9 +145,10 @@ def generate_generic_manifests(
     context = {
         "annotations_yaml_4": _yaml_block(annotations, indent=4),
         "annotations_yaml_8": _yaml_block(annotations, indent=8),
-        "config_map_name": f"{resource_name}-ir",
+        "config_map_name": _suffixed_resource_name(resource_name, "ir"),
         "container_port": config.container_port,
         "deployment_name": resource_name,
+        "egress_ports": _egress_ports(service_ir),
         "enable_native_grpc_unary": _has_native_grpc_unary(service_ir),
         "enable_native_grpc_stream": _has_supported_native_grpc_stream(service_ir),
         "image_pull_policy": config.image_pull_policy,
@@ -145,7 +166,6 @@ def generate_generic_manifests(
         "service_ir_path": DEFAULT_SERVICE_IR_PATH,
         "service_name": resource_name,
         "service_port": config.service_port,
-        "upstream_port": _upstream_port(service_ir.base_url),
     }
 
     rendered_documents = [
@@ -227,12 +247,7 @@ def _annotations_for(service_ir: ServiceIR) -> dict[str, str]:
 def _resource_name(service_name: str, suffix: str | None) -> str:
     base_name = _sanitize_dns_label(service_name)
     if suffix:
-        suffix_label = _sanitize_dns_label(suffix)
-        max_base_length = _MAX_RESOURCE_NAME_LENGTH - len(suffix_label) - 1
-        trimmed_base = base_name[:max_base_length].rstrip("-")
-        if not trimmed_base:
-            trimmed_base = "service"
-        return f"{trimmed_base}-{suffix_label}"
+        return _suffixed_resource_name(base_name, suffix)
     return base_name
 
 
@@ -240,12 +255,18 @@ def _versioned_resource_name(base_name: str, version_number: int | None) -> str:
     if version_number is None:
         return base_name
 
-    version_suffix = f"v{version_number}"
-    max_base_length = _MAX_RESOURCE_NAME_LENGTH - len(version_suffix) - 1
-    trimmed_base = base_name[:max_base_length].rstrip("-")
-    if not trimmed_base:
-        trimmed_base = "service"
-    return f"{trimmed_base}-{version_suffix}"
+    return _suffixed_resource_name(base_name, f"v{version_number}")
+
+
+def runtime_service_name(
+    service_name: str,
+    version_number: int | None,
+    *,
+    name_suffix: str | None = None,
+) -> str:
+    """Return the versioned runtime Service name used by generated Kubernetes manifests."""
+
+    return _versioned_resource_name(_resource_name(service_name, name_suffix), version_number)
 
 
 def _sanitize_dns_label(value: str) -> str:
@@ -267,6 +288,20 @@ def _sanitize_dns_label(value: str) -> str:
     return label[:_MAX_RESOURCE_NAME_LENGTH].rstrip("-")
 
 
+def _suffixed_resource_name(base_name: str, suffix: str) -> str:
+    trimmed_base = _sanitize_dns_label(base_name)
+    trimmed_suffix = _sanitize_dns_label(suffix)
+    max_base_length = max(_MAX_RESOURCE_NAME_LENGTH - len(trimmed_suffix) - 1, 0)
+    trimmed_base = trimmed_base[:max_base_length].rstrip("-")
+    if not trimmed_base:
+        trimmed_base = "service"
+    max_suffix_length = max(_MAX_RESOURCE_NAME_LENGTH - len(trimmed_base) - 1, 0)
+    trimmed_suffix = trimmed_suffix[:max_suffix_length].rstrip("-")
+    if not trimmed_suffix:
+        return trimmed_base[:_MAX_RESOURCE_NAME_LENGTH].rstrip("-") or "service"
+    return f"{trimmed_base}-{trimmed_suffix}"
+
+
 def _upstream_port(base_url: str) -> int:
     parsed = urlparse(base_url)
     if parsed.port is not None:
@@ -282,16 +317,40 @@ def _upstream_port(base_url: str) -> int:
     return scheme_default_ports.get(parsed.scheme, 443)
 
 
+def _egress_ports(service_ir: ServiceIR) -> list[int]:
+    ports = [_upstream_port(service_ir.base_url)]
+    oauth2 = service_ir.auth.oauth2
+    if oauth2 is not None:
+        token_port = _upstream_port(oauth2.token_url)
+        if token_port not in ports:
+            ports.append(token_port)
+    return ports
+
+
 def _route_base_name(service_ir: ServiceIR, config: GenericManifestConfig) -> str:
     if config.service_id is not None:
         return _sanitize_dns_label(config.service_id)
     return _sanitize_dns_label(service_ir.service_name)
 
 
+def _route_identity_base(service_ir: ServiceIR, config: GenericManifestConfig) -> str:
+    base_name = _route_base_name(service_ir, config)
+    scope_segments: list[str] = []
+    if service_ir.tenant:
+        scope_segments.extend(("tenant", _sanitize_dns_label(service_ir.tenant)))
+    if service_ir.environment:
+        scope_segments.extend(("env", _sanitize_dns_label(service_ir.environment)))
+    if not scope_segments:
+        return base_name
+    return "-".join((base_name, *scope_segments))
+
+
 def _has_supported_native_grpc_stream(service_ir: ServiceIR) -> bool:
     return any(
         descriptor.transport is EventTransport.grpc_stream
         and descriptor.support is EventSupportLevel.supported
+        and descriptor.grpc_stream is not None
+        and descriptor.grpc_stream.mode is GrpcStreamMode.server
         for descriptor in service_ir.event_descriptors
     )
 
@@ -312,18 +371,20 @@ def build_route_config(
 ) -> dict[str, Any]:
     """Build gateway route metadata for stable and version-pinned traffic."""
 
-    resolved_resource_name = resource_name or _versioned_resource_name(
-        _resource_name(service_ir.service_name, config.name_suffix),
+    resolved_resource_name = resource_name or runtime_service_name(
+        service_ir.service_name,
         config.version_number,
+        name_suffix=config.name_suffix,
     )
-    resolved_route_base = route_base_name or _route_base_name(service_ir, config)
+    stable_service_id = _route_base_name(service_ir, config)
+    resolved_route_base = route_base_name or _route_identity_base(service_ir, config)
     target_service = {
         "name": resolved_resource_name,
         "namespace": config.namespace,
         "port": config.service_port,
     }
     route_config: dict[str, Any] = {
-        "service_id": resolved_route_base,
+        "service_id": stable_service_id,
         "service_name": resolved_resource_name,
         "namespace": config.namespace,
         "default_route": {
@@ -332,6 +393,10 @@ def build_route_config(
             "switch_strategy": "atomic-upstream-swap",
         },
     }
+    if service_ir.tenant:
+        route_config["tenant"] = service_ir.tenant
+    if service_ir.environment:
+        route_config["environment"] = service_ir.environment
     if config.version_number is not None:
         route_config["version_number"] = config.version_number
         route_config["version_route"] = {
@@ -357,7 +422,7 @@ def _runtime_secret_envs(
         {
             "env_name": _secret_ref_env_name(secret_ref),
             "secret_name": runtime_secret_name,
-            "secret_key": secret_ref,
+            "secret_key": _secret_ref_secret_key(secret_ref),
         }
         for secret_ref in secret_refs
     ]
@@ -367,6 +432,7 @@ def _runtime_secret_refs(auth: AuthConfig) -> list[str]:
     refs: list[str] = []
     for secret_ref in (
         auth.runtime_secret_ref,
+        auth.basic_password_ref,
         auth.oauth2.client_id_ref if auth.oauth2 is not None else None,
         auth.oauth2.client_secret_ref if auth.oauth2 is not None else None,
         auth.mtls.cert_ref if auth.mtls is not None else None,
@@ -380,7 +446,29 @@ def _runtime_secret_refs(auth: AuthConfig) -> list[str]:
 
 
 def _secret_ref_env_name(secret_ref: str) -> str:
-    return re.sub(r"\W+", "_", secret_ref).upper()
+    return normalized_secret_ref_name(secret_ref)
+
+
+def _secret_ref_secret_key(secret_ref: str) -> str:
+    return kubernetes_secret_key_name(secret_ref)
+
+
+def _validate_runtime_secret_configuration(
+    auth: AuthConfig,
+    *,
+    runtime_secret_name: str | None,
+) -> None:
+    secret_refs = _runtime_secret_refs(auth)
+    if secret_refs and runtime_secret_name is None:
+        refs = ", ".join(secret_refs)
+        raise ValueError(
+            "runtime_secret_name must be configured when auth requires runtime secret refs: "
+            f"{refs}."
+        )
+    ensure_no_secret_ref_name_collisions(
+        secret_refs,
+        context="generic manifest runtime secret wiring",
+    )
 
 
 __all__ = [

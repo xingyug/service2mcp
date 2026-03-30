@@ -99,7 +99,10 @@ class TestGraphQL:
         resp = await client.post(
             "/graphql",
             json={
-                "query": "query",
+                "query": (
+                    "query searchProducts($term: String) "
+                    "{ searchProducts(term: $term) { id name } }"
+                ),
                 "operationName": "searchProducts",
                 "variables": {"term": "  "},
             },
@@ -107,6 +110,18 @@ class TestGraphQL:
         assert resp.status_code == 200
         data = resp.json()
         assert data["data"]["searchProducts"][0]["id"] == "sku-sample"
+
+    async def test_search_products_without_operation_name(self, client: httpx.AsyncClient) -> None:
+        resp = await client.post(
+            "/graphql",
+            json={
+                "query": "{ searchProducts(term: \"puzzle\") { id name } }",
+                "variables": {"term": "puzzle"},
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["data"]["searchProducts"][0]["id"] == "sku-puzzle"
 
     async def test_adjust_inventory(self, client: httpx.AsyncClient) -> None:
         resp = await client.post(
@@ -128,7 +143,10 @@ class TestGraphQL:
         resp = await client.post(
             "/graphql",
             json={
-                "query": "mutation",
+                "query": (
+                    "mutation adjustInventory($sku: String!, $delta: Int!) "
+                    "{ adjustInventory(sku: $sku, delta: $delta) { operation_id } }"
+                ),
                 "operationName": "adjustInventory",
                 "variables": {},
             },
@@ -136,6 +154,23 @@ class TestGraphQL:
         assert resp.status_code == 200
         data = resp.json()
         assert data["data"]["adjustInventory"]["operation_id"] == "adj-sku-1-0"
+
+    async def test_rejects_invalid_query_text_even_with_supported_operation(
+        self,
+        client: httpx.AsyncClient,
+    ) -> None:
+        resp = await client.post(
+            "/graphql",
+            json={
+                "query": "this is not valid graphql",
+                "operationName": "searchProducts",
+                "variables": {"term": "puzzle"},
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" in data
+        assert "Invalid GraphQL query" in data["errors"][0]["message"]
 
     async def test_unsupported_operation(self, client: httpx.AsyncClient) -> None:
         resp = await client.post(
@@ -171,11 +206,25 @@ class TestGraphQL:
         assert "errors" in data
         assert "must be an object" in data["errors"][0]["message"]
 
+    async def test_invalid_json_payload(self, client: httpx.AsyncClient) -> None:
+        resp = await client.post(
+            "/graphql",
+            content=b"{not-json",
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" in data
+        assert "Malformed JSON request body" in data["errors"][0]["message"]
+
     async def test_variables_not_dict(self, client: httpx.AsyncClient) -> None:
         resp = await client.post(
             "/graphql",
             json={
-                "query": "query searchProducts",
+                "query": (
+                    "query searchProducts($term: String) "
+                    "{ searchProducts(term: $term) { id name } }"
+                ),
                 "operationName": "searchProducts",
                 "variables": "not-a-dict",
             },
@@ -183,6 +232,23 @@ class TestGraphQL:
         assert resp.status_code == 200
         data = resp.json()
         assert data["data"]["searchProducts"][0]["id"] == "sku-sample"
+
+    async def test_adjust_inventory_non_numeric_delta(self, client: httpx.AsyncClient) -> None:
+        resp = await client.post(
+            "/graphql",
+            json={
+                "query": (
+                    "mutation adjustInventory($sku: String!, $delta: Int!) "
+                    "{ adjustInventory(sku: $sku, delta: $delta) { operation_id } }"
+                ),
+                "operationName": "adjustInventory",
+                "variables": {"sku": "sku-1", "delta": "oops"},
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "errors" in data
+        assert "must be numeric" in data["errors"][0]["message"]
 
 
 class TestSOAP:
@@ -230,6 +296,18 @@ class TestSOAP:
         )
         assert resp.status_code == 200
         assert "SubmitOrderResponse" in resp.text
+
+    async def test_rejects_non_xml_body_even_with_supported_marker(
+        self,
+        client: httpx.AsyncClient,
+    ) -> None:
+        resp = await client.post(
+            "/soap/order-service",
+            content=b"totally not xml GetOrderStatusRequest garbage",
+        )
+        assert resp.status_code == 500
+        assert "Fault" in resp.text
+        assert "Malformed SOAP XML request" in resp.text
 
     async def test_unsupported_soap_action(self, client: httpx.AsyncClient) -> None:
         resp = await client.post(

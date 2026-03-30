@@ -19,6 +19,7 @@ import { queryKeys } from "@/lib/query-keys";
 import type {
   CompilationCreateRequest,
   CompilationJobResponse,
+  ServiceScope,
   ServiceListResponse,
   ServiceSummary,
   ArtifactVersionListResponse,
@@ -76,10 +77,20 @@ export function useRetryCompilation() {
   return useMutation({
     mutationFn: ({ jobId, fromStage }: { jobId: string; fromStage?: string }) =>
       compilationApi.retry(jobId, fromStage),
-    onSuccess: (_data, { jobId }) => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.compilations.detail(jobId),
-      });
+    onSuccess: async (newJob, { jobId }) => {
+      queryClient.setQueryData(
+        queryKeys.compilations.detail(newJob.job_id),
+        newJob,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.compilations.all,
+          exact: true,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.compilations.detail(jobId),
+        }),
+      ]);
     },
   });
 }
@@ -89,10 +100,20 @@ export function useRollbackCompilation() {
 
   return useMutation({
     mutationFn: (jobId: string) => compilationApi.rollback(jobId),
-    onSuccess: (_data, jobId) => {
-      queryClient.invalidateQueries({
-        queryKey: queryKeys.compilations.detail(jobId),
-      });
+    onSuccess: async (newJob, jobId) => {
+      queryClient.setQueryData(
+        queryKeys.compilations.detail(newJob.job_id),
+        newJob,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.compilations.all,
+          exact: true,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.compilations.detail(jobId),
+        }),
+      ]);
     },
   });
 }
@@ -121,11 +142,12 @@ export function useServices(
 
 export function useService(
   serviceId: string,
+  scope?: ServiceScope,
   options?: Omit<UseQueryOptions<ServiceSummary>, "queryKey" | "queryFn">,
 ) {
   return useQuery({
-    queryKey: queryKeys.services.detail(serviceId),
-    queryFn: () => serviceApi.get(serviceId),
+    queryKey: queryKeys.services.detail(serviceId, scope),
+    queryFn: () => serviceApi.get(serviceId, scope),
     enabled: !!serviceId,
     ...options,
   });
@@ -137,14 +159,15 @@ export function useService(
 
 export function useArtifactVersions(
   serviceId: string,
+  scope?: ServiceScope,
   options?: Omit<
     UseQueryOptions<ArtifactVersionListResponse>,
     "queryKey" | "queryFn"
   >,
 ) {
   return useQuery({
-    queryKey: queryKeys.artifacts.versions(serviceId),
-    queryFn: () => artifactApi.listVersions(serviceId),
+    queryKey: queryKeys.artifacts.versions(serviceId, scope),
+    queryFn: () => artifactApi.listVersions(serviceId, scope),
     enabled: !!serviceId,
     ...options,
   });
@@ -154,11 +177,12 @@ export function useArtifactDiff(
   serviceId: string,
   from: number,
   to: number,
+  scope?: ServiceScope,
   options?: Omit<UseQueryOptions<ArtifactDiffResponse>, "queryKey" | "queryFn">,
 ) {
   return useQuery({
-    queryKey: queryKeys.artifacts.diff(serviceId, from, to),
-    queryFn: () => artifactApi.diff(serviceId, from, to),
+    queryKey: queryKeys.artifacts.diff(serviceId, from, to, scope),
+    queryFn: () => artifactApi.diff(serviceId, from, to, scope),
     enabled: !!serviceId && from > 0 && to > 0 && from !== to,
     ...options,
   });
@@ -169,10 +193,11 @@ export function useArtifactDiff(
 // ---------------------------------------------------------------------------
 
 export function usePolicies(
-  filters?: { subject_id?: string; resource_id?: string },
+  filters?: { subject_type?: string; subject_id?: string; resource_id?: string },
   options?: Omit<UseQueryOptions<PolicyListResponse>, "queryKey" | "queryFn">,
 ) {
   const filterKey: Record<string, string> = {};
+  if (filters?.subject_type) filterKey.subject_type = filters.subject_type;
   if (filters?.subject_id) filterKey.subject_id = filters.subject_id;
   if (filters?.resource_id) filterKey.resource_id = filters.resource_id;
 

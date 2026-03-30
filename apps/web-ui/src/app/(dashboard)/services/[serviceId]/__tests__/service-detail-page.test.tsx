@@ -12,15 +12,19 @@ const {
   mockBack,
   mockActivateVersion,
   mockDeleteVersion,
+  mockListRoutes,
   mockSyncRoutes,
   mockReconcile,
+  mockUseArtifactVersions,
 } = vi.hoisted(() => ({
   mockPush: vi.fn(),
   mockBack: vi.fn(),
   mockActivateVersion: vi.fn(),
   mockDeleteVersion: vi.fn(),
+  mockListRoutes: vi.fn(),
   mockSyncRoutes: vi.fn(),
   mockReconcile: vi.fn(),
+  mockUseArtifactVersions: vi.fn(),
 }));
 
 const service = {
@@ -84,6 +88,7 @@ const activeVersion = {
 
 vi.mock("next/navigation", () => ({
   useParams: () => ({ serviceId: "svc-1" }),
+  useSearchParams: () => new URLSearchParams("tenant=team-a&environment=prod"),
   useRouter: () => ({
     push: mockPush,
     back: mockBack,
@@ -99,12 +104,7 @@ vi.mock("@/hooks/use-api", () => ({
     isLoading: false,
     error: null,
   }),
-  useArtifactVersions: () => ({
-    data: {
-      versions: [inactiveVersion, activeVersion],
-    },
-    isLoading: false,
-  }),
+  useArtifactVersions: mockUseArtifactVersions,
 }));
 
 vi.mock("@/lib/api-client", () => ({
@@ -113,6 +113,7 @@ vi.mock("@/lib/api-client", () => ({
     deleteVersion: mockDeleteVersion,
   },
   gatewayApi: {
+    listRoutes: mockListRoutes,
     syncRoutes: mockSyncRoutes,
     reconcile: mockReconcile,
   },
@@ -153,8 +154,32 @@ vi.mock("sonner", () => ({
 describe("ServiceDetailPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseArtifactVersions.mockReturnValue({
+      data: {
+        versions: [inactiveVersion, activeVersion],
+      },
+      isLoading: false,
+      error: null,
+    });
     mockActivateVersion.mockResolvedValue(activeVersion);
     mockDeleteVersion.mockResolvedValue(undefined);
+    mockListRoutes.mockResolvedValue({
+      routes: [
+        {
+          route_id: "svc-1-active",
+          route_type: "default",
+          service_id: "svc-1",
+          service_name: "Billing API",
+          namespace: "runtime-system",
+          target_service: {
+            name: "billing-runtime-v2",
+            namespace: "runtime-system",
+            port: 8003,
+          },
+          version_number: 2,
+        },
+      ],
+    });
     mockSyncRoutes.mockResolvedValue({
       route_ids: ["svc-1-active"],
       service_routes_synced: 1,
@@ -183,7 +208,7 @@ describe("ServiceDetailPage", () => {
 
     await user.click(screen.getByRole("button", { name: "Recompile" }));
     expect(mockPush).toHaveBeenCalledWith(
-      "/compilations/new?service_name=Billing%20API",
+      "/compilations/new?service_id=svc-1&service_name=Billing%20API",
     );
   });
 
@@ -195,7 +220,10 @@ describe("ServiceDetailPage", () => {
     await user.click(screen.getByRole("button", { name: "Activate" }));
 
     await waitFor(() => {
-      expect(mockActivateVersion).toHaveBeenCalledWith("svc-1", 1);
+      expect(mockActivateVersion).toHaveBeenCalledWith("svc-1", 1, {
+        tenant: "team-a",
+        environment: "prod",
+      });
     });
 
     await user.click(screen.getByRole("button", { name: "Delete" }));
@@ -203,21 +231,39 @@ describe("ServiceDetailPage", () => {
     await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     await waitFor(() => {
-      expect(mockDeleteVersion).toHaveBeenCalledWith("svc-1", 1);
+      expect(mockDeleteVersion).toHaveBeenCalledWith("svc-1", 1, {
+        tenant: "team-a",
+        environment: "prod",
+      });
     });
   });
 
-  it("syncs and reconciles gateway routes from the Gateway tab", async () => {
+  it("syncs and reconciles gateway routes from the Gateway tab using live routes", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ServiceDetailPage />);
 
     await user.click(screen.getByRole("tab", { name: "Gateway" }));
+    expect(await screen.findByText("Synced")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Sync" }));
 
     await waitFor(() => {
       expect(mockSyncRoutes).toHaveBeenCalledWith({
         route_config: activeRouteConfig,
-        previous_routes: {},
+        previous_routes: {
+          "svc-1-active": {
+            route_id: "svc-1-active",
+            route_type: "default",
+            service_id: "svc-1",
+            service_name: "Billing API",
+            namespace: "runtime-system",
+            target_service: {
+              name: "billing-runtime-v2",
+              namespace: "runtime-system",
+              port: 8003,
+            },
+            version_number: 2,
+          },
+        },
       });
     });
 
@@ -225,5 +271,33 @@ describe("ServiceDetailPage", () => {
     await waitFor(() => {
       expect(mockReconcile).toHaveBeenCalled();
     });
+  });
+
+  it("shows drifted when live gateway routes are missing", async () => {
+    const user = userEvent.setup();
+    mockListRoutes.mockResolvedValueOnce({ routes: [] });
+
+    renderWithProviders(<ServiceDetailPage />);
+
+    await user.click(screen.getByRole("tab", { name: "Gateway" }));
+
+    expect(await screen.findByText("Drifted")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Live gateway routes do not match the stored route configuration/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows artifact load errors instead of rendering version-dependent tabs", () => {
+    mockUseArtifactVersions.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error("versions unavailable"),
+    });
+
+    renderWithProviders(<ServiceDetailPage />);
+
+    expect(screen.getByText("Failed to load artifact versions")).toBeInTheDocument();
+    expect(screen.getByText("versions unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Versions" })).not.toBeInTheDocument();
   });
 });

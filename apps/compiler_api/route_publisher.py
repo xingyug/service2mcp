@@ -21,6 +21,12 @@ class ArtifactRoutePublisher(Protocol):
 
     async def delete(self, route_config: dict[str, Any]) -> dict[str, Any] | None: ...
 
+    async def rollback(
+        self,
+        route_config: dict[str, Any],
+        previous_routes: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None: ...
+
 
 class NoopArtifactRoutePublisher:
     """Default publisher used when no access-control URL is configured."""
@@ -32,6 +38,40 @@ class NoopArtifactRoutePublisher:
     async def delete(self, route_config: dict[str, Any]) -> dict[str, Any] | None:
         del route_config
         return None
+
+    async def rollback(
+        self,
+        route_config: dict[str, Any],
+        previous_routes: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        del route_config, previous_routes
+        return None
+
+
+class UnconfiguredArtifactRoutePublisher:
+    """Fail-closed publisher used when route publication is required but unconfigured."""
+
+    @staticmethod
+    def _error() -> RuntimeError:
+        return RuntimeError(
+            "ACCESS_CONTROL_URL is not configured; artifact route publication is unavailable."
+        )
+
+    async def sync(self, route_config: dict[str, Any]) -> dict[str, Any] | None:
+        del route_config
+        raise self._error()
+
+    async def delete(self, route_config: dict[str, Any]) -> dict[str, Any] | None:
+        del route_config
+        raise self._error()
+
+    async def rollback(
+        self,
+        route_config: dict[str, Any],
+        previous_routes: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        del route_config, previous_routes
+        raise self._error()
 
 
 class AccessControlArtifactRoutePublisher:
@@ -56,10 +96,23 @@ class AccessControlArtifactRoutePublisher:
     async def delete(self, route_config: dict[str, Any]) -> dict[str, Any] | None:
         return await self._post("/api/v1/gateway-binding/service-routes/delete", route_config)
 
+    async def rollback(
+        self,
+        route_config: dict[str, Any],
+        previous_routes: dict[str, dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        return await self._post(
+            "/api/v1/gateway-binding/service-routes/rollback",
+            route_config,
+            previous_routes=previous_routes,
+        )
+
     async def _post(
         self,
         path: str,
         route_config: dict[str, Any],
+        *,
+        previous_routes: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         owns_client = self._client is None
         client = self._client or httpx.AsyncClient(
@@ -69,11 +122,23 @@ class AccessControlArtifactRoutePublisher:
         try:
             response = await client.post(
                 path,
-                json={"route_config": route_config},
+                json={
+                    "route_config": route_config,
+                    **(
+                        {"previous_routes": previous_routes}
+                        if previous_routes is not None
+                        else {}
+                    ),
+                },
                 headers=self._headers,
             )
             response.raise_for_status()
-            payload = response.json()
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    "Access-control route publisher returned a non-JSON response."
+                ) from exc
             if not isinstance(payload, dict):
                 raise RuntimeError("Access-control route publisher returned a non-object response.")
             return cast(dict[str, Any], payload)
@@ -126,7 +191,7 @@ async def dispose_route_publisher(app: FastAPI) -> None:
 def _resolve_default_route_publisher() -> ArtifactRoutePublisher:
     base_url = os.getenv("ACCESS_CONTROL_URL", "").strip()
     if not base_url:
-        return NoopArtifactRoutePublisher()
+        return UnconfiguredArtifactRoutePublisher()
     return AccessControlArtifactRoutePublisher(base_url=base_url)
 
 
@@ -134,6 +199,7 @@ __all__ = [
     "AccessControlArtifactRoutePublisher",
     "ArtifactRoutePublisher",
     "NoopArtifactRoutePublisher",
+    "UnconfiguredArtifactRoutePublisher",
     "configure_route_publisher",
     "dispose_route_publisher",
     "get_route_publisher",

@@ -10,6 +10,7 @@ from libs.db_models import (
     CompilationJob,
     PersonalAccessToken,
     Policy,
+    ReviewWorkflow,
     ServiceVersion,
     User,
 )
@@ -77,6 +78,7 @@ class TestModelDefinitions:
         assert "username" in cols
         assert "email" in cols
         assert "ldap_dn" in cols
+        assert "roles" in cols
         assert "is_active" in cols
 
     def test_pat_columns(self):
@@ -102,6 +104,16 @@ class TestModelDefinitions:
         assert "resource" in cols
         assert "detail" in cols
         assert "timestamp" in cols
+
+    def test_review_workflow_columns(self):
+        cols = {c.name for c in ReviewWorkflow.__table__.columns}
+        assert "service_id" in cols
+        assert "version_number" in cols
+        assert "tenant" in cols
+        assert "environment" in cols
+        assert "state" in cols
+        assert "review_notes" in cols
+        assert "history" in cols
 
 
 class TestSchemaAssignment:
@@ -162,6 +174,11 @@ class TestIndices:
     def test_service_versions_has_service_id_index(self):
         index_names = {idx.name for idx in ServiceVersion.__table__.indexes}
         assert "ix_service_versions_service_id" in index_names
+
+    def test_service_versions_has_scope_unique_indexes(self):
+        index_names = {idx.name for idx in ServiceVersion.__table__.indexes}
+        assert "uq_service_version" in index_names
+        assert "uq_service_versions_one_active" in index_names
 
     def test_users_has_username_index(self):
         index_names = {idx.name for idx in User.__table__.indexes}

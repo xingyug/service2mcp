@@ -20,8 +20,15 @@ from apps.compiler_worker.activities import (
     build_sample_invocations,
     build_streamable_http_tool_invoker,
 )
-from libs.ir.models import EventDescriptor, EventSupportLevel, ServiceIR, ToolIntent
-from libs.validator.audit import AuditPolicy, ToolAuditResult, ToolAuditSummary
+from libs.generator.generic_mode import runtime_service_name
+from libs.ir.models import EventDescriptor, EventSupportLevel, Operation, ServiceIR, ToolIntent
+from libs.runtime_contracts import stream_result_failure_reason, validate_tool_listing_payload
+from libs.validator.audit import (
+    AuditPolicy,
+    ToolAuditResult,
+    ToolAuditSummary,
+    _has_synthetic_path_placeholder_samples,
+)
 from libs.validator.llm_judge import JudgeEvaluation, LLMJudge
 
 FIXTURES_ROOT = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
@@ -63,6 +70,8 @@ class ProofCase:
     tool_invocations: tuple[ToolInvocationSpec, ...] = ()
     preferred_tool_ids: tuple[str, ...] = ()
     audit_skip_tool_ids: tuple[str, ...] = ()
+    tenant: str | None = None
+    environment: str | None = None
     case_id: str | None = None
 
 
@@ -201,6 +210,13 @@ def _build_proof_cases(
 
     if selected_case_ids is None:
         return filtered_cases
+    available_case_ids = {case.case_id for case in filtered_cases if case.case_id is not None}
+    unknown_case_ids = sorted(selected_case_ids - available_case_ids)
+    if unknown_case_ids:
+        raise ValueError(
+            "Unknown proof case id(s) for the selected profile/protocols: "
+            + ", ".join(unknown_case_ids)
+        )
     return [
         case
         for case in filtered_cases
@@ -597,15 +613,27 @@ async def _run_case(
             f"{case.protocol} proof job {job_id} did not record any LLM enhancements."
         )
 
-    active_version = await _active_version_for_service(client, case.service_id)
-    artifact = await _artifact_version(client, case.service_id, active_version)
+    tenant, environment = _case_scope(case)
+    active_version = await _active_version_for_service(
+        client,
+        case.service_id,
+        tenant=tenant,
+        environment=environment,
+    )
+    artifact = await _artifact_version(
+        client,
+        case.service_id,
+        active_version,
+        tenant=tenant,
+        environment=environment,
+    )
     artifact_ir = cast(dict[str, Any], artifact["ir_json"])
+    service_ir = ServiceIR.model_validate(artifact_ir)
     llm_field_count = _count_llm_fields(artifact_ir)
     if require_llm_artifacts and llm_field_count <= 0:
         raise RuntimeError(
             f"{case.protocol} proof service {case.service_id} has no llm-sourced fields in IR."
         )
-    service_ir = ServiceIR.model_validate(artifact_ir)
     invocation_specs = _resolve_invocation_specs(service_ir, case)
 
     # Verify tool_intent derivation in compiled IR.
@@ -613,7 +641,7 @@ async def _run_case(
 
     runtime_base_url = _cluster_http_url(
         namespace,
-        f"{case.service_id}-v{active_version}",
+        runtime_service_name(service_ir.service_name, active_version),
         8003,
     )
     invocation_results = await _invoke_runtime_tools(runtime_base_url, invocation_specs)
@@ -629,6 +657,18 @@ async def _run_case(
         if audit_all_generated_tools
         else None
     )
+    representative_failures = _representative_invocation_failures(service_ir, invocation_results)
+    audit_failure_summary = (
+        _summarize_failed_audit_results(audit_summary) if audit_summary is not None else None
+    )
+    proof_error_parts: list[str] = []
+    if representative_failures:
+        proof_error_parts.append(
+            "Representative runtime invocation failed: " + "; ".join(representative_failures)
+        )
+    if audit_failure_summary is not None:
+        proof_error_parts.append(f"Generated-tool audit failed: {audit_failure_summary}")
+    proof_error = " ".join(proof_error_parts) or None
 
     # Run LLM-as-a-Judge evaluation if enabled.
     judge_evaluation: JudgeEvaluation | None = None
@@ -656,6 +696,7 @@ async def _run_case(
         tool_intent_counts=tool_intent_counts,
         judge_evaluation=judge_evaluation,
         case_id=case.case_id,
+        error=proof_error,
     )
 
 
@@ -665,7 +706,16 @@ async def _submit_compilation(
 ) -> dict[str, Any]:
     response = await client.post("/api/v1/compilations", json=payload)
     response.raise_for_status()
-    return cast(dict[str, Any], response.json())
+    submission = _parse_json_object_response(
+        response,
+        context="Compiler API compilation submission response",
+    )
+    _require_identifier_field(
+        submission,
+        "id",
+        context="Compiler API compilation submission response",
+    )
+    return submission
 
 
 async def _wait_for_terminal_job(
@@ -678,8 +728,16 @@ async def _wait_for_terminal_job(
     while True:
         response = await client.get(f"/api/v1/compilations/{job_id}")
         response.raise_for_status()
-        payload = cast(dict[str, Any], response.json())
-        if payload["status"] in _TERMINAL_JOB_STATUSES:
+        payload = _parse_json_object_response(
+            response,
+            context=f"Compiler API compilation job {job_id} response",
+        )
+        status = _require_string_field(
+            payload,
+            "status",
+            context=f"Compiler API compilation job {job_id} response",
+        )
+        if status in _TERMINAL_JOB_STATUSES:
             return payload
         if asyncio.get_running_loop().time() >= deadline:
             raise TimeoutError(f"Timed out waiting for compilation job {job_id}.")
@@ -698,9 +756,17 @@ async def _fetch_compilation_events(
 def _parse_sse_events(payload: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     current_event: dict[str, Any] = {}
+    current_data_lines: list[str] = []
 
     for line in payload.splitlines():
         if not line.strip():
+            if current_data_lines:
+                raw_data = "\n".join(current_data_lines)
+                try:
+                    current_event["data"] = json.loads(raw_data)
+                except json.JSONDecodeError:
+                    current_event["data"] = raw_data
+                current_data_lines = []
             if current_event:
                 events.append(current_event)
                 current_event = {}
@@ -709,11 +775,14 @@ def _parse_sse_events(payload: str) -> list[dict[str, Any]]:
             current_event["event"] = line.partition(":")[2].strip()
             continue
         if line.startswith("data:"):
-            raw_data = line.partition(":")[2].strip()
-            try:
-                current_event["data"] = json.loads(raw_data)
-            except json.JSONDecodeError:
-                current_event["data"] = raw_data
+            current_data_lines.append(line.partition(":")[2].strip())
+
+    if current_data_lines:
+        raw_data = "\n".join(current_data_lines)
+        try:
+            current_event["data"] = json.loads(raw_data)
+        except json.JSONDecodeError:
+            current_event["data"] = raw_data
 
     if current_event:
         events.append(current_event)
@@ -731,28 +800,103 @@ def _operations_enhanced_from_events(events: list[dict[str, Any]]) -> int:
             continue
         detail = payload.get("detail")
         if isinstance(detail, dict):
-            return int(detail.get("operations_enhanced", 0) or 0)
+            operations_enhanced = detail.get("operations_enhanced")
+            if operations_enhanced is None:
+                return 0
+            if not isinstance(operations_enhanced, int) or isinstance(operations_enhanced, bool):
+                raise RuntimeError(
+                    "Enhance stage event field 'operations_enhanced' was "
+                    f"{operations_enhanced!r}, expected integer."
+                )
+            return operations_enhanced
     return 0
 
 
-async def _active_version_for_service(client: httpx.AsyncClient, service_id: str) -> int:
-    response = await client.get("/api/v1/services")
+def _case_scope(case: ProofCase) -> tuple[str | None, str | None]:
+    return (
+        case.tenant or _request_payload_scope(case.request_payload, "tenant"),
+        case.environment or _request_payload_scope(case.request_payload, "environment"),
+    )
+
+
+def _request_payload_scope(payload: dict[str, Any], field: str) -> str | None:
+    value = payload.get(field)
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _scope_query_params(*, tenant: str | None, environment: str | None) -> dict[str, str]:
+    params: dict[str, str] = {}
+    if tenant is not None:
+        params["tenant"] = tenant
+    if environment is not None:
+        params["environment"] = environment
+    return params
+
+
+def _scope_context(service_id: str, *, tenant: str | None, environment: str | None) -> str:
+    if tenant is None and environment is None:
+        return service_id
+    return f"{service_id} (tenant={tenant!r}, environment={environment!r})"
+
+
+async def _active_version_for_service(
+    client: httpx.AsyncClient,
+    service_id: str,
+    *,
+    tenant: str | None = None,
+    environment: str | None = None,
+) -> int:
+    request_params = _scope_query_params(tenant=tenant, environment=environment)
+    response = await client.get("/api/v1/services", params=request_params or None)
     response.raise_for_status()
-    payload = cast(dict[str, Any], response.json())
-    for service in payload.get("services", []):
+    payload = _parse_json_object_response(
+        response,
+        context="Compiler API service catalog response",
+    )
+    services = _require_list_field(
+        payload,
+        "services",
+        context="Compiler API service catalog response",
+    )
+    scope_context = _scope_context(service_id, tenant=tenant, environment=environment)
+    for service in services:
         if isinstance(service, dict) and service.get("service_id") == service_id:
-            return int(service["active_version"])
-    raise RuntimeError(f"Service {service_id} not found in service catalog.")
+            return _require_int_field(
+                service,
+                "active_version",
+                context=f"Compiler API service catalog entry for {scope_context}",
+            )
+    raise RuntimeError(f"Service {scope_context} not found in service catalog.")
 
 
 async def _artifact_version(
     client: httpx.AsyncClient,
     service_id: str,
     version_number: int,
+    *,
+    tenant: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, Any]:
-    response = await client.get(f"/api/v1/artifacts/{service_id}/versions/{version_number}")
+    request_params = _scope_query_params(tenant=tenant, environment=environment)
+    response = await client.get(
+        f"/api/v1/artifacts/{service_id}/versions/{version_number}",
+        params=request_params or None,
+    )
     response.raise_for_status()
-    return cast(dict[str, Any], response.json())
+    scope_context = _scope_context(service_id, tenant=tenant, environment=environment)
+    artifact = _parse_json_object_response(
+        response,
+        context=f"Compiler API artifact version response for {scope_context} v{version_number}",
+    )
+    _require_mapping_field(
+        artifact,
+        "ir_json",
+        context=f"Compiler API artifact version response for {scope_context} v{version_number}",
+    )
+    return artifact
 
 
 async def _invoke_runtime_tools(
@@ -775,16 +919,25 @@ def _resolve_invocation_specs(
         return case.tool_invocations
 
     sample_invocations = build_sample_invocations(service_ir)
-    operation_by_id = {
-        operation.id: operation
-        for operation in service_ir.operations
-        if operation.enabled and operation.id in sample_invocations
-    }
+    operation_by_id: dict[str, Operation] = {}
+    placeholder_only_tools: set[str] = set()
+    for operation in service_ir.operations:
+        if not operation.enabled or operation.id not in sample_invocations:
+            continue
+        arguments = sample_invocations[operation.id]
+        if _has_synthetic_path_placeholder_samples(
+            operation,
+            arguments,
+            include_numeric_fallbacks=True,
+        ):
+            placeholder_only_tools.add(operation.id)
+            continue
+        operation_by_id[operation.id] = operation
 
     for preferred_tool_id in case.preferred_tool_ids:
-        arguments = sample_invocations.get(preferred_tool_id)
-        if arguments is None:
+        if preferred_tool_id not in operation_by_id:
             continue
+        arguments = sample_invocations[preferred_tool_id]
         return (ToolInvocationSpec(tool_name=preferred_tool_id, arguments=arguments),)
 
     safe_candidates = [
@@ -795,9 +948,23 @@ def _resolve_invocation_specs(
     for tool_name in safe_candidates:
         return (ToolInvocationSpec(tool_name=tool_name, arguments=sample_invocations[tool_name]),)
 
-    for tool_name in sorted(operation_by_id):
-        return (ToolInvocationSpec(tool_name=tool_name, arguments=sample_invocations[tool_name]),)
+    risky_only_tools = sorted(
+        operation.id
+        for operation in operation_by_id.values()
+        if operation.risk.writes_state or operation.risk.destructive
+    )
+    if risky_only_tools:
+        raise RuntimeError(
+            f"{case.case_id or case.protocol} proof case produced only state-mutating or "
+            "destructive runtime tool samples; provide explicit tool_invocations or safe "
+            "sample overrides."
+        )
 
+    if placeholder_only_tools:
+        raise RuntimeError(
+            f"{case.case_id or case.protocol} proof case produced only synthetic placeholder "
+            "path samples; provide explicit tool_invocations or real path defaults."
+        )
     raise RuntimeError(
         f"{case.case_id or case.protocol} proof case produced no invocable runtime tool samples."
     )
@@ -822,6 +989,7 @@ async def _audit_generated_tools(
     sample_invocations = build_sample_invocations(service_ir)
     for spec in representative_invocations:
         sample_invocations[spec.tool_name] = spec.arguments
+    representative_tool_ids = {spec.tool_name for spec in representative_invocations}
 
     cached_results = {
         invocation_result.tool_name: invocation_result.result
@@ -836,6 +1004,19 @@ async def _audit_generated_tools(
     audit_results: list[ToolAuditResult] = []
 
     for operation in enabled_operations:
+        if operation.id in forced_skip_tool_id_set:
+            audit_results.append(
+                ToolAuditResult(
+                    tool_name=operation.id,
+                    outcome="skipped",
+                    reason=(
+                        "Skipped by proof-case policy because this endpoint is "
+                        "disabled in the target deployment."
+                    ),
+                )
+            )
+            continue
+
         if operation.id not in runtime_tool_names:
             audit_results.append(
                 ToolAuditResult(
@@ -846,15 +1027,24 @@ async def _audit_generated_tools(
             )
             continue
 
-        if operation.id in forced_skip_tool_id_set:
+        arguments = sample_invocations[operation.id]
+        if (
+            operation.id not in representative_tool_ids
+            and _has_synthetic_path_placeholder_samples(
+                operation,
+                arguments,
+                include_numeric_fallbacks=True,
+            )
+        ):
             audit_results.append(
                 ToolAuditResult(
                     tool_name=operation.id,
                     outcome="skipped",
                     reason=(
-                        "Skipped by proof-case policy because this endpoint is "
-                        "disabled in the target deployment."
+                        "Skipped tool because path parameters still use synthetic "
+                        "placeholder samples."
                     ),
+                    arguments=arguments,
                 )
             )
             continue
@@ -870,7 +1060,6 @@ async def _audit_generated_tools(
             )
             continue
 
-        arguments = sample_invocations[operation.id]
         result = cached_results.get(operation.id)
         if result is None:
             try:
@@ -932,12 +1121,27 @@ async def _audit_generated_tools(
             )
         )
 
+    unexpected_runtime_tool_names = sorted(
+        runtime_tool_names - {operation.id for operation in enabled_operations}
+    )
+    for tool_name in unexpected_runtime_tool_names:
+        audit_results.append(
+            ToolAuditResult(
+                tool_name=tool_name,
+                outcome="failed",
+                reason=(
+                    "Runtime /tools listing exposes an unexpected tool that is not present "
+                    "in the compiled IR."
+                ),
+            )
+        )
+
     passed = sum(result.outcome == "passed" for result in audit_results)
     failed = sum(result.outcome == "failed" for result in audit_results)
     skipped = sum(result.outcome == "skipped" for result in audit_results)
     return ToolAuditSummary(
         discovered_operations=len(enabled_operations),
-        generated_tools=len(runtime_tool_names),
+        generated_tools=len(enabled_operations),
         audited_tools=passed + failed,
         passed=passed,
         failed=failed,
@@ -950,12 +1154,139 @@ async def _fetch_runtime_tool_names(runtime_base_url: str) -> set[str]:
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         response = await client.get(f"{runtime_base_url.rstrip('/')}/tools")
         response.raise_for_status()
+        payload = _parse_json_object_response(
+            response,
+            context=f"Runtime /tools response from {runtime_base_url.rstrip('/')}",
+        )
+    tools = validate_tool_listing_payload(
+        payload,
+        context=f"Runtime /tools response from {runtime_base_url.rstrip('/')}",
+    )
+    return {tool["name"] for tool in tools}
+
+
+def _parse_json_object_response(
+    response: httpx.Response,
+    *,
+    context: str,
+) -> dict[str, Any]:
+    try:
         payload = response.json()
-    return {
-        tool["name"]
-        for tool in payload.get("tools", [])
-        if isinstance(tool, dict) and isinstance(tool.get("name"), str)
-    }
+    except ValueError as exc:
+        raise RuntimeError(f"{context} returned invalid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{context} returned JSON {type(payload).__name__}, expected object.")
+    return cast(dict[str, Any], payload)
+
+
+def _require_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> Any:
+    if field not in payload:
+        raise RuntimeError(f"{context} did not include required field {field!r}.")
+    return payload[field]
+
+
+def _require_string_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> str:
+    value = _require_field(payload, field, context=context)
+    if not isinstance(value, str):
+        raise RuntimeError(
+            f"{context} field {field!r} was {type(value).__name__}, expected string."
+        )
+    return value
+
+
+def _require_int_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> int:
+    value = _require_field(payload, field, context=context)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{context} field {field!r} was {value!r}, expected integer.") from exc
+
+
+def _require_list_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> list[Any]:
+    value = _require_field(payload, field, context=context)
+    if not isinstance(value, list):
+        raise RuntimeError(
+            f"{context} field {field!r} was {type(value).__name__}, expected list."
+        )
+    return value
+
+
+def _require_mapping_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> dict[str, Any]:
+    value = _require_field(payload, field, context=context)
+    if not isinstance(value, dict):
+        raise RuntimeError(
+            f"{context} field {field!r} was {type(value).__name__}, expected object."
+        )
+    return cast(dict[str, Any], value)
+
+
+def _require_identifier_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> str:
+    value = _require_field(payload, field, context=context)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    raise RuntimeError(
+        f"{context} field {field!r} was {type(value).__name__}, expected string or integer."
+    )
+
+
+def _representative_invocation_failures(
+    expected_ir: ServiceIR,
+    invocation_results: list[ToolInvocationResult],
+) -> list[str]:
+    failures: list[str] = []
+    for invocation_result in invocation_results:
+        failure_reason = _generated_tool_audit_failure_reason(
+            expected_ir,
+            invocation_result.tool_name,
+            invocation_result.result,
+        )
+        if failure_reason is not None:
+            failures.append(f"{invocation_result.tool_name}: {failure_reason}")
+    return failures
+
+
+def _summarize_failed_audit_results(summary: ToolAuditSummary) -> str | None:
+    failed_results = [result for result in summary.results if result.outcome == "failed"]
+    if not failed_results:
+        return None
+    summary_text = "; ".join(
+        f"{result.tool_name}: {result.reason}" for result in failed_results[:3]
+    )
+    if len(failed_results) > 3:
+        summary_text += f"; and {len(failed_results) - 3} more"
+    return summary_text
 
 
 # _generated_tool_audit_skip_reason is now replaced by AuditPolicy.skip_reason()
@@ -969,6 +1300,8 @@ def _generated_tool_audit_failure_reason(
     status = result.get("status")
     if status != "ok":
         return f"Invocation returned unexpected status: {status!r}."
+    if "result" not in result:
+        return "Invocation returned ok status without a result payload."
 
     descriptor = _supported_descriptor_for_operation(expected_ir, operation_id)
     if descriptor is None:
@@ -980,15 +1313,10 @@ def _generated_tool_audit_failure_reason(
             f"Invocation returned transport {transport!r}, expected {descriptor.transport.value!r}."
         )
 
-    stream_result = result.get("result")
-    if not isinstance(stream_result, dict):
-        return "Invocation returned a non-object stream payload."
-
-    events = stream_result.get("events")
-    lifecycle = stream_result.get("lifecycle")
-    if not isinstance(events, list) or not isinstance(lifecycle, dict):
-        return "Invocation did not return the expected streaming lifecycle structure."
-    return None
+    return stream_result_failure_reason(
+        result.get("result"),
+        transport=descriptor.transport.value,
+    )
 
 
 def _supported_descriptor_for_operation(
@@ -1251,6 +1579,8 @@ async def _async_main() -> None:
             sort_keys=True,
         )
     )
+    if any(result.error for result in results):
+        raise SystemExit(1)
 
 
 def main() -> None:

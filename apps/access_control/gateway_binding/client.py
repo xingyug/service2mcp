@@ -9,6 +9,10 @@ from typing import Any, Protocol
 import httpx
 
 
+class GatewayAdminConfigurationError(RuntimeError):
+    """Raised when the gateway admin client cannot be configured from environment."""
+
+
 @dataclass(frozen=True)
 class GatewayConsumer:
     """Consumer representation mirrored to the gateway."""
@@ -163,15 +167,11 @@ class HTTPGatewayAdminClient:
 
     async def list_consumers(self) -> dict[str, GatewayConsumer]:
         payload = await self._request("GET", "/admin/consumers")
-        return {
-            str(item["consumer_id"]): GatewayConsumer(
-                consumer_id=str(item["consumer_id"]),
-                username=str(item["username"]),
-                credential=str(item["credential"]),
-                metadata=dict(item.get("metadata", {})),
-            )
-            for item in _items_from_payload(payload)
-        }
+        consumers: dict[str, GatewayConsumer] = {}
+        for item in _items_from_payload(payload):
+            consumer = _consumer_from_item(item)
+            consumers[consumer.consumer_id] = consumer
+        return consumers
 
     async def upsert_policy_binding(self, *, binding_id: str, document: dict[str, Any]) -> None:
         await self._request(
@@ -185,13 +185,11 @@ class HTTPGatewayAdminClient:
 
     async def list_policy_bindings(self) -> dict[str, GatewayPolicyBinding]:
         payload = await self._request("GET", "/admin/policy-bindings")
-        return {
-            str(item["binding_id"]): GatewayPolicyBinding(
-                binding_id=str(item["binding_id"]),
-                document=dict(item["document"]),
-            )
-            for item in _items_from_payload(payload)
-        }
+        bindings: dict[str, GatewayPolicyBinding] = {}
+        for item in _items_from_payload(payload):
+            binding = _policy_binding_from_item(item)
+            bindings[binding.binding_id] = binding
+        return bindings
 
     async def upsert_route(self, *, route_id: str, document: dict[str, Any]) -> None:
         await self._request(
@@ -205,13 +203,11 @@ class HTTPGatewayAdminClient:
 
     async def list_routes(self) -> dict[str, GatewayRoute]:
         payload = await self._request("GET", "/admin/routes")
-        return {
-            str(item["route_id"]): GatewayRoute(
-                route_id=str(item["route_id"]),
-                document=dict(item["document"]),
-            )
-            for item in _items_from_payload(payload)
-        }
+        routes: dict[str, GatewayRoute] = {}
+        for item in _items_from_payload(payload):
+            route = _route_from_item(item)
+            routes[route.route_id] = route
+        return routes
 
     async def _request(
         self,
@@ -223,7 +219,10 @@ class HTTPGatewayAdminClient:
         response.raise_for_status()
         if response.status_code == 204:
             return {}
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Gateway admin API returned invalid JSON.") from exc
         if not isinstance(payload, dict):
             raise RuntimeError("Gateway admin API returned a non-object response.")
         return payload
@@ -233,21 +232,25 @@ def load_gateway_admin_client_from_env() -> GatewayAdminClient:
     """Build the configured gateway admin client from process environment."""
 
     base_url = os.getenv("GATEWAY_ADMIN_URL", "").strip()
-    if base_url:
-        try:
-            timeout = float(os.getenv("GATEWAY_ADMIN_TIMEOUT_SECONDS", "10.0"))
-        except ValueError:
-            timeout = 10.0
-        return HTTPGatewayAdminClient(
-            base_url=base_url,
-            timeout=timeout,
-            admin_token=os.getenv("GATEWAY_ADMIN_TOKEN"),
+    if not base_url:
+        raise GatewayAdminConfigurationError(
+            "GATEWAY_ADMIN_URL must be configured for gateway binding operations."
         )
-    return InMemoryAPISIXAdminClient()
+    try:
+        timeout = float(os.getenv("GATEWAY_ADMIN_TIMEOUT_SECONDS", "10.0"))
+    except ValueError:
+        timeout = 10.0
+    return HTTPGatewayAdminClient(
+        base_url=base_url,
+        timeout=timeout,
+        admin_token=os.getenv("GATEWAY_ADMIN_TOKEN"),
+    )
 
 
 def _items_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    items = payload.get("items", [])
+    if "items" not in payload:
+        raise RuntimeError("Gateway admin API response is missing an items list.")
+    items = payload["items"]
     if not isinstance(items, list):
         raise RuntimeError("Gateway admin API response is missing an items list.")
     normalized_items: list[dict[str, Any]] = []
@@ -258,8 +261,52 @@ def _items_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return normalized_items
 
 
+def _consumer_from_item(item: dict[str, Any]) -> GatewayConsumer:
+    return GatewayConsumer(
+        consumer_id=str(_required_item_field(item, "consumer_id")),
+        username=str(_required_item_field(item, "username")),
+        credential=str(_required_item_field(item, "credential")),
+        metadata=dict(_optional_object_field(item, "metadata")),
+    )
+
+
+def _policy_binding_from_item(item: dict[str, Any]) -> GatewayPolicyBinding:
+    return GatewayPolicyBinding(
+        binding_id=str(_required_item_field(item, "binding_id")),
+        document=dict(_required_object_field(item, "document")),
+    )
+
+
+def _route_from_item(item: dict[str, Any]) -> GatewayRoute:
+    return GatewayRoute(
+        route_id=str(_required_item_field(item, "route_id")),
+        document=dict(_required_object_field(item, "document")),
+    )
+
+
+def _required_item_field(item: dict[str, Any], field_name: str) -> Any:
+    if field_name not in item:
+        raise RuntimeError(f"Gateway admin item is missing required field '{field_name}'.")
+    return item[field_name]
+
+
+def _required_object_field(item: dict[str, Any], field_name: str) -> dict[str, Any]:
+    value = _required_item_field(item, field_name)
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Gateway admin field '{field_name}' must be an object.")
+    return value
+
+
+def _optional_object_field(item: dict[str, Any], field_name: str) -> dict[str, Any]:
+    value = item.get(field_name, {})
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Gateway admin field '{field_name}' must be an object.")
+    return value
+
+
 __all__ = [
     "GatewayAdminClient",
+    "GatewayAdminConfigurationError",
     "GatewayConsumer",
     "GatewayPolicyBinding",
     "GatewayRoute",

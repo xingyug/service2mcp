@@ -125,7 +125,10 @@ export function deriveServiceName(url: string): string {
   }
 }
 
-export function buildRequest(form: WizardFormData): CompilationCreateRequest {
+export function buildRequest(
+  form: WizardFormData,
+  lockedServiceId?: string,
+): CompilationCreateRequest {
   const options: CompilationOptions = {
     runtime_mode: form.runtimeMode,
   };
@@ -141,22 +144,25 @@ export function buildRequest(form: WizardFormData): CompilationCreateRequest {
   if (form.authType !== "none") {
     const authConfig: AuthConfig = { type: form.authType };
     if (form.authType === "bearer") {
-      authConfig.compile_time_secret_ref = form.bearerSecretRef;
+      authConfig.runtime_secret_ref = form.bearerSecretRef;
     } else if (form.authType === "basic") {
-      authConfig.username = form.basicUsername;
-      authConfig.password_secret_ref = form.basicPasswordRef;
+      authConfig.basic_username = form.basicUsername;
+      authConfig.basic_password_ref = form.basicPasswordRef;
     } else if (form.authType === "api_key") {
-      authConfig.header_name = form.apiKeyHeaderName;
-      authConfig.compile_time_secret_ref = form.apiKeySecretRef;
+      authConfig.api_key_param = form.apiKeyHeaderName;
+      authConfig.api_key_location = "header";
+      authConfig.runtime_secret_ref = form.apiKeySecretRef;
     } else if (form.authType === "custom_header") {
       authConfig.header_name = form.customHeaderName;
-      authConfig.compile_time_secret_ref = form.customHeaderValueRef;
+      authConfig.runtime_secret_ref = form.customHeaderValueRef;
     } else if (form.authType === "oauth2") {
-      authConfig.token_url = form.oauth2TokenUrl;
-      authConfig.client_id = form.oauth2ClientId;
-      authConfig.client_secret_ref = form.oauth2ClientSecretRef;
+      authConfig.oauth2 = {
+        token_url: form.oauth2TokenUrl,
+        client_id: form.oauth2ClientId,
+        client_secret_ref: form.oauth2ClientSecretRef,
+      };
     }
-    options.auth_config = authConfig;
+    options.auth = authConfig;
   }
 
   const req: CompilationCreateRequest = {
@@ -170,6 +176,7 @@ export function buildRequest(form: WizardFormData): CompilationCreateRequest {
     req.source_content = form.sourceContent;
   }
 
+  if (lockedServiceId) req.service_id = lockedServiceId;
   if (form.serviceName) req.service_name = form.serviceName;
 
   return req;
@@ -230,11 +237,13 @@ export function validateStep(step: number, form: WizardFormData): string | null 
 
 export function CompilationWizard({
   initialServiceName = "",
+  initialServiceId,
 }: {
   initialServiceName?: string;
+  initialServiceId?: string;
 }) {
   const router = useRouter();
-  const username = useAuthStore((s) => s.user?.username ?? "");
+  const username = useAuthStore((s) => s.user?.username ?? s.user?.subject ?? "");
   const createMutation = useCreateCompilation();
 
   const [step, setStep] = useState(0);
@@ -299,7 +308,7 @@ export function CompilationWizard({
 
   const handleSubmit = useCallback(async () => {
     setError(null);
-    const req = buildRequest(effectiveForm);
+    const req = buildRequest(effectiveForm, initialServiceId);
     try {
       const result = await createMutation.mutateAsync(req);
       toast.success("Compilation job created successfully!");
@@ -310,7 +319,7 @@ export function CompilationWizard({
       setError(message);
       toast.error(message);
     }
-  }, [effectiveForm, createMutation, router]);
+  }, [effectiveForm, createMutation, initialServiceId, router]);
 
   const handleSourceUrlChange = useCallback(
     (url: string) => {

@@ -15,6 +15,7 @@ from apps.access_control.gateway_binding.service import (
     get_gateway_binding_service,
 )
 from apps.access_control.security import require_admin_caller, require_admin_principal
+from libs.route_config import GatewayRouteConfig
 
 router = APIRouter(prefix="/api/v1/gateway-binding", tags=["gateway_binding"])
 
@@ -33,7 +34,7 @@ class ReconcileResponse(BaseModel):
 class ServiceRouteRequest(BaseModel):
     """Service route publication payload."""
 
-    route_config: dict[str, Any]
+    route_config: GatewayRouteConfig
     previous_routes: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
@@ -53,6 +54,8 @@ class GatewayRouteDocumentResponse(BaseModel):
     route_type: str
     service_id: str
     service_name: str
+    tenant: str | None = None
+    environment: str | None = None
     namespace: str
     target_service: dict[str, Any]
     version_number: int | None = None
@@ -83,7 +86,15 @@ async def sync_service_routes(
     _caller: TokenPrincipalResponse = Depends(require_admin_caller),
 ) -> ServiceRouteResponse:
     require_admin_principal(_caller)
-    return ServiceRouteResponse(**(await gateway_binding.sync_service_routes(request.route_config)))
+    route_config = request.route_config.model_dump(mode="python", exclude_none=True)
+    return ServiceRouteResponse(
+        **(
+            await gateway_binding.sync_service_routes(
+                route_config,
+                request.previous_routes,
+            )
+        )
+    )
 
 
 @router.post("/service-routes/delete", response_model=ServiceRouteResponse)
@@ -93,8 +104,9 @@ async def delete_service_routes(
     _caller: TokenPrincipalResponse = Depends(require_admin_caller),
 ) -> ServiceRouteResponse:
     require_admin_principal(_caller)
+    route_config = request.route_config.model_dump(mode="python", exclude_none=True)
     return ServiceRouteResponse(
-        **(await gateway_binding.delete_service_routes(request.route_config))
+        **(await gateway_binding.delete_service_routes(route_config))
     )
 
 
@@ -105,10 +117,11 @@ async def rollback_service_routes(
     _caller: TokenPrincipalResponse = Depends(require_admin_caller),
 ) -> ServiceRouteResponse:
     require_admin_principal(_caller)
+    route_config = request.route_config.model_dump(mode="python", exclude_none=True)
     return ServiceRouteResponse(
         **(
             await gateway_binding.rollback_service_routes(
-                request.route_config,
+                route_config,
                 request.previous_routes,
             )
         )

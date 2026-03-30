@@ -46,6 +46,7 @@ def _ep(
     resource_group: str = "",
     writes_state: bool = False,
     destructive: bool = False,
+    external_side_effect: bool = False,
     idempotent: bool = True,
     description: str = "",
 ) -> EndpointTruth:
@@ -55,6 +56,7 @@ def _ep(
         resource_group=resource_group,
         writes_state=writes_state,
         destructive=destructive,
+        external_side_effect=external_side_effect,
         idempotent=idempotent,
         description=description,
     )

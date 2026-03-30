@@ -40,6 +40,23 @@ describe("ServiceCard", () => {
     expect(link).toHaveAttribute("href", "/services/svc-abc");
   });
 
+  it("preserves tenant/environment in the detail link", () => {
+    render(
+      <ServiceCard
+        service={makeService({
+          service_id: "svc-abc",
+          tenant: "acme",
+          environment: "prod",
+        })}
+      />,
+    );
+    const link = screen.getByRole("link");
+    expect(link).toHaveAttribute(
+      "href",
+      "/services/svc-abc?tenant=acme&environment=prod",
+    );
+  });
+
   it("shows active version badge when present", () => {
     render(<ServiceCard service={makeService({ active_version: 2 })} />);
     expect(screen.getByText("v2")).toBeInTheDocument();

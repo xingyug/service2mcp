@@ -6,7 +6,10 @@ Used by the registry for version comparison and by rollback decisions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+from pydantic import BaseModel
 
 from libs.ir.models import Operation, Param, ServiceIR
 
@@ -55,7 +58,39 @@ class IRDiff:
 
 
 # Fields on Operation to compare (excluding volatile fields like confidence, source)
-_OP_COMPARE_FIELDS = ("name", "description", "method", "path", "enabled")
+_SERVICE_COMPARE_FIELDS = (
+    "service_name",
+    "service_description",
+    "base_url",
+    "protocol",
+    "auth",
+    "operation_chains",
+    "tool_grouping",
+    "metadata",
+    "tenant",
+    "environment",
+)
+_OP_COMPARE_FIELDS = (
+    "name",
+    "description",
+    "method",
+    "path",
+    "enabled",
+    "response_schema",
+    "error_schema",
+    "response_examples",
+    "response_strategy",
+    "request_body_mode",
+    "body_param_name",
+    "async_job",
+    "graphql",
+    "sql",
+    "grpc_unary",
+    "soap",
+    "jsonrpc",
+    "tags",
+    "tool_intent",
+)
 _RISK_COMPARE_FIELDS = (
     "writes_state",
     "destructive",
@@ -63,6 +98,24 @@ _RISK_COMPARE_FIELDS = (
     "idempotent",
     "risk_level",
 )
+_SPECIAL_SERVICE_DIFF_ID = "__service__"
+_SPECIAL_RESOURCE_DIFF_ID = "__resource_definitions__"
+_SPECIAL_PROMPT_DIFF_ID = "__prompt_definitions__"
+_SPECIAL_EVENT_DIFF_ID = "__event_descriptors__"
+
+
+def _normalize_diff_value(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, list):
+        return [_normalize_diff_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_diff_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalize_diff_value(item) for key, item in value.items()}
+    return value
 
 
 def _diff_params(
@@ -104,14 +157,16 @@ def _diff_operations(old_op: Operation, new_op: Operation) -> OperationDiff | No
         old_val = getattr(old_op, f)
         new_val = getattr(new_op, f)
         if old_val != new_val:
-            diff.changes.append((f, old_val, new_val))
+            diff.changes.append((f, _normalize_diff_value(old_val), _normalize_diff_value(new_val)))
 
     # Compare risk metadata
     for f in _RISK_COMPARE_FIELDS:
         old_val = getattr(old_op.risk, f)
         new_val = getattr(new_op.risk, f)
         if old_val != new_val:
-            diff.changes.append((f"risk.{f}", old_val, new_val))
+            diff.changes.append(
+                (f"risk.{f}", _normalize_diff_value(old_val), _normalize_diff_value(new_val))
+            )
 
     # Compare params
     added, removed, param_changes = _diff_params(old_op.params, new_op.params)
@@ -124,6 +179,46 @@ def _diff_operations(old_op: Operation, new_op: Operation) -> OperationDiff | No
     return diff
 
 
+def _diff_service_level(old: ServiceIR, new: ServiceIR) -> OperationDiff | None:
+    diff = OperationDiff(
+        operation_id=_SPECIAL_SERVICE_DIFF_ID,
+        operation_name="Service metadata",
+    )
+    for field_name in _SERVICE_COMPARE_FIELDS:
+        old_value = getattr(old, field_name)
+        new_value = getattr(new, field_name)
+        if old_value != new_value:
+            diff.changes.append(
+                (
+                    field_name,
+                    _normalize_diff_value(old_value),
+                    _normalize_diff_value(new_value),
+                )
+            )
+    if not diff.changes:
+        return None
+    return diff
+
+
+def _diff_capability_surface(
+    *,
+    operation_id: str,
+    operation_name: str,
+    field_name: str,
+    old_value: Any,
+    new_value: Any,
+) -> OperationDiff | None:
+    normalized_old = _normalize_diff_value(old_value)
+    normalized_new = _normalize_diff_value(new_value)
+    if normalized_old == normalized_new:
+        return None
+    return OperationDiff(
+        operation_id=operation_id,
+        operation_name=operation_name,
+        changes=[(field_name, normalized_old, normalized_new)],
+    )
+
+
 def compute_diff(old: ServiceIR, new: ServiceIR) -> IRDiff:
     """Compute a structured diff between two ServiceIR instances."""
     old_ops = {op.id: op for op in old.operations}
@@ -133,6 +228,36 @@ def compute_diff(old: ServiceIR, new: ServiceIR) -> IRDiff:
 
     result.added_operations = [id for id in new_ops if id not in old_ops]
     result.removed_operations = [id for id in old_ops if id not in new_ops]
+
+    service_diff = _diff_service_level(old, new)
+    if service_diff is not None:
+        result.changed_operations.append(service_diff)
+
+    for capability_diff in (
+        _diff_capability_surface(
+            operation_id=_SPECIAL_RESOURCE_DIFF_ID,
+            operation_name="Resource definitions",
+            field_name="resource_definitions",
+            old_value=old.resource_definitions,
+            new_value=new.resource_definitions,
+        ),
+        _diff_capability_surface(
+            operation_id=_SPECIAL_PROMPT_DIFF_ID,
+            operation_name="Prompt definitions",
+            field_name="prompt_definitions",
+            old_value=old.prompt_definitions,
+            new_value=new.prompt_definitions,
+        ),
+        _diff_capability_surface(
+            operation_id=_SPECIAL_EVENT_DIFF_ID,
+            operation_name="Event descriptors",
+            field_name="event_descriptors",
+            old_value=old.event_descriptors,
+            new_value=new.event_descriptors,
+        ),
+    ):
+        if capability_diff is not None:
+            result.changed_operations.append(capability_diff)
 
     for op_id in old_ops.keys() & new_ops.keys():
         op_diff = _diff_operations(old_ops[op_id], new_ops[op_id])

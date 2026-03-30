@@ -25,6 +25,7 @@ from apps.proof_runner.live_llm_e2e import (
     _fetch_runtime_tool_names,
     _generated_tool_audit_failure_reason,
     _json_safe,
+    _operations_enhanced_from_events,
     _parse_args,
     _parse_sse_events,
     _submit_compilation,
@@ -117,6 +118,18 @@ class TestSubmitCompilation:
         with pytest.raises(httpx.HTTPStatusError):
             await _submit_compilation(mock_client, {"service_name": "test"})
 
+    async def test_submit_compilation_rejects_invalid_json(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            text="not-json",
+            request=httpx.Request("POST", "http://test/api/v1/compilations"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match="invalid JSON"):
+            await _submit_compilation(mock_client, {"service_name": "test"})
+
 
 # --- _wait_for_terminal_job ---
 
@@ -176,6 +189,18 @@ class TestWaitForTerminalJob:
         result = await _wait_for_terminal_job(mock_client, "job-1", timeout_seconds=10.0)
         assert result["status"] == "failed"
 
+    async def test_missing_status_raises_controlled_error(self) -> None:
+        resp = httpx.Response(
+            200,
+            json={"id": "job-1"},
+            request=httpx.Request("GET", "http://test/api/v1/compilations/job-1"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=resp)
+
+        with pytest.raises(RuntimeError, match="required field 'status'"):
+            await _wait_for_terminal_job(mock_client, "job-1", timeout_seconds=10.0)
+
 
 # --- _fetch_compilation_events ---
 
@@ -218,6 +243,12 @@ class TestParseSseEventsInvalidJson:
         assert len(events) == 1
         assert events[0]["data"] == "not-valid-json"
 
+    def test_multiline_data_is_accumulated(self) -> None:
+        payload = 'event: msg\ndata: {\ndata: "stage": "extract"\ndata: }\n\n'
+        events = _parse_sse_events(payload)
+        assert len(events) == 1
+        assert events[0]["data"] == {"stage": "extract"}
+
 
 # --- _active_version_for_service ---
 
@@ -239,6 +270,7 @@ class TestActiveVersionForService:
 
         version = await _active_version_for_service(mock_client, "my-svc")
         assert version == 3
+        mock_client.get.assert_called_once_with("/api/v1/services", params=None)
 
     async def test_not_found_raises(self) -> None:
         mock_response = httpx.Response(
@@ -264,6 +296,40 @@ class TestActiveVersionForService:
         version = await _active_version_for_service(mock_client, "my-svc")
         assert version == 5
 
+    async def test_missing_active_version_raises_controlled_error(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"services": [{"service_id": "my-svc"}]},
+            request=httpx.Request("GET", "http://test/api/v1/services"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match="required field 'active_version'"):
+            await _active_version_for_service(mock_client, "my-svc")
+
+    async def test_scope_filters_are_forwarded(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"services": [{"service_id": "my-svc", "active_version": 4}]},
+            request=httpx.Request("GET", "http://test/api/v1/services"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        version = await _active_version_for_service(
+            mock_client,
+            "my-svc",
+            tenant="tenant-a",
+            environment="prod",
+        )
+
+        assert version == 4
+        mock_client.get.assert_called_once_with(
+            "/api/v1/services",
+            params={"tenant": "tenant-a", "environment": "prod"},
+        )
+
 
 # --- _artifact_version ---
 
@@ -280,7 +346,42 @@ class TestArtifactVersion:
 
         result = await _artifact_version(mock_client, "svc", 2)
         assert result["version"] == 2
-        mock_client.get.assert_called_once_with("/api/v1/artifacts/svc/versions/2")
+        mock_client.get.assert_called_once_with("/api/v1/artifacts/svc/versions/2", params=None)
+
+    async def test_missing_ir_json_raises_controlled_error(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"version": 2},
+            request=httpx.Request("GET", "http://test/api/v1/artifacts/svc/versions/2"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match="required field 'ir_json'"):
+            await _artifact_version(mock_client, "svc", 2)
+
+    async def test_scope_filters_are_forwarded(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"ir_json": {"operations": []}, "version": 2},
+            request=httpx.Request("GET", "http://test/api/v1/artifacts/svc/versions/2"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        result = await _artifact_version(
+            mock_client,
+            "svc",
+            2,
+            tenant="tenant-a",
+            environment="prod",
+        )
+
+        assert result["version"] == 2
+        mock_client.get.assert_called_once_with(
+            "/api/v1/artifacts/svc/versions/2",
+            params={"tenant": "tenant-a", "environment": "prod"},
+        )
 
 
 # --- _fetch_runtime_tool_names ---
@@ -294,8 +395,6 @@ class TestFetchRuntimeToolNames:
                 "tools": [
                     {"name": "tool_a", "description": "A"},
                     {"name": "tool_b", "description": "B"},
-                    "not-a-dict",
-                    {"no_name_key": True},
                 ]
             },
             request=httpx.Request("GET", "http://runtime:8003/tools"),
@@ -311,6 +410,74 @@ class TestFetchRuntimeToolNames:
             names = await _fetch_runtime_tool_names("http://runtime:8003")
             assert names == {"tool_a", "tool_b"}
 
+    async def test_rejects_malformed_tool_entry(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"tools": [{"name": "tool_a"}, {"id": "broken"}]},
+            request=httpx.Request("GET", "http://runtime:8003/tools"),
+        )
+
+        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_class.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="valid 'name' string"):
+                await _fetch_runtime_tool_names("http://runtime:8003")
+
+    async def test_rejects_duplicate_tool_names(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"tools": [{"name": "tool_a"}, {"name": "tool_a"}]},
+            request=httpx.Request("GET", "http://runtime:8003/tools"),
+        )
+
+        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_class.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="duplicate tool name"):
+                await _fetch_runtime_tool_names("http://runtime:8003")
+
+    async def test_rejects_non_object_payload(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json=["tool_a", "tool_b"],
+            request=httpx.Request("GET", "http://runtime:8003/tools"),
+        )
+
+        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_class.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="expected object"):
+                await _fetch_runtime_tool_names("http://runtime:8003")
+
+    async def test_rejects_missing_tools_field(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={},
+            request=httpx.Request("GET", "http://runtime:8003/tools"),
+        )
+
+        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_class.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="required field 'tools'"):
+                await _fetch_runtime_tool_names("http://runtime:8003")
+
 
 # --- _generated_tool_audit_failure_reason ---
 
@@ -322,10 +489,11 @@ class TestGeneratedToolAuditFailureReason:
         assert reason is not None
         assert "unexpected status" in reason
 
-    def test_status_ok_no_descriptor(self) -> None:
+    def test_status_ok_without_result_payload(self) -> None:
         ir = _ir()
         reason = _generated_tool_audit_failure_reason(ir, "op1", {"status": "ok"})
-        assert reason is None
+        assert reason is not None
+        assert "result payload" in reason
 
     def test_transport_mismatch(self) -> None:
         descriptor = EventDescriptor(
@@ -341,7 +509,9 @@ class TestGeneratedToolAuditFailureReason:
         )
         ir = _ir(operations=[_op("stream_op")], event_descriptors=[descriptor])
         reason = _generated_tool_audit_failure_reason(
-            ir, "stream_op", {"status": "ok", "transport": "websocket"}
+            ir,
+            "stream_op",
+            {"status": "ok", "transport": "websocket", "result": {}},
         )
         assert reason is not None
         assert "transport" in reason
@@ -388,6 +558,27 @@ class TestGeneratedToolAuditFailureReason:
         assert reason is not None
         assert "lifecycle" in reason
 
+    def test_empty_lifecycle_fails_required_field_validation(self) -> None:
+        descriptor = EventDescriptor(
+            id="ed1",
+            name="Stream",
+            operation_id="stream_op",
+            transport=EventTransport.grpc_stream,
+            support=EventSupportLevel.supported,
+            grpc_stream=GrpcStreamRuntimeConfig(
+                rpc_path="/pkg.Svc/Stream",
+                mode=GrpcStreamMode.server,
+            ),
+        )
+        ir = _ir(operations=[_op("stream_op")], event_descriptors=[descriptor])
+        reason = _generated_tool_audit_failure_reason(
+            ir,
+            "stream_op",
+            {"status": "ok", "transport": "grpc_stream", "result": {"events": [], "lifecycle": {}}},
+        )
+        assert reason is not None
+        assert "termination_reason" in reason
+
     def test_valid_streaming_result(self) -> None:
         descriptor = EventDescriptor(
             id="ed1",
@@ -407,10 +598,34 @@ class TestGeneratedToolAuditFailureReason:
             {
                 "status": "ok",
                 "transport": "grpc_stream",
-                "result": {"events": [{"sku": "x"}], "lifecycle": {"state": "closed"}},
+                "result": {
+                    "events": [{"sku": "x"}],
+                    "lifecycle": {
+                        "termination_reason": "completed",
+                        "messages_collected": 1,
+                        "rpc_path": "/pkg.Svc/Stream",
+                        "mode": "server",
+                    },
+                },
             },
         )
         assert reason is None
+
+
+class TestOperationsEnhancedFromEvents:
+    def test_rejects_non_integer_operations_enhanced(self) -> None:
+        events = [
+            {
+                "data": {
+                    "stage": "enhance",
+                    "event_type": "stage.succeeded",
+                    "detail": {"operations_enhanced": "3"},
+                }
+            }
+        ]
+
+        with pytest.raises(RuntimeError, match="expected integer"):
+            _operations_enhanced_from_events(events)
 
 
 # --- _compute_tool_intent_counts (else branch for unknown intent) ---
@@ -657,11 +872,12 @@ class TestAuditGeneratedTools:
             ir,
             representative_invocations=(),
             representative_results=[],
-            available_tool_names={"getNodeInfo"},
+            available_tool_names=set(),
             forced_skip_tool_ids=("getNodeInfo",),
         )
 
         assert summary.skipped == 1
+        assert summary.failed == 0
         assert summary.results[0].tool_name == "getNodeInfo"
         assert "disabled in the target deployment" in summary.results[0].reason
 
@@ -714,7 +930,7 @@ class TestAuditGeneratedTools:
     async def test_invocation_passes(self) -> None:
         from apps.proof_runner.live_llm_e2e import _audit_generated_tools
 
-        ok_invoker = AsyncMock(return_value={"status": "ok", "data": "good"})
+        ok_invoker = AsyncMock(return_value={"status": "ok", "result": "good"})
         ir = _ir(operations=[_op("op1")])
         policy = AuditPolicy(
             skip_destructive=False,
@@ -744,7 +960,7 @@ class TestAuditGeneratedTools:
             skip_writes_state=False,
         )
         cached_results = [
-            ToolInvocationResult(tool_name="op1", result={"status": "ok", "value": 42}),
+            ToolInvocationResult(tool_name="op1", result={"status": "ok", "result": 42}),
         ]
 
         summary = await _audit_generated_tools(
@@ -911,7 +1127,7 @@ class TestRunCase:
             side_effect=[job_resp, events_resp, services_resp, artifact_resp]
         )
 
-        mock_invoker = AsyncMock(return_value={"status": "ok"})
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
         case = ProofCase(
             protocol="rest",
             service_id="rest-svc",
@@ -934,6 +1150,96 @@ class TestRunCase:
         assert result.protocol == "rest"
         assert result.operations_enhanced == 3
         assert result.llm_field_count == 1
+
+    async def test_run_case_uses_sanitized_runtime_service_name_and_scope(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _run_case
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
+        mock_client.post = AsyncMock(return_value=compile_resp)
+
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
+        events_resp = httpx.Response(
+            200,
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
+            request=httpx.Request("GET", "http://t"),
+        )
+        services_resp = httpx.Response(
+            200,
+            json={"services": [{"service_id": "Billing_API", "active_version": 2}]},
+            request=httpx.Request("GET", "http://t"),
+        )
+        artifact_resp = httpx.Response(
+            200,
+            json={
+                "ir_json": {
+                    "service_id": "Billing_API",
+                    "service_name": "Billing_API",
+                    "base_url": "http://x",
+                    "source_hash": "sha256:abc",
+                    "protocol": "rest",
+                    "operations": [
+                        {
+                            "id": "op1",
+                            "operation_id": "op1",
+                            "name": "op1",
+                            "description": "Test",
+                            "method": "GET",
+                            "path": "/op1",
+                            "risk": {"risk_level": "safe"},
+                            "enabled": True,
+                            "source": "llm",
+                            "params": [],
+                        }
+                    ],
+                    "event_descriptors": [],
+                }
+            },
+            request=httpx.Request("GET", "http://t"),
+        )
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
+
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
+        case = ProofCase(
+            protocol="rest",
+            service_id="Billing_API",
+            request_payload={
+                "service_name": "Billing_API",
+                "tenant": "tenant-a",
+                "environment": "prod",
+            },
+            tool_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+        )
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e.build_streamable_http_tool_invoker",
+            return_value=mock_invoker,
+        ) as mock_builder:
+            await _run_case(
+                mock_client,
+                case,
+                namespace="test-ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+            )
+
+        assert mock_client.get.call_args_list[2].kwargs["params"] == {
+            "tenant": "tenant-a",
+            "environment": "prod",
+        }
+        assert mock_client.get.call_args_list[3].kwargs["params"] == {
+            "tenant": "tenant-a",
+            "environment": "prod",
+        }
+        mock_builder.assert_called_once_with(
+            "http://billing-api-v2.test-ns.svc.cluster.local:8003"
+        )
 
     async def test_run_case_failed_job_raises(self) -> None:
         from apps.proof_runner.live_llm_e2e import _run_case
@@ -1123,7 +1429,7 @@ class TestRunCase:
             side_effect=[job_resp, events_resp, services_resp, artifact_resp]
         )
 
-        mock_invoker = AsyncMock(return_value={"status": "ok"})
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
         mock_audit_summary = ToolAuditSummary(
             discovered_operations=1,
             generated_tools=1,
@@ -1218,7 +1524,7 @@ class TestRunCase:
             side_effect=[job_resp, events_resp, services_resp, artifact_resp]
         )
 
-        mock_invoker = AsyncMock(return_value={"status": "ok"})
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
         mock_judge = MagicMock()
         judge_eval = JudgeEvaluation(
             service_name="rest-svc",
@@ -1308,7 +1614,7 @@ class TestRunCase:
             side_effect=[job_resp, events_resp, services_resp, artifact_resp]
         )
 
-        mock_invoker = AsyncMock(return_value={"status": "ok"})
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
         mock_judge = MagicMock()
         mock_judge.evaluate.side_effect = RuntimeError("LLM API down")
 

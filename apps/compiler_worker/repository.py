@@ -17,6 +17,9 @@ from apps.compiler_worker.models import (
     CompilationRequest,
     CompilationStage,
     CompilationStatus,
+    store_compilation_checkpoint,
+    request_scope_from_options,
+    store_compilation_request_options,
 )
 from libs.db_models import CompilationEvent, CompilationJob
 
@@ -35,6 +38,7 @@ class SQLAlchemyCompilationJobStore:
     ) -> UUID:
         resolved_job_id = job_id or request.job_id or uuid.uuid4()
         allow_existing = job_id is not None or request.job_id is not None
+        tenant, environment = request_scope_from_options(request.options)
         async with self._session_factory() as session:
             if allow_existing:
                 existing = await session.get(CompilationJob, resolved_job_id)
@@ -45,9 +49,11 @@ class SQLAlchemyCompilationJobStore:
                 source_url=request.source_url,
                 source_hash=request.source_hash,
                 status=CompilationStatus.PENDING.value,
-                options=request.options or None,
+                options=store_compilation_request_options(request),
                 created_by=request.created_by,
-                service_name=request.service_name,
+                service_name=request.service_id or request.service_name,
+                tenant=tenant,
+                environment=environment,
             )
             session.add(job)
             try:
@@ -184,6 +190,26 @@ class SQLAlchemyCompilationJobStore:
                         raise
                     continue
 
+    async def update_checkpoint(
+        self,
+        job_id: UUID,
+        *,
+        payload: dict[str, object],
+        protocol: str | None,
+        service_name: str | None,
+        completed_stage: CompilationStage,
+    ) -> None:
+        async with self._session_factory() as session:
+            job = await self._require_job(session, job_id)
+            job.options = store_compilation_checkpoint(
+                job.options,
+                payload=payload,
+                protocol=protocol,
+                service_name=service_name,
+                completed_stage=completed_stage.value,
+            )
+            await session.commit()
+
     async def _next_sequence_number(self, session: AsyncSession, job_id: UUID) -> int:
         existing_max = await session.scalar(
             select(func.max(CompilationEvent.sequence_number)).where(
@@ -215,6 +241,8 @@ class SQLAlchemyCompilationJobStore:
             service_name=job.service_name,
             created_at=job.created_at,
             updated_at=job.updated_at,
+            tenant=job.tenant,
+            environment=job.environment,
         )
 
     def _to_event_record(self, event: CompilationEvent) -> CompilationEventRecord:

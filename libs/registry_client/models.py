@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from libs.ir.models import ServiceIR
+from libs.route_config import validate_route_config
 
 
 class RegistryModel(BaseModel):
@@ -57,6 +58,8 @@ class ArtifactVersionCreate(RegistryModel):
         ServiceIR.model_validate(self.ir_json)
         if self.raw_ir_json is not None:
             ServiceIR.model_validate(self.raw_ir_json)
+        if self.route_config is not None:
+            self.route_config = validate_route_config(self.route_config)
         return self
 
 
@@ -84,6 +87,8 @@ class ArtifactVersionUpdate(RegistryModel):
             ServiceIR.model_validate(self.ir_json)
         if self.raw_ir_json is not None:
             ServiceIR.model_validate(self.raw_ir_json)
+        if self.route_config is not None:
+            self.route_config = validate_route_config(self.route_config)
         return self
 
 
