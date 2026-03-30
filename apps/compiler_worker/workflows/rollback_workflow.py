@@ -135,7 +135,9 @@ class RollbackWorkflow:
                 )
             except Exception as exc:
                 restore_error = exc
-            message = f"Rollback validation failed for {request.service_id} v{request.target_version}."
+            message = (
+                f"Rollback validation failed for {request.service_id} v{request.target_version}."
+            )
             if restore_error is not None:
                 raise RuntimeError(
                     f"{message} Restore attempt also failed: {restore_error}"
@@ -199,10 +201,7 @@ class RollbackWorkflow:
 
         scope = {"tenant": request.tenant, "environment": request.environment}
         fresh_active = await self._store.get_active_version(request.service_id, **scope)
-        if (
-            fresh_active is None
-            or fresh_active.version_number != current_active.version_number
-        ):
+        if fresh_active is None or fresh_active.version_number != current_active.version_number:
             logger.warning(
                 "Active version changed during rollback restoration "
                 "(was v%s, now v%s); skipping restore",
@@ -222,7 +221,8 @@ class RollbackWorkflow:
         )
         if restored is None:
             raise RuntimeError(
-                f"Rollback restore failed for {request.service_id} v{current_active.version_number}."
+                "Rollback restore failed for "
+                f"{request.service_id} v{current_active.version_number}."
             )
 
 

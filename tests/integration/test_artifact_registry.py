@@ -95,12 +95,11 @@ def _build_ir(
 
 
 def _artifact_registry_auth_headers(subject: str = "registry-user") -> dict[str, str]:
-    return {
-        "Authorization": (
-            f"Bearer "
-            f"{build_service_jwt(subject=subject, jwt_settings=_TEST_ARTIFACT_REGISTRY_JWT_SETTINGS)}"
-        )
-    }
+    token = build_service_jwt(
+        subject=subject,
+        jwt_settings=_TEST_ARTIFACT_REGISTRY_JWT_SETTINGS,
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _build_route_config(

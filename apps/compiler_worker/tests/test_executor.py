@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 from types import SimpleNamespace
-from uuid import uuid4
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -24,7 +24,9 @@ from apps.compiler_worker.models import (
 )
 
 
-def _request(name: str = "test-svc", *, options: dict[str, object] | None = None) -> CompilationRequest:
+def _request(
+    name: str = "test-svc", *, options: dict[str, object] | None = None
+) -> CompilationRequest:
     return CompilationRequest(service_name=name, options=options or {})
 
 
@@ -108,21 +110,15 @@ class TestResolveCompilationExecutor:
 
 class TestDatabaseWorkflowCompilationExecutor:
     def test_get_engine_creates_and_caches(self) -> None:
-        executor = DatabaseWorkflowCompilationExecutor(
-            database_url="postgresql+asyncpg://u:p@h/db"
-        )
-        with patch(
-            "apps.compiler_worker.executor.create_async_engine"
-        ) as mock_create:
+        executor = DatabaseWorkflowCompilationExecutor(database_url="postgresql+asyncpg://u:p@h/db")
+        with patch("apps.compiler_worker.executor.create_async_engine") as mock_create:
             sentinel_engine = object()
             mock_create.return_value = sentinel_engine
 
             engine1 = executor._get_engine()
             engine2 = executor._get_engine()
 
-        mock_create.assert_called_once_with(
-            "postgresql+asyncpg://u:p@h/db", pool_pre_ping=True
-        )
+        mock_create.assert_called_once_with("postgresql+asyncpg://u:p@h/db", pool_pre_ping=True)
         assert engine1 is sentinel_engine
         assert engine2 is sentinel_engine
 
@@ -180,7 +176,7 @@ class TestDatabaseWorkflowCompilationExecutor:
             ),
             patch(
                 "apps.compiler_worker.executor.async_sessionmaker",
-            ) as mock_session_factory_cls,
+            ),
             patch(
                 "apps.compiler_worker.executor.SQLAlchemyCompilationJobStore",
             ) as mock_store_cls,

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Call every enabled tool on an MCP runtime via streamable HTTP (matches worker post-deploy path)."""
+"""Call every enabled tool on an MCP runtime.
+
+Matches the worker post-deploy validation path.
+"""
 
 from __future__ import annotations
 
