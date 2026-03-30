@@ -86,7 +86,7 @@ def test_extracts_tables_foreign_keys_and_views(initialized_database: str) -> No
     assert service_ir.protocol == "sql"
     assert service_ir.metadata["tables"] == ["customers", "orders"]
     assert service_ir.metadata["views"] == ["order_summaries"]
-    assert len(service_ir.operations) == 5
+    assert len(service_ir.operations) == 9
 
     query_orders = next(
         operation for operation in service_ir.operations if operation.id == "query_orders"
@@ -119,6 +119,34 @@ def test_extracts_tables_foreign_keys_and_views(initialized_database: str) -> No
     assert insert_param_required["total_cents"] is True
     assert insert_param_required["notes"] is False
     assert "id" not in insert_param_required
+
+    update_orders = next(
+        operation for operation in service_ir.operations if operation.id == "update_orders"
+    )
+    assert update_orders.risk.risk_level is RiskLevel.cautious
+    assert update_orders.method == "POST"
+    assert update_orders.sql is not None
+    assert update_orders.sql.action.value == "update"
+    assert update_orders.sql.primary_key_columns == ["id"]
+    assert update_orders.sql.updatable_columns == [
+        "customer_id",
+        "total_cents",
+        "notes",
+        "created_at",
+    ]
+    update_param_required = {param.name: param.required for param in update_orders.params}
+    assert update_param_required["id"] is True
+    assert update_param_required["notes"] is False
+
+    delete_orders = next(
+        operation for operation in service_ir.operations if operation.id == "delete_orders"
+    )
+    assert delete_orders.risk.risk_level is RiskLevel.dangerous
+    assert delete_orders.method == "POST"
+    assert delete_orders.sql is not None
+    assert delete_orders.sql.action.value == "delete"
+    assert delete_orders.sql.primary_key_columns == ["id"]
+    assert [param.name for param in delete_orders.params] == ["id"]
 
     query_view = next(
         operation for operation in service_ir.operations if operation.id == "query_order_summaries"
@@ -154,6 +182,23 @@ def test_sql_insert_operations_have_error_schema(initialized_database: str) -> N
     for op in insert_ops:
         assert op.error_schema is not None
         assert len(op.error_schema.responses) == 3
+        actual_codes = {r.error_code for r in op.error_schema.responses}
+        assert actual_codes == expected_codes
+
+
+def test_sql_update_and_delete_operations_have_error_schema(initialized_database: str) -> None:
+    extractor = SQLExtractor()
+
+    service_ir = extractor.extract(SourceConfig(url=initialized_database))
+
+    update_ops = [op for op in service_ir.operations if op.id.startswith("update_")]
+    delete_ops = [op for op in service_ir.operations if op.id.startswith("delete_")]
+    assert len(update_ops) >= 1
+    assert len(delete_ops) >= 1
+
+    expected_codes = {"CONSTRAINT_VIOLATION", "TIMEOUT"}
+    for op in [*update_ops, *delete_ops]:
+        assert op.error_schema is not None
         actual_codes = {r.error_code for r in op.error_schema.responses}
         assert actual_codes == expected_codes
 

@@ -383,6 +383,30 @@ class TestSampleSqlArguments:
         assert "name" in result
         assert "bio" not in result
 
+    def test_update_includes_primary_key_and_one_mutation_value(self) -> None:
+        op = _op(
+            sql=SqlOperationConfig(
+                schema_name="public",
+                relation_name="users",
+                relation_kind=SqlRelationKind.table,
+                action=SqlOperationType.update,
+                primary_key_columns=["id"],
+                updatable_columns=["email", "tier"],
+            ),
+            method="POST",
+            params=[
+                Param(name="id", type="integer", required=True),
+                Param(name="email", type="string", required=False),
+                Param(name="tier", type="string", required=False),
+            ],
+        )
+
+        result = _sample_sql_arguments(op)
+
+        assert result["id"] == 1
+        assert "email" in result or "tier" in result
+        assert len(result) == 2
+
 
 # --- Feature flags ---
 
@@ -580,6 +604,27 @@ class TestBuildExtractors:
         assert "odata" in names
         assert "scim" in names
         assert "jsonrpc" in names
+
+    def test_enables_rest_llm_seed_mutation_when_hint_is_set(self) -> None:
+        source = SourceConfig(url="https://api.example.com", hints={"llm_seed_mutation": "true"})
+        llm_client = MagicMock()
+
+        with (
+            patch(
+                "apps.compiler_worker.activities.production.EnhancerConfig.from_env",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "apps.compiler_worker.activities.production.create_llm_client",
+                return_value=llm_client,
+            ),
+        ):
+            extractors = _build_extractors(source)
+
+        rest_extractor = next(
+            extractor for extractor in extractors if extractor.protocol_name == "rest"
+        )
+        assert getattr(rest_extractor, "_llm_client") is llm_client
 
 
 class TestResolveExtractor:

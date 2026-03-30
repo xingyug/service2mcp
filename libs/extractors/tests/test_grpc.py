@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from google.protobuf import descriptor_pb2
+from google.protobuf.descriptor_pool import DescriptorPool
 
 from libs.extractors.base import SourceConfig, TypeDetector
 from libs.extractors.grpc import GrpcProtoExtractor
@@ -20,6 +22,167 @@ from libs.ir.models import (
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent.parent / "tests" / "fixtures"
 PROTO_FIXTURE_PATH = FIXTURES_DIR / "grpc_protos" / "inventory.proto"
+
+
+def _add_field(
+    message: descriptor_pb2.DescriptorProto,
+    *,
+    name: str,
+    number: int,
+    field_type: int,
+    label: int = descriptor_pb2.FieldDescriptorProto.LABEL_OPTIONAL,
+    type_name: str | None = None,
+) -> None:
+    field = message.field.add()
+    field.name = name
+    field.number = number
+    field.label = label
+    field.type = field_type
+    if type_name is not None:
+        field.type_name = type_name
+
+
+def _reflection_pool() -> DescriptorPool:
+    file_proto = descriptor_pb2.FileDescriptorProto()
+    file_proto.name = "inventory.proto"
+    file_proto.package = "catalog.v1"
+    file_proto.syntax = "proto3"
+
+    item = file_proto.message_type.add()
+    item.name = "Item"
+    _add_field(
+        item, name="sku", number=1, field_type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING
+    )
+    _add_field(
+        item,
+        name="quantity",
+        number=2,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_INT32,
+    )
+
+    request_filter = file_proto.message_type.add()
+    request_filter.name = "Filter"
+    _add_field(
+        request_filter,
+        name="sku_prefix",
+        number=1,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING,
+    )
+
+    list_items_request = file_proto.message_type.add()
+    list_items_request.name = "ListItemsRequest"
+    _add_field(
+        list_items_request,
+        name="location_id",
+        number=1,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING,
+    )
+    _add_field(
+        list_items_request,
+        name="page_size",
+        number=2,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_INT32,
+    )
+    _add_field(
+        list_items_request,
+        name="page_token",
+        number=3,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING,
+    )
+    _add_field(
+        list_items_request,
+        name="filter",
+        number=4,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE,
+        type_name=".catalog.v1.Filter",
+    )
+
+    list_items_response = file_proto.message_type.add()
+    list_items_response.name = "ListItemsResponse"
+    _add_field(
+        list_items_response,
+        name="items",
+        number=1,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_MESSAGE,
+        label=descriptor_pb2.FieldDescriptorProto.LABEL_REPEATED,
+        type_name=".catalog.v1.Item",
+    )
+
+    adjust_request = file_proto.message_type.add()
+    adjust_request.name = "AdjustInventoryRequest"
+    _add_field(
+        adjust_request,
+        name="sku",
+        number=1,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING,
+    )
+    _add_field(
+        adjust_request,
+        name="delta",
+        number=2,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_INT32,
+    )
+    _add_field(
+        adjust_request,
+        name="reason",
+        number=3,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING,
+    )
+
+    adjust_response = file_proto.message_type.add()
+    adjust_response.name = "AdjustInventoryResponse"
+    _add_field(
+        adjust_response,
+        name="success",
+        number=1,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_BOOL,
+    )
+
+    watch_request = file_proto.message_type.add()
+    watch_request.name = "WatchInventoryRequest"
+    _add_field(
+        watch_request,
+        name="sku",
+        number=1,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING,
+    )
+
+    inventory_event = file_proto.message_type.add()
+    inventory_event.name = "InventoryEvent"
+    _add_field(
+        inventory_event,
+        name="sku",
+        number=1,
+        field_type=descriptor_pb2.FieldDescriptorProto.TYPE_STRING,
+    )
+
+    service = file_proto.service.add()
+    service.name = "InventoryService"
+    list_method = service.method.add()
+    list_method.name = "ListItems"
+    list_method.input_type = ".catalog.v1.ListItemsRequest"
+    list_method.output_type = ".catalog.v1.ListItemsResponse"
+    adjust_method = service.method.add()
+    adjust_method.name = "AdjustInventory"
+    adjust_method.input_type = ".catalog.v1.AdjustInventoryRequest"
+    adjust_method.output_type = ".catalog.v1.AdjustInventoryResponse"
+    watch_method = service.method.add()
+    watch_method.name = "WatchInventory"
+    watch_method.input_type = ".catalog.v1.WatchInventoryRequest"
+    watch_method.output_type = ".catalog.v1.InventoryEvent"
+    watch_method.server_streaming = True
+
+    pool = DescriptorPool()
+    pool.AddSerializedFile(file_proto.SerializeToString())
+    return pool
+
+
+class _FakeReflectionDb:
+    def __init__(self, _channel: object) -> None:
+        self._channel = _channel
+
+    def get_services(self) -> list[str]:
+        return ["catalog.v1.InventoryService", "grpc.health.v1.Health"]
 
 
 def test_detects_proto_fixture() -> None:
@@ -128,6 +291,40 @@ def test_extracts_supported_native_server_stream_when_enabled_via_hint() -> None
     assert descriptor.operation_id == "WatchInventory"
     assert descriptor.grpc_stream is not None
     assert descriptor.grpc_stream.mode is GrpcStreamMode.server
+
+
+def test_extracts_from_server_reflection_when_proto_source_is_absent() -> None:
+    extractor = GrpcProtoExtractor()
+    reflection_pool = _reflection_pool()
+    mock_channel = MagicMock()
+
+    with (
+        patch.object(extractor, "_get_content", return_value=None),
+        patch("libs.extractors.grpc.grpc.insecure_channel", return_value=mock_channel),
+        patch(
+            "libs.extractors.grpc.ProtoReflectionDescriptorDatabase",
+            side_effect=_FakeReflectionDb,
+        ),
+        patch("libs.extractors.grpc.DescriptorPool", side_effect=lambda _: reflection_pool),
+    ):
+        service_ir = extractor.extract(
+            SourceConfig(
+                url="grpc://inventory.example.internal:443",
+                hints={"protocol": "grpc", "enable_native_grpc_stream": "true"},
+            )
+        )
+
+    assert service_ir.metadata["discovery_mode"] == "reflection"
+    assert service_ir.metadata["proto_package"] == "catalog.v1"
+    assert service_ir.metadata["ignored_streaming_rpcs"] == []
+    assert {operation.id for operation in service_ir.operations} == {
+        "AdjustInventory",
+        "ListItems",
+        "WatchInventory",
+    }
+    watch_inventory = next(op for op in service_ir.operations if op.id == "WatchInventory")
+    assert watch_inventory.path == "/catalog.v1.InventoryService/WatchInventory"
+    mock_channel.close.assert_called_once()
 
 
 def test_grpc_operations_have_error_schema() -> None:

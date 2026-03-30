@@ -7,13 +7,14 @@ KUBECTL="${KUBECTL:-kubectl}"
 HELM_BIN="${HELM_BIN:-/tmp/linux-amd64/helm}"
 NAMESPACE="${NAMESPACE:-tool-compiler-llm-e2e}"
 RELEASE_NAME="${RELEASE_NAME:-tool-compiler}"
-WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-900}"
+WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-}"
 KEEP_NAMESPACE="${KEEP_NAMESPACE:-0}"
 RUN_ID="${RUN_ID:-$(date +%H%M%S)}"
 PROTOCOL="${PROTOCOL:-all}"
 PROOF_PROFILE="${PROOF_PROFILE:-mock}"
 UPSTREAM_NAMESPACE="${UPSTREAM_NAMESPACE:-tc-real-targets}"
 AUDIT_ALL_GENERATED_TOOLS="${AUDIT_ALL_GENERATED_TOOLS:-0}"
+AUDIT_MUTATING_TOOLS="${AUDIT_MUTATING_TOOLS:-0}"
 ENABLE_TOOL_GROUPING="${ENABLE_TOOL_GROUPING:-0}"
 ENABLE_LLM_JUDGE="${ENABLE_LLM_JUDGE:-0}"
 ENABLE_LLM_ENHANCEMENT="${ENABLE_LLM_ENHANCEMENT:-1}"
@@ -25,11 +26,23 @@ ACCESS_CONTROL_IMAGE="${ACCESS_CONTROL_IMAGE:-${IMAGE_REPO_BASE}/access-control:
 COMPILER_WORKER_IMAGE="${COMPILER_WORKER_IMAGE:-${IMAGE_REPO_BASE}/compiler-worker:${IMAGE_TAG}}"
 MCP_RUNTIME_IMAGE="${MCP_RUNTIME_IMAGE:-${IMAGE_REPO_BASE}/mcp-runtime:${IMAGE_TAG}}"
 PROOF_HELPER_IMAGE="${PROOF_HELPER_IMAGE:-${COMPILER_API_IMAGE}}"
+PROOF_RUNNER_CPU_REQUEST="${PROOF_RUNNER_CPU_REQUEST:-250m}"
+PROOF_RUNNER_MEMORY_REQUEST="${PROOF_RUNNER_MEMORY_REQUEST:-256Mi}"
+PROOF_RUNNER_CPU_LIMIT="${PROOF_RUNNER_CPU_LIMIT:-1}"
+PROOF_RUNNER_MEMORY_LIMIT="${PROOF_RUNNER_MEMORY_LIMIT:-1Gi}"
 LLM_API_KEY_FILE="${LLM_API_KEY_FILE:-/home/guoxy/esoc-agents/.deepseek_api_key}"
 REAL_TARGET_ENV_FILE="${REAL_TARGET_ENV_FILE:-${ROOT_DIR}/.env.real-targets.local}"
 TMP_DIR="$(mktemp -d)"
 VALUES_OVERRIDE_PATH="${TMP_DIR}/values.override.yaml"
 RESULTS_PATH="${TMP_DIR}/proof-results.json"
+
+if [[ -z "${WAIT_TIMEOUT_SECONDS}" ]]; then
+  if [[ "${PROOF_PROFILE}" == "real-targets" && ("${ENABLE_LLM_ENHANCEMENT}" == "1" || "${ENABLE_LLM_JUDGE}" == "1") ]]; then
+    WAIT_TIMEOUT_SECONDS=7200
+  else
+    WAIT_TIMEOUT_SECONDS=900
+  fi
+fi
 
 cleanup() {
   rm -rf "${TMP_DIR}"
@@ -538,6 +551,11 @@ if [[ "${AUDIT_ALL_GENERATED_TOOLS}" == "1" ]]; then
             - \"--audit-all-generated-tools\""
 fi
 
+if [[ "${AUDIT_MUTATING_TOOLS}" == "1" ]]; then
+  EXTRA_PROOF_ARGS="${EXTRA_PROOF_ARGS}
+            - \"--audit-mutating-tools\""
+fi
+
 if [[ "${ENABLE_LLM_ENHANCEMENT}" != "1" ]]; then
   EXTRA_PROOF_ARGS="${EXTRA_PROOF_ARGS}
             - \"--skip-llm-artifact-checks\""
@@ -561,6 +579,8 @@ if [[ "${PROOF_PROFILE}" == "real-targets" ]]; then
   append_secret_env "PROOF_JACKSON_SCIM_BASE_URL" "llm-e2e-secrets" "jackson-scim-base-url"
   append_secret_env "PROOF_JACKSON_SCIM_SECRET" "llm-e2e-secrets" "jackson-scim-secret"
 fi
+
+append_secret_env "ACCESS_CONTROL_JWT_SECRET" "${RELEASE_NAME}-secrets" "jwt-secret"
 
 if [[ -n "${CASE_IDS}" ]]; then
   IFS=',' read -r -a requested_case_ids <<< "${CASE_IDS}"
@@ -599,6 +619,13 @@ spec:
         - name: proof-runner
           image: ${PROOF_HELPER_IMAGE}
           imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "${PROOF_RUNNER_CPU_REQUEST}"
+              memory: "${PROOF_RUNNER_MEMORY_REQUEST}"
+            limits:
+              cpu: "${PROOF_RUNNER_CPU_LIMIT}"
+              memory: "${PROOF_RUNNER_MEMORY_LIMIT}"
 ${PROOF_RUNNER_ENV}
           command:
             - "python"

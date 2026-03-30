@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from apps.access_control.authn.service import JWTSettings, load_jwt_settings
 from apps.compiler_api.db import configure_database, dispose_database
 from apps.compiler_api.dispatcher import CompilationDispatcher, configure_compilation_dispatcher
 from apps.compiler_api.route_publisher import (
@@ -37,6 +38,7 @@ def create_app(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     compilation_dispatcher: CompilationDispatcher | None = None,
     route_publisher: ArtifactRoutePublisher | None = None,
+    jwt_settings: JWTSettings | None = None,
 ) -> FastAPI:
     """Create the compiler API application."""
 
@@ -44,6 +46,7 @@ def create_app(
     configure_database(app, database_url=database_url, session_factory=session_factory)
     configure_compilation_dispatcher(app, dispatcher=compilation_dispatcher)
     configure_route_publisher(app, route_publisher=route_publisher)
+    app.state.jwt_settings = jwt_settings or load_jwt_settings()
     app.include_router(artifact_registry_router)
     app.include_router(compilations_router)
     app.include_router(services_router)

@@ -9,7 +9,8 @@ import json
 import os
 import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -20,6 +21,7 @@ from apps.compiler_worker.activities import (
     build_sample_invocations,
     build_streamable_http_tool_invoker,
 )
+from apps.compiler_worker.activities.production import _sample_invocation_overrides
 from libs.ir.models import EventDescriptor, EventSupportLevel, ServiceIR, ToolIntent
 from libs.validator.audit import AuditPolicy, ToolAuditResult, ToolAuditSummary
 from libs.validator.llm_judge import JudgeEvaluation, LLMJudge
@@ -116,6 +118,7 @@ async def run_proofs(
     audit_all_generated_tools: bool = False,
     audit_policy: AuditPolicy | None = None,
     enable_llm_judge: bool = False,
+    enable_llm_enhancement: bool = True,
     llm_judge: LLMJudge | None = None,
     selected_case_ids: set[str] | None = None,
     require_llm_artifacts: bool = True,
@@ -130,6 +133,7 @@ async def run_proofs(
         upstream_namespace=upstream_namespace,
         selected_protocols=set(selected_protocols),
         selected_case_ids=selected_case_ids,
+        enable_llm_enhancement=enable_llm_enhancement,
     )
     results: list[ProofResult] = []
 
@@ -152,11 +156,12 @@ async def run_proofs(
             except Exception as exc:
                 import logging
 
-                logging.getLogger(__name__).error(
+                error_message = _proof_case_error_message(exc)
+                logging.getLogger(__name__).exception(
                     "Proof case %s (%s) failed: %s",
                     case.case_id or case.service_id,
                     case.protocol,
-                    exc,
+                    error_message,
                 )
                 results.append(
                     ProofResult(
@@ -168,7 +173,7 @@ async def run_proofs(
                         llm_field_count=0,
                         invocation_results=[],
                         case_id=case.case_id,
-                        error=str(exc),
+                        error=error_message,
                     )
                 )
     return results
@@ -182,6 +187,7 @@ def _build_proof_cases(
     upstream_namespace: str | None = None,
     selected_protocols: set[str] | None = None,
     selected_case_ids: set[str] | None = None,
+    enable_llm_enhancement: bool = True,
 ) -> list[ProofCase]:
     if profile == "mock":
         cases = _build_mock_proof_cases(namespace, run_id)
@@ -193,6 +199,9 @@ def _build_proof_cases(
         )
     else:
         raise ValueError(f"Unsupported proof profile: {profile}")
+
+    if not enable_llm_enhancement:
+        cases = [_disable_case_llm_enhancement(case) for case in cases]
 
     if selected_protocols is None:
         filtered_cases = cases
@@ -206,6 +215,32 @@ def _build_proof_cases(
         for case in filtered_cases
         if case.case_id is not None and case.case_id in selected_case_ids
     ]
+
+
+def _proof_case_error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    return message or type(exc).__name__
+
+
+def _disable_case_llm_enhancement(case: ProofCase) -> ProofCase:
+    payload = deepcopy(case.request_payload)
+    options = payload.setdefault("options", {})
+    if isinstance(options, dict):
+        options["skip_enhancement"] = True
+        hints = options.get("hints")
+        if isinstance(hints, dict):
+            hints.pop("llm_seed_mutation", None)
+            if not hints:
+                options.pop("hints", None)
+    return ProofCase(
+        protocol=case.protocol,
+        service_id=case.service_id,
+        request_payload=payload,
+        tool_invocations=case.tool_invocations,
+        preferred_tool_ids=case.preferred_tool_ids,
+        audit_skip_tool_ids=case.audit_skip_tool_ids,
+        case_id=case.case_id,
+    )
 
 
 def _build_mock_proof_cases(namespace: str, run_id: str) -> list[ProofCase]:
@@ -389,7 +424,7 @@ def _build_real_target_proof_cases(
             request_payload={
                 "created_by": "llm-e2e",
                 "service_name": f"directus-rest-{run_id}",
-                "source_url": f"{directus_base_url}/items/products",
+                "source_url": f"{directus_base_url}/collections",
                 "options": {
                     "protocol": "rest",
                     "auth_token": directus_token,
@@ -397,6 +432,7 @@ def _build_real_target_proof_cases(
                         "type": "bearer",
                         "runtime_secret_ref": "directus-access-token",
                     },
+                    "hints": {"llm_seed_mutation": "true"},
                 },
             },
             preferred_tool_ids=("get_items_products", "get_items_products_id"),
@@ -463,8 +499,20 @@ def _build_real_target_proof_cases(
             request_payload={
                 "created_by": "llm-e2e",
                 "service_name": f"aria2-jsonrpc-{run_id}",
-                "source_content": _aria2_manual_service_definition(upstream_namespace),
-                "options": {"protocol": "jsonrpc"},
+                "source_url": f"{_cluster_http_url(upstream_namespace, 'aria2', 6800)}/jsonrpc",
+                "options": {
+                    "protocol": "jsonrpc",
+                    "auth_token": "token:test-secret",
+                    "preferred_smoke_tool_ids": [
+                        "aria2_getVersion",
+                        "aria2_getGlobalStat",
+                        "system_listMethods",
+                    ],
+                    "hints": {
+                        "jsonrpc_auth_in_params": "true",
+                        "jsonrpc_fallback_params_type": "positional",
+                    },
+                },
             },
             preferred_tool_ids=("aria2_getVersion", "aria2_getGlobalStat", "system_listMethods"),
         ),
@@ -476,8 +524,11 @@ def _build_real_target_proof_cases(
                 "created_by": "llm-e2e",
                 "service_name": f"openfga-grpc-{run_id}",
                 "source_url": openfga_grpc_base_url,
-                "source_content": _openfga_minimal_service_definition(),
-                "options": {"protocol": "grpc"},
+                "options": {
+                    "protocol": "grpc",
+                    "preferred_smoke_tool_ids": ["ListStores"],
+                    "hints": {"enable_native_grpc_stream": "true"},
+                },
             },
             preferred_tool_ids=("ListStores",),
         ),
@@ -500,7 +551,7 @@ def _build_real_target_proof_cases(
             request_payload={
                 "created_by": "llm-e2e",
                 "service_name": f"pocketbase-rest-{run_id}",
-                "source_url": f"{pocketbase_base_url}/api/collections/products/records",
+                "source_url": f"{pocketbase_base_url}/api/collections",
                 "options": {
                     "protocol": "rest",
                     "auth_token": pocketbase_token,
@@ -508,6 +559,7 @@ def _build_real_target_proof_cases(
                         "type": "bearer",
                         "runtime_secret_ref": "pocketbase-access-token",
                     },
+                    "hints": {"llm_seed_mutation": "true"},
                 },
             },
         ),
@@ -606,7 +658,17 @@ async def _run_case(
             f"{case.protocol} proof service {case.service_id} has no llm-sourced fields in IR."
         )
     service_ir = ServiceIR.model_validate(artifact_ir)
-    invocation_specs = _resolve_invocation_specs(service_ir, case)
+    request_options = case.request_payload.get("options")
+    sample_invocation_overrides = (
+        _sample_invocation_overrides(request_options)
+        if isinstance(request_options, Mapping)
+        else {}
+    )
+    invocation_specs = _resolve_invocation_specs(
+        service_ir,
+        case,
+        sample_invocation_overrides=sample_invocation_overrides,
+    )
 
     # Verify tool_intent derivation in compiled IR.
     tool_intent_counts = _compute_tool_intent_counts(service_ir)
@@ -625,6 +687,7 @@ async def _run_case(
             representative_results=invocation_results,
             audit_policy=audit_policy,
             forced_skip_tool_ids=case.audit_skip_tool_ids,
+            sample_invocation_overrides=sample_invocation_overrides,
         )
         if audit_all_generated_tools
         else None
@@ -690,7 +753,10 @@ async def _fetch_compilation_events(
     client: httpx.AsyncClient,
     job_id: str,
 ) -> list[dict[str, Any]]:
-    response = await client.get(f"/api/v1/compilations/{job_id}/events")
+    response = await client.get(
+        f"/api/v1/compilations/{job_id}/events",
+        params={"token": _compiler_api_sse_token()},
+    )
     response.raise_for_status()
     return _parse_sse_events(response.text)
 
@@ -770,11 +836,20 @@ async def _invoke_runtime_tools(
 def _resolve_invocation_specs(
     service_ir: ServiceIR,
     case: ProofCase,
+    *,
+    sample_invocation_overrides: Mapping[str, dict[str, Any]] | None = None,
 ) -> tuple[ToolInvocationSpec, ...]:
     if case.tool_invocations:
         return case.tool_invocations
 
     sample_invocations = build_sample_invocations(service_ir)
+    if sample_invocation_overrides:
+        sample_invocations.update(
+            {
+                tool_name: dict(arguments)
+                for tool_name, arguments in sample_invocation_overrides.items()
+            }
+        )
     operation_by_id = {
         operation.id: operation
         for operation in service_ir.operations
@@ -813,6 +888,7 @@ async def _audit_generated_tools(
     available_tool_names: set[str] | None = None,
     audit_policy: AuditPolicy = AuditPolicy(),
     forced_skip_tool_ids: tuple[str, ...] = (),
+    sample_invocation_overrides: Mapping[str, dict[str, Any]] | None = None,
 ) -> ToolAuditSummary:
     runtime_tool_names = (
         available_tool_names
@@ -820,6 +896,13 @@ async def _audit_generated_tools(
         else await _fetch_runtime_tool_names(runtime_base_url)
     )
     sample_invocations = build_sample_invocations(service_ir)
+    if sample_invocation_overrides:
+        sample_invocations.update(
+            {
+                tool_name: dict(arguments)
+                for tool_name, arguments in sample_invocation_overrides.items()
+            }
+        )
     for spec in representative_invocations:
         sample_invocations[spec.tool_name] = spec.arguments
 
@@ -1084,80 +1167,15 @@ def _required_env(name: str) -> str:
     raise RuntimeError(f"Required environment variable {name} is not set.")
 
 
+def _compiler_api_sse_token() -> str:
+    from apps.access_control.authn.service import build_service_jwt
+
+    return build_service_jwt()
+
+
 def _basic_auth_header(secret: str) -> str:
     encoded = base64.b64encode(secret.encode("utf-8")).decode("ascii")
     return f"Basic {encoded}"
-
-
-def _aria2_manual_service_definition(namespace: str) -> str:
-    endpoint = _cluster_http_url(namespace, "aria2", 6800) + "/jsonrpc"
-    return json.dumps(
-        {
-            "jsonrpc_service": True,
-            "info": {
-                "title": "aria2 JSON-RPC",
-                "description": "Real aria2 download service for live proof.",
-                "version": "2.0.0",
-            },
-            "endpoint": endpoint,
-            "methods": [
-                {
-                    "name": "system.listMethods",
-                    "description": "List supported aria2 JSON-RPC methods.",
-                    "params_type": "positional",
-                    "params": [
-                        {
-                            "name": "token",
-                            "required": True,
-                            "default": "token:test-secret",
-                            "schema": {"type": "string"},
-                        }
-                    ],
-                },
-                {
-                    "name": "aria2.getVersion",
-                    "description": "Return aria2 version metadata.",
-                    "params_type": "positional",
-                    "params": [
-                        {
-                            "name": "token",
-                            "required": True,
-                            "default": "token:test-secret",
-                            "schema": {"type": "string"},
-                        }
-                    ],
-                },
-                {
-                    "name": "aria2.getGlobalStat",
-                    "description": "Return aggregate aria2 download state.",
-                    "params_type": "positional",
-                    "params": [
-                        {
-                            "name": "token",
-                            "required": True,
-                            "default": "token:test-secret",
-                            "schema": {"type": "string"},
-                        }
-                    ],
-                },
-            ],
-        }
-    )
-
-
-def _openfga_minimal_service_definition() -> str:
-    return """syntax = "proto3";
-
-package openfga.v1;
-
-message ListStoresRequest {}
-
-message ListStoresResponse {}
-
-service OpenFGAService {
-  rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
-}
-"""
 
 
 def _cluster_http_url(namespace: str, service_name: str, port: int) -> str:
@@ -1182,6 +1200,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument("--run-id", default=uuid.uuid4().hex[:6])
     parser.add_argument("--audit-all-generated-tools", action="store_true")
+    parser.add_argument(
+        "--audit-mutating-tools",
+        action="store_true",
+        help=(
+            "When auditing generated tools, also invoke state-mutating, "
+            "external-side-effect, and destructive operations."
+        ),
+    )
     parser.add_argument("--enable-llm-judge", action="store_true")
     parser.add_argument("--case-id", action="append", dest="case_ids", default=[])
     parser.add_argument(
@@ -1190,6 +1216,16 @@ def _parse_args() -> argparse.Namespace:
         help="Do not require enhancement-stage counts or llm-sourced IR fields.",
     )
     return parser.parse_args()
+
+
+def _build_audit_policy(*, audit_mutating_tools: bool) -> AuditPolicy:
+    if audit_mutating_tools:
+        return AuditPolicy(
+            skip_destructive=False,
+            skip_external_side_effect=False,
+            skip_writes_state=False,
+        )
+    return AuditPolicy()
 
 
 def _build_llm_judge_from_env() -> LLMJudge | None:
@@ -1213,6 +1249,9 @@ def _build_llm_judge_from_env() -> LLMJudge | None:
 async def _async_main() -> None:
     args = _parse_args()
     selected_case_ids = {case_id for case_id in args.case_ids if case_id} or None
+    audit_policy = _build_audit_policy(
+        audit_mutating_tools=bool(args.audit_mutating_tools),
+    )
     judge: LLMJudge | None = None
     if args.enable_llm_judge:
         judge = _build_llm_judge_from_env()
@@ -1239,9 +1278,11 @@ async def _async_main() -> None:
         timeout_seconds=float(args.timeout_seconds),
         run_id=str(args.run_id),
         audit_all_generated_tools=bool(args.audit_all_generated_tools),
+        audit_policy=audit_policy,
         enable_llm_judge=bool(args.enable_llm_judge),
         llm_judge=judge,
         selected_case_ids=selected_case_ids,
+        enable_llm_enhancement=not bool(args.skip_llm_artifact_checks),
         require_llm_artifacts=not bool(args.skip_llm_artifact_checks),
     )
     print(

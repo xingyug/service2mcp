@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from libs.extractors.base import SourceConfig
@@ -161,6 +162,84 @@ def test_extract_preserves_param_defaults_and_positional_mode() -> None:
     assert operation.params[0].default == "token:test-secret"
 
 
+def test_extract_falls_back_to_system_list_methods_for_live_endpoint() -> None:
+    extractor = JsonRpcExtractor()
+    source = SourceConfig(
+        url="https://downloads.example.com/jsonrpc",
+        auth_token="token:test-secret",
+        hints={
+            "protocol": "jsonrpc",
+            "jsonrpc_auth_in_params": "true",
+            "jsonrpc_fallback_params_type": "positional",
+        },
+    )
+
+    discovery_response = httpx.Response(
+        200,
+        json={
+            "jsonrpc": "2.0",
+            "result": [
+                "system.listMethods",
+                "aria2.getVersion",
+                "aria2.addUri",
+            ],
+            "id": 1,
+        },
+        request=httpx.Request("POST", source.url),
+    )
+
+    with (
+        patch.object(extractor, "_get_content", return_value=None),
+        patch("libs.extractors.jsonrpc.httpx.post", return_value=discovery_response) as mock_post,
+    ):
+        ir = extractor.extract(source)
+
+    assert ir.metadata["discovery_mode"] == "system.listMethods"
+    assert {operation.id for operation in ir.operations} == {
+        "system_listMethods",
+        "aria2_getVersion",
+        "aria2_addUri",
+    }
+    discovered = next(op for op in ir.operations if op.id == "aria2_addUri")
+    assert discovered.jsonrpc is not None
+    assert discovered.jsonrpc.params_type == "positional"
+    assert discovered.jsonrpc.params_names == ["token", "payload"]
+    assert discovered.params[0].default == "token:test-secret"
+    assert discovered.params[1].type == "array"
+    assert discovered.risk.risk_level is RiskLevel.cautious
+    mock_post.assert_called_once()
+    assert mock_post.call_args.kwargs["json"]["params"] == ["token:test-secret"]
+
+
+def test_extract_falls_back_to_named_payload_for_named_jsonrpc_services() -> None:
+    extractor = JsonRpcExtractor()
+    source = SourceConfig(
+        url="https://users.example.com/jsonrpc",
+        hints={
+            "protocol": "jsonrpc",
+            "jsonrpc_fallback_params_type": "named",
+        },
+    )
+
+    discovery_response = httpx.Response(
+        200,
+        json={"jsonrpc": "2.0", "result": ["user.lookup"], "id": 1},
+        request=httpx.Request("POST", source.url),
+    )
+
+    with (
+        patch.object(extractor, "_get_content", return_value=None),
+        patch("libs.extractors.jsonrpc.httpx.post", return_value=discovery_response),
+    ):
+        ir = extractor.extract(source)
+
+    operation = ir.operations[0]
+    assert operation.jsonrpc is not None
+    assert operation.jsonrpc.params_type == "named"
+    assert operation.jsonrpc.params_names == ["payload"]
+    assert operation.params[0].type == "object"
+
+
 # ── additional detection edge cases ────────────────────────────────────────
 
 
@@ -221,7 +300,10 @@ def test_extract_raises_when_no_content() -> None:
     """Line 140: extract raises ValueError when _get_content returns None."""
     extractor = JsonRpcExtractor()
     source = SourceConfig(url="https://example.com/rpc")
-    with patch.object(extractor, "_get_content", return_value=None):
+    with (
+        patch.object(extractor, "_get_content", return_value=None),
+        patch("libs.extractors.jsonrpc.httpx.post", side_effect=httpx.ConnectError("boom")),
+    ):
         with pytest.raises(ValueError, match="Could not read source content"):
             extractor.extract(source)
 
@@ -337,33 +419,25 @@ def test_resolve_base_url_openrpc_falls_back_to_default_endpoint() -> None:
 
 def test_default_openrpc_endpoint_strips_json_suffix() -> None:
     """Lines 268-279: strips /openrpc.json and appends /rpc."""
-    result = JsonRpcExtractor._default_openrpc_endpoint(
-        "https://example.com/api/openrpc.json"
-    )
+    result = JsonRpcExtractor._default_openrpc_endpoint("https://example.com/api/openrpc.json")
     assert result == "https://example.com/api/rpc"
 
 
 def test_default_openrpc_endpoint_strips_yaml_suffix() -> None:
     """Lines 268-279: strips /openrpc.yaml and appends /rpc."""
-    result = JsonRpcExtractor._default_openrpc_endpoint(
-        "https://example.com/openrpc.yaml"
-    )
+    result = JsonRpcExtractor._default_openrpc_endpoint("https://example.com/openrpc.yaml")
     assert result == "https://example.com/rpc"
 
 
 def test_default_openrpc_endpoint_strips_yml_suffix() -> None:
     """Lines 268-279: strips /openrpc.yml and appends /rpc."""
-    result = JsonRpcExtractor._default_openrpc_endpoint(
-        "https://example.com/openrpc.yml"
-    )
+    result = JsonRpcExtractor._default_openrpc_endpoint("https://example.com/openrpc.yml")
     assert result == "https://example.com/rpc"
 
 
 def test_default_openrpc_endpoint_no_known_suffix() -> None:
     """Line 279: no recognized suffix → returns source_url unchanged."""
-    result = JsonRpcExtractor._default_openrpc_endpoint(
-        "https://example.com/api/v1"
-    )
+    result = JsonRpcExtractor._default_openrpc_endpoint("https://example.com/api/v1")
     assert result == "https://example.com/api/v1"
 
 

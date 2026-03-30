@@ -53,6 +53,7 @@ from libs.ir.models import (
     GrpcStreamMode,
     GrpcStreamRuntimeConfig,
     GrpcUnaryRuntimeConfig,
+    JsonRpcOperationConfig,
     OAuth2ClientCredentialsConfig,
     Operation,
     Param,
@@ -241,6 +242,54 @@ class TestPerformRequest:
         p = _proxy()
         with pytest.raises(ToolError, match="missing method or path"):
             await p._perform_request(op, {})
+
+
+class TestPrepareJsonRpcPayload:
+    def test_positional_payload_flattens_generic_payload_list(self) -> None:
+        payload = RuntimeProxy._prepare_jsonrpc_payload(
+            JsonRpcOperationConfig(
+                method_name="aria2.addUri",
+                params_type="positional",
+                params_names=["token", "payload"],
+            ),
+            {"token": "token:test-secret", "payload": ["https://example.com/file.iso"]},
+        )
+
+        assert payload == PreparedRequestPayload(
+            query_params={},
+            json_body={
+                "jsonrpc": "2.0",
+                "method": "aria2.addUri",
+                "params": ["token:test-secret", "https://example.com/file.iso"],
+                "id": 1,
+            },
+            signable_body={
+                "jsonrpc": "2.0",
+                "method": "aria2.addUri",
+                "params": ["token:test-secret", "https://example.com/file.iso"],
+                "id": 1,
+            },
+        )
+
+    def test_named_payload_merges_generic_payload_object(self) -> None:
+        payload = RuntimeProxy._prepare_jsonrpc_payload(
+            JsonRpcOperationConfig(
+                method_name="service.lookup",
+                params_type="named",
+                params_names=["token", "payload"],
+            ),
+            {
+                "token": "secret",
+                "payload": {"query": "widgets", "limit": 5},
+            },
+        )
+
+        assert payload.json_body == {
+            "jsonrpc": "2.0",
+            "method": "service.lookup",
+            "params": {"token": "secret", "query": "widgets", "limit": 5},
+            "id": 1,
+        }
 
 
 # ===================================================================

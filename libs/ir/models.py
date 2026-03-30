@@ -255,6 +255,8 @@ class SqlOperationType(StrEnum):
 
     query = "query"
     insert = "insert"
+    update = "update"
+    delete = "delete"
 
 
 class JsonRpcOperationConfig(BaseModel):
@@ -285,6 +287,8 @@ class SqlOperationConfig(BaseModel):
     action: SqlOperationType
     filterable_columns: list[str] = Field(default_factory=list)
     insertable_columns: list[str] = Field(default_factory=list)
+    updatable_columns: list[str] = Field(default_factory=list)
+    primary_key_columns: list[str] = Field(default_factory=list)
     default_limit: int = Field(default=50, gt=0)
     max_limit: int = Field(default=200, gt=0)
 
@@ -299,6 +303,18 @@ class SqlOperationConfig(BaseModel):
                 raise ValueError("sql insert operations require relation_kind='table'.")
             if not self.insertable_columns:
                 raise ValueError("sql insert operations require insertable_columns.")
+        if self.action is SqlOperationType.update:
+            if self.relation_kind is not SqlRelationKind.table:
+                raise ValueError("sql update operations require relation_kind='table'.")
+            if not self.primary_key_columns:
+                raise ValueError("sql update operations require primary_key_columns.")
+            if not self.updatable_columns:
+                raise ValueError("sql update operations require updatable_columns.")
+        if self.action is SqlOperationType.delete:
+            if self.relation_kind is not SqlRelationKind.table:
+                raise ValueError("sql delete operations require relation_kind='table'.")
+            if not self.primary_key_columns:
+                raise ValueError("sql delete operations require primary_key_columns.")
         return self
 
 

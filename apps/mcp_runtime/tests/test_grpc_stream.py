@@ -148,6 +148,7 @@ class TestInvokeSyncRejectsNonServerMode:
         with pytest.raises(ToolError, match="not implemented yet"):
             executor._invoke_sync(op, {}, config)
 
+
 class TestInvokeSyncErrorHandling:
     def _make_executor(
         self, base_url: str = "grpc://localhost:50051"
@@ -235,6 +236,7 @@ class TestInvokeSyncErrorHandling:
                 assert len(result["events"]) == 2
                 # Verify cancel was called due to max_messages reached
                 mock_responses.cancel.assert_called_once()
+                mock_channel.close.assert_called_once_with()
 
     def test_tool_error_passthrough(self) -> None:
         executor = self._make_executor()
@@ -295,6 +297,7 @@ class TestInvokeSyncErrorHandling:
 
                 with pytest.raises(ToolError, match="Native grpc_stream invocation failed"):
                     executor._invoke_sync(op, {}, config)
+                mock_channel.close.assert_called_once_with()
 
     def test_general_exception_handling(self) -> None:
         executor = self._make_executor()
