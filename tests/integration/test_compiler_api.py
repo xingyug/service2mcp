@@ -7,6 +7,7 @@ import os
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime
 from time import monotonic
+from typing import Any
 
 import httpx
 import pytest
@@ -18,10 +19,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
+import apps.compiler_api.routes.artifacts as artifact_routes
 from apps.access_control.authn.service import JWTSettings, build_service_jwt
 from apps.access_control.gateway_binding.client import InMemoryAPISIXAdminClient
 from apps.access_control.main import create_app as create_access_control_app
-import apps.compiler_api.routes.artifacts as artifact_routes
 from apps.compiler_api.dispatcher import CeleryCompilationDispatcher
 from apps.compiler_api.repository import ArtifactRegistryRepository
 from apps.compiler_api.route_publisher import AccessControlArtifactRoutePublisher
@@ -57,7 +58,11 @@ _TEST_COMPILER_API_JWT_SETTINGS = JWTSettings(secret=_TEST_COMPILER_API_JWT_SECR
 
 os.environ.setdefault("ACCESS_CONTROL_JWT_SECRET", _TEST_COMPILER_API_JWT_SECRET)
 
-from apps.compiler_api.main import create_app
+
+def _create_compiler_api_app(**kwargs: Any) -> FastAPI:
+    from apps.compiler_api.main import create_app
+
+    return create_app(**kwargs)
 
 
 def _compiler_api_auth_headers(
@@ -192,7 +197,7 @@ def app(
     session_factory: async_sessionmaker[AsyncSession],
     dispatcher: RecordingDispatcher,
 ) -> FastAPI:
-    return create_app(
+    return _create_compiler_api_app(
         session_factory=session_factory,
         compilation_dispatcher=dispatcher,
         jwt_settings=_TEST_COMPILER_API_JWT_SETTINGS,
@@ -280,7 +285,7 @@ async def test_submit_compilation_uses_celery_dispatcher_in_eager_mode(
         recorded_requests.append(request)
 
     configure_compilation_executor(CallbackCompilationExecutor(callback=record_request))
-    app = create_app(
+    app = _create_compiler_api_app(
         session_factory=session_factory,
         compilation_dispatcher=CeleryCompilationDispatcher(celery_app=worker_celery_app),
         jwt_settings=_TEST_COMPILER_API_JWT_SETTINGS,
@@ -613,7 +618,7 @@ async def test_activate_artifact_version_syncs_gateway_routes(
         transport=access_control_transport,
         base_url="http://access-control",
     ) as access_control_http_client:
-        app = create_app(
+        app = _create_compiler_api_app(
             session_factory=session_factory,
             compilation_dispatcher=dispatcher,
             route_publisher=AccessControlArtifactRoutePublisher(
@@ -672,9 +677,10 @@ async def test_activate_artifact_version_syncs_gateway_routes(
 
             assert response.status_code == 200
             assert response.json()["version_number"] == 2
-            assert gateway_admin_client.routes["billing-api-active"].document["target_service"][
-                "name"
-            ] == "billing-api-v2"
+            assert (
+                gateway_admin_client.routes["billing-api-active"].document["target_service"]["name"]
+                == "billing-api-v2"
+            )
             assert "billing-api-v2" in gateway_admin_client.routes
 
 
@@ -696,7 +702,7 @@ async def test_delete_active_artifact_version_syncs_gateway_replacement(
         transport=access_control_transport,
         base_url="http://access-control",
     ) as access_control_http_client:
-        app = create_app(
+        app = _create_compiler_api_app(
             session_factory=session_factory,
             compilation_dispatcher=dispatcher,
             route_publisher=AccessControlArtifactRoutePublisher(
@@ -754,9 +760,10 @@ async def test_delete_active_artifact_version_syncs_gateway_replacement(
             response = await client.delete("/api/v1/artifacts/ledger-api/versions/1")
 
             assert response.status_code == 204
-            assert gateway_admin_client.routes["ledger-api-active"].document["target_service"][
-                "name"
-            ] == "ledger-api-v2"
+            assert (
+                gateway_admin_client.routes["ledger-api-active"].document["target_service"]["name"]
+                == "ledger-api-v2"
+            )
             assert "ledger-api-v1" not in gateway_admin_client.routes
             assert "ledger-api-v2" in gateway_admin_client.routes
 
@@ -790,7 +797,7 @@ async def test_activate_artifact_version_restores_routes_when_audit_fails(
             client=access_control_http_client,
             auth_token=build_service_jwt(jwt_settings=jwt_settings),
         )
-        app = create_app(
+        app = _create_compiler_api_app(
             session_factory=session_factory,
             compilation_dispatcher=dispatcher,
             route_publisher=route_publisher,
@@ -841,18 +848,21 @@ async def test_activate_artifact_version_restores_routes_when_audit_fails(
                     )
                 )
 
-            await route_publisher.sync(_build_route_config(
-                service_id="billing-api",
-                service_name="Billing API",
-                version_number=1,
-            ))
+            await route_publisher.sync(
+                _build_route_config(
+                    service_id="billing-api",
+                    service_name="Billing API",
+                    version_number=1,
+                )
+            )
 
             response = await client.post("/api/v1/artifacts/billing-api/versions/2/activate")
 
             assert response.status_code == 502
-            assert gateway_admin_client.routes["billing-api-active"].document["target_service"][
-                "name"
-            ] == "billing-api-v1"
+            assert (
+                gateway_admin_client.routes["billing-api-active"].document["target_service"]["name"]
+                == "billing-api-v1"
+            )
             assert "billing-api-v1" in gateway_admin_client.routes
             assert "billing-api-v2" not in gateway_admin_client.routes
 
@@ -886,7 +896,7 @@ async def test_delete_active_artifact_version_restores_routes_when_audit_fails(
             client=access_control_http_client,
             auth_token=build_service_jwt(jwt_settings=jwt_settings),
         )
-        app = create_app(
+        app = _create_compiler_api_app(
             session_factory=session_factory,
             compilation_dispatcher=dispatcher,
             route_publisher=route_publisher,
@@ -937,18 +947,21 @@ async def test_delete_active_artifact_version_restores_routes_when_audit_fails(
                     )
                 )
 
-            await route_publisher.sync(_build_route_config(
-                service_id="ledger-api",
-                service_name="Ledger API",
-                version_number=1,
-            ))
+            await route_publisher.sync(
+                _build_route_config(
+                    service_id="ledger-api",
+                    service_name="Ledger API",
+                    version_number=1,
+                )
+            )
 
             response = await client.delete("/api/v1/artifacts/ledger-api/versions/1")
 
             assert response.status_code == 502
-            assert gateway_admin_client.routes["ledger-api-active"].document["target_service"][
-                "name"
-            ] == "ledger-api-v1"
+            assert (
+                gateway_admin_client.routes["ledger-api-active"].document["target_service"]["name"]
+                == "ledger-api-v1"
+            )
             assert "ledger-api-v1" in gateway_admin_client.routes
             assert "ledger-api-v2" not in gateway_admin_client.routes
 
