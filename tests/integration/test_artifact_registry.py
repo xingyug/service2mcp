@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 import httpx
 import pytest
@@ -13,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from testcontainers.postgres import PostgresContainer
 
 from apps.access_control.authn.service import JWTSettings, build_service_jwt
-from apps.compiler_api.main import create_app
 from apps.compiler_api.route_publisher import NoopArtifactRoutePublisher
 from libs.db_models import Base
 from libs.ir.models import (
@@ -35,6 +36,17 @@ from libs.registry_client import (
 )
 
 _TEST_ARTIFACT_REGISTRY_JWT_SETTINGS = JWTSettings(secret="integration-test-artifact-registry-jwt")
+
+os.environ.setdefault(
+    "ACCESS_CONTROL_JWT_SECRET",
+    "integration-test-artifact-registry-jwt",
+)
+
+
+def _create_compiler_api_app(**kwargs: Any) -> FastAPI:
+    from apps.compiler_api.main import create_app
+
+    return create_app(**kwargs)
 
 
 def _to_asyncpg_url(connection_url: str) -> str:
@@ -154,7 +166,7 @@ async def session_factory(
 
 @pytest.fixture
 def app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
-    return create_app(
+    return _create_compiler_api_app(
         session_factory=session_factory,
         jwt_settings=_TEST_ARTIFACT_REGISTRY_JWT_SETTINGS,
         route_publisher=NoopArtifactRoutePublisher(),
