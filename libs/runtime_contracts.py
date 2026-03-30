@@ -40,7 +40,9 @@ def validate_tool_listing_payload(payload: Any, *, context: str) -> list[dict[st
     seen_names: set[str] = set()
     for index, tool in enumerate(tools):
         if not isinstance(tool, dict):
-            raise RuntimeError(f"{context} tools[{index}] was {type(tool).__name__}, expected object.")
+            raise RuntimeError(
+                f"{context} tools[{index}] was {type(tool).__name__}, expected object."
+            )
 
         name = tool.get("name")
         if not isinstance(name, str) or not name.strip():

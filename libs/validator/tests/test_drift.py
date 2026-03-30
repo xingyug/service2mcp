@@ -16,9 +16,9 @@ from libs.ir.models import (
     PromptArgument,
     PromptDefinition,
     ResourceDefinition,
+    ResponseExample,
     RiskLevel,
     RiskMetadata,
-    ResponseExample,
     ServiceIR,
 )
 from libs.validator.drift import DriftReport, check_drift_from_source, detect_drift

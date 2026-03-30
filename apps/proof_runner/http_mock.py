@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-from xml.etree import ElementTree
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse

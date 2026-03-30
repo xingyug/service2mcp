@@ -115,8 +115,8 @@ class TestCreateApp:
 class TestHealthEndpoints:
     async def test_readyz_database_success(self):
         """Test lines 62-64: readyz endpoint with successful database check."""
-        from apps.access_control.main import create_app
         from apps.access_control.gateway_binding.client import InMemoryAPISIXAdminClient
+        from apps.access_control.main import create_app
 
         app_instance = create_app(
             gateway_admin_client=InMemoryAPISIXAdminClient(),
@@ -137,8 +137,8 @@ class TestHealthEndpoints:
 
     async def test_readyz_database_failure(self):
         """Test lines 65-67: readyz endpoint with database failure."""
-        from apps.access_control.main import create_app
         from apps.access_control.gateway_binding.client import InMemoryAPISIXAdminClient
+        from apps.access_control.main import create_app
 
         app_instance = create_app(
             gateway_admin_client=InMemoryAPISIXAdminClient(),
@@ -178,7 +178,11 @@ class TestHealthEndpoints:
 
         with patch("apps.access_control.main._logger") as mock_logger:
             for route in app_instance.routes:
-                if hasattr(route, "path") and route.path == "/readyz" and hasattr(route, "endpoint"):
+                if (
+                    hasattr(route, "path")
+                    and route.path == "/readyz"
+                    and hasattr(route, "endpoint")
+                ):
                     result = await route.endpoint(session=mock_session)
                     assert isinstance(result, JSONResponse)
                     assert result.status_code == 503
@@ -197,7 +201,11 @@ class TestHealthEndpoints:
 
         with patch("apps.access_control.main._logger") as mock_logger:
             for route in app_instance.routes:
-                if hasattr(route, "path") and route.path == "/readyz" and hasattr(route, "endpoint"):
+                if (
+                    hasattr(route, "path")
+                    and route.path == "/readyz"
+                    and hasattr(route, "endpoint")
+                ):
                     result = await route.endpoint(session=mock_session)
                     assert isinstance(result, JSONResponse)
                     assert result.status_code == 503

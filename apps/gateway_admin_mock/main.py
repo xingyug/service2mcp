@@ -27,7 +27,7 @@ class PolicyBindingUpsertRequest(BaseModel):
 class RouteUpsertRequest(BaseModel):
     """Route payload stored by the mock gateway admin API."""
 
-    document: "RouteDocument"
+    document: RouteDocument
 
 
 class RouteTargetService(BaseModel):

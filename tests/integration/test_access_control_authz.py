@@ -17,7 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
-import apps.access_control.authz.routes as authz_routes
+from apps.access_control.audit.service import AuditLogService
 from apps.access_control.authn.service import JWTSettings
 from apps.access_control.gateway_binding.client import InMemoryAPISIXAdminClient
 from apps.access_control.main import create_app
@@ -339,7 +339,7 @@ async def test_policy_creation_reconciles_gateway_when_audit_fails(
     async def _fail_audit(*args: object, **kwargs: object) -> object:
         raise RuntimeError("audit broke")
 
-    monkeypatch.setattr(authz_routes.AuditLogService, "append_entry", _fail_audit)
+    monkeypatch.setattr(AuditLogService, "append_entry", _fail_audit)
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -432,9 +432,11 @@ async def test_policy_update_reconciles_gateway_when_audit_fails(
     async def _fail_audit(*args: object, **kwargs: object) -> object:
         raise RuntimeError("audit broke")
 
-    monkeypatch.setattr(authz_routes.AuditLogService, "append_entry", _fail_audit)
+    monkeypatch.setattr(AuditLogService, "append_entry", _fail_audit)
     failing_transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=failing_transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=failing_transport, base_url="http://testserver"
+    ) as client:
         updated = await client.put(
             f"/api/v1/authz/policies/{policy['id']}",
             json={"decision": "deny"},
@@ -515,9 +517,11 @@ async def test_policy_delete_reconciles_gateway_when_audit_fails(
     async def _fail_audit(*args: object, **kwargs: object) -> object:
         raise RuntimeError("audit broke")
 
-    monkeypatch.setattr(authz_routes.AuditLogService, "append_entry", _fail_audit)
+    monkeypatch.setattr(AuditLogService, "append_entry", _fail_audit)
     failing_transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=failing_transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=failing_transport, base_url="http://testserver"
+    ) as client:
         deleted = await client.delete(
             f"/api/v1/authz/policies/{policy['id']}",
             headers=_auth_headers(roles=["admin"]),

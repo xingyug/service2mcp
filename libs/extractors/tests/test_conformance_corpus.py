@@ -201,7 +201,13 @@ def test_sql_edge_conformance_fixture_uses_explicit_expected_outcomes(
     assert service_ir.service_name == "analytics-edge"
     assert service_ir.metadata["tables"] == ["audit_events"]
     assert service_ir.metadata["views"] == ["audit_event_rollups"]
-    assert len(service_ir.operations) == 3
+    assert {operation.id for operation in service_ir.operations} == {
+        "query_audit_events",
+        "insert_audit_events",
+        "update_audit_events",
+        "delete_audit_events",
+        "query_audit_event_rollups",
+    }
 
     query_events = next(
         operation for operation in service_ir.operations if operation.id == "query_audit_events"
@@ -221,6 +227,19 @@ def test_sql_edge_conformance_fixture_uses_explicit_expected_outcomes(
     assert insert_required["amount"] is True
     assert insert_required["occurred_at"] is True
     assert insert_required["payload"] is False
+
+    update_events = next(
+        operation for operation in service_ir.operations if operation.id == "update_audit_events"
+    )
+    update_required = {param.name: param.required for param in update_events.params}
+    assert update_required["id"] is True
+    assert update_required["payload"] is False
+
+    delete_events = next(
+        operation for operation in service_ir.operations if operation.id == "delete_audit_events"
+    )
+    delete_required = {param.name: param.required for param in delete_events.params}
+    assert delete_required == {"id": True}
 
     query_rollups = next(
         operation

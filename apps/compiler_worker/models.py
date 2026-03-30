@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 _INTERNAL_OPTION_PREFIX = "__compiler_"
@@ -277,7 +277,7 @@ def split_compilation_options(
             if isinstance(key, str) and key.startswith(_INTERNAL_OPTION_PREFIX)
             else public_options
         )
-        target[cast(str, key)] = value
+        target[key] = value
     return public_options, internal_options
 
 
@@ -288,7 +288,10 @@ def request_scope_from_options(
 
     if not isinstance(options, Mapping):
         return None, None
-    return (_normalize_scope_value(options.get("tenant")), _normalize_scope_value(options.get("environment")))
+    return (
+        _normalize_scope_value(options.get("tenant")),
+        _normalize_scope_value(options.get("environment")),
+    )
 
 
 def _normalize_scope_value(value: Any) -> str | None:

@@ -17,8 +17,8 @@ from apps.compiler_worker.models import (
     CompilationRequest,
     CompilationStage,
     CompilationStatus,
-    store_compilation_checkpoint,
     request_scope_from_options,
+    store_compilation_checkpoint,
     store_compilation_request_options,
 )
 from libs.db_models import CompilationEvent, CompilationJob

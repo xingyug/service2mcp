@@ -12,8 +12,8 @@ import pytest
 
 from apps.compiler_worker.activities.production import (
     _apply_auth_override,
-    _apply_scope_override,
     _apply_post_enhancement,
+    _apply_scope_override,
     _build_extractors,
     _close_extractors,
     _deserialize_manifest_set,
@@ -38,8 +38,12 @@ from apps.compiler_worker.activities.production import (
     build_sample_invocations,
     create_default_activity_registry,
 )
-from apps.compiler_worker.models import CompilationContext, CompilationRequest, CompilationStage
-from apps.compiler_worker.models import StageExecutionResult
+from apps.compiler_worker.models import (
+    CompilationContext,
+    CompilationRequest,
+    CompilationStage,
+    StageExecutionResult,
+)
 from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthType,

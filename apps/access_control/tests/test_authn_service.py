@@ -746,7 +746,9 @@ class TestSyncJwtUserRoles:
         mock_result.scalar_one_or_none.return_value = user
         session.execute.return_value = mock_result
 
-        principal = svc._validate_jwt(_make_jwt(_valid_claims(sub="alice", roles=[" Admin ", "admin"])))
+        principal = svc._validate_jwt(
+            _make_jwt(_valid_claims(sub="alice", roles=[" Admin ", "admin"]))
+        )
         await svc.sync_jwt_user_roles(principal)
 
         assert user.roles == ["admin"]

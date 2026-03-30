@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer
 
-import apps.compiler_api.routes.artifacts as artifact_routes
+from apps.access_control.audit.service import AuditLogService
 from apps.access_control.authn.service import JWTSettings, build_service_jwt
 from apps.access_control.gateway_binding.client import InMemoryAPISIXAdminClient
 from apps.access_control.main import create_app as create_access_control_app
@@ -786,7 +786,7 @@ async def test_activate_artifact_version_restores_routes_when_audit_fails(
     async def _fail_audit(*args: object, **kwargs: object) -> object:
         raise RuntimeError("audit broke")
 
-    monkeypatch.setattr(artifact_routes.AuditLogService, "append_entry", _fail_audit)
+    monkeypatch.setattr(AuditLogService, "append_entry", _fail_audit)
 
     async with httpx.AsyncClient(
         transport=access_control_transport,
@@ -885,7 +885,7 @@ async def test_delete_active_artifact_version_restores_routes_when_audit_fails(
     async def _fail_audit(*args: object, **kwargs: object) -> object:
         raise RuntimeError("audit broke")
 
-    monkeypatch.setattr(artifact_routes.AuditLogService, "append_entry", _fail_audit)
+    monkeypatch.setattr(AuditLogService, "append_entry", _fail_audit)
 
     async with httpx.AsyncClient(
         transport=access_control_transport,
