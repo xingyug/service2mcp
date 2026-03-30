@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from html import unescape
@@ -62,6 +63,8 @@ _JSON_SERVER_MARKERS = (
     "you're successfully running json server",
     "congrats!",
 )
+_MAX_RETRY_ATTEMPTS = 3
+_DEFAULT_RETRY_AFTER_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,13 @@ class EndpointClassification:
     description: str
     confidence: float
     tags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _RegistryCollectionCandidate:
+    collection_url: str
+    methods: tuple[str, ...]
+    source: str
 
 
 class EndpointClassifier(Protocol):
@@ -201,7 +211,7 @@ class RESTExtractor:
         if not classified:
             raise ValueError(f"Classifier returned no REST operations for {source.url}")
 
-        base_path = _normalized_base_path(source.url)
+        base_path = _discovery_base_path(source.url, discovered_endpoints)
         path_param_defaults = _path_param_defaults_by_operation_path(
             discovered_endpoints,
             base_path=base_path,
@@ -226,13 +236,13 @@ class RESTExtractor:
             protocol="rest",
             service_name=_service_name_from_url(source),
             service_description=f"Discovered REST API at {source.url}",
-            base_url=_runtime_base_url(source.url),
+            base_url=_runtime_base_url(source.url, base_path=base_path),
             auth=AuthConfig(type=AuthType.none),
             operations=operations,
             metadata={
                 "discovered_paths": [endpoint.path for endpoint in discovered_endpoints],
                 "classifier": self._classifier.__class__.__name__,
-                "base_path": urlparse(source.url).path or "/",
+                "base_path": base_path or "/",
                 "discovery_entrypoint": source.url,
                 "llm_seed_mutation": self._llm_client is not None,
             },
@@ -261,7 +271,7 @@ class RESTExtractor:
             visited_pages.add(current_url)
 
             try:
-                response = self._client.get(current_url, headers=headers)
+                response = self._request("GET", current_url, headers=headers)
             except httpx.HTTPError:
                 continue
             if response.status_code >= 400:
@@ -282,6 +292,19 @@ class RESTExtractor:
                 observed=observed,
                 auth_headers=headers,
             )
+            for candidate in self._bootstrap_collection_registry(
+                current_url=current_url,
+                response=response,
+                observed=observed,
+            ):
+                if depth + 1 < self._max_pages and candidate not in visited_pages:
+                    queue.append((candidate, depth + 1))
+            for candidate in self._pagination_followups(
+                current_url=current_url,
+                response=response,
+            ):
+                if depth + 1 < self._max_pages and candidate not in visited_pages:
+                    queue.append((candidate, depth + 1))
 
             for path, source_name in self._extract_candidate_paths(base_url, response):
                 candidate_url = urljoin(base_url, path)
@@ -337,6 +360,22 @@ class RESTExtractor:
             endpoint.freeze() for endpoint in sorted(observed.values(), key=lambda item: item.path)
         ]
 
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        response: httpx.Response | None = None
+        for attempt in range(_MAX_RETRY_ATTEMPTS):
+            response = self._client.request(method, url, headers=headers or {})
+            if response.status_code != 429 or attempt == _MAX_RETRY_ATTEMPTS - 1:
+                return response
+            time.sleep(_retry_after_seconds(response))
+        assert response is not None
+        return response
+
     def _bootstrap_current_json_entrypoint(
         self,
         *,
@@ -383,6 +422,51 @@ class RESTExtractor:
             auth_headers=auth_headers,
         )
 
+    def _bootstrap_collection_registry(
+        self,
+        *,
+        current_url: str,
+        response: httpx.Response,
+        observed: dict[str, _ObservedEndpoint],
+    ) -> list[str]:
+        content_type = response.headers.get("content-type", "").lower()
+        if "json" not in content_type:
+            return []
+
+        try:
+            payload = response.json()
+        except Exception:
+            return []
+
+        candidate_urls: list[str] = []
+        for candidate in _collection_registry_candidates(current_url, payload):
+            normalized_path = self._normalize_path(candidate.collection_url)
+            self._register_endpoint(
+                observed,
+                path=normalized_path,
+                absolute_url=candidate.collection_url,
+                methods=set(candidate.methods),
+                source=candidate.source,
+                confidence=0.93,
+            )
+            candidate_urls.append(candidate.collection_url)
+        return candidate_urls
+
+    def _pagination_followups(
+        self,
+        *,
+        current_url: str,
+        response: httpx.Response,
+    ) -> list[str]:
+        content_type = response.headers.get("content-type", "").lower()
+        if "json" not in content_type:
+            return []
+        try:
+            payload = response.json()
+        except Exception:
+            return []
+        return _pagination_followup_urls(current_url, payload)
+
     def _bootstrap_json_server(
         self,
         *,
@@ -399,7 +483,7 @@ class RESTExtractor:
 
         db_url = _join_relative_url(current_url, "db")
         try:
-            db_response = self._client.get(db_url, headers=auth_headers)
+            db_response = self._request("GET", db_url, headers=auth_headers)
         except httpx.HTTPError:
             return {}
         if db_response.status_code >= 400:
@@ -561,7 +645,7 @@ class RESTExtractor:
     ) -> set[str]:
         """Lightweight HEAD probe; returns {'GET'} if successful, else empty."""
         try:
-            response = self._client.head(absolute_url, headers=auth_headers or {})
+            response = self._request("HEAD", absolute_url, headers=auth_headers or {})
             if response.status_code < 400:
                 return {"GET"}  # HEAD success implies GET works
         except httpx.HTTPError:
@@ -583,7 +667,7 @@ class RESTExtractor:
 
         # Phase 1: Try OPTIONS
         try:
-            response = self._client.options(absolute_url, headers=headers)
+            response = self._request("OPTIONS", absolute_url, headers=headers)
             if response.status_code < 400:
                 allow_header = response.headers.get("allow", "").strip()
                 if allow_header == "*":
@@ -607,7 +691,7 @@ class RESTExtractor:
         # Phase 3: GET fallback with Content-Type validation
         if not methods:
             try:
-                response = self._client.get(absolute_url, headers=headers)
+                response = self._request("GET", absolute_url, headers=headers)
                 if response.status_code < 400:
                     ct = response.headers.get("content-type", "").lower()
                     if any(t in ct for t in ("json", "html", "xml", "text")):
@@ -715,13 +799,13 @@ class RESTExtractor:
     ) -> None:
         headers = auth_headers or {}
         try:
-            response = self._client.options(endpoint.absolute_url, headers=headers)
+            response = self._request("OPTIONS", endpoint.absolute_url, headers=headers)
         except httpx.HTTPError:
             return
 
         if response.status_code == 405:
             # OPTIONS not allowed, but endpoint exists — try HEAD
-            head_methods = self._head_probe(endpoint.absolute_url)
+            head_methods = self._head_probe(endpoint.absolute_url, auth_headers=headers)
             if head_methods:
                 endpoint.methods.update(head_methods)
                 endpoint.sources.add("head")
@@ -1281,6 +1365,176 @@ def _join_relative_url(base_url: str, relative_path: str) -> str:
     return urljoin(normalized_base, normalized_relative)
 
 
+def _collection_registry_candidates(
+    current_url: str,
+    payload: Any,
+) -> list[_RegistryCollectionCandidate]:
+    current_path = urlparse(current_url).path.rstrip("/")
+    if current_path.endswith("/api/collections"):
+        return _pocketbase_collection_candidates(current_url, payload)
+    if current_path.endswith("/collections"):
+        return _directus_collection_candidates(current_url, payload)
+    return []
+
+
+def _directus_collection_candidates(
+    current_url: str,
+    payload: Any,
+) -> list[_RegistryCollectionCandidate]:
+    collection_items = _extract_collection_items(payload)
+    if collection_items is None:
+        return []
+
+    current_path = urlparse(current_url).path.rstrip("/")
+    prefix = current_path[: -len("/collections")] if current_path.endswith("/collections") else ""
+    seen: set[str] = set()
+    candidates: list[_RegistryCollectionCandidate] = []
+    for item in collection_items:
+        if not isinstance(item, dict):
+            continue
+        collection_name = item.get("collection") or item.get("name")
+        if not isinstance(collection_name, str) or not collection_name.strip():
+            continue
+        if collection_name.startswith("directus_"):
+            continue
+        collection_path = f"{prefix}/items/{collection_name}".replace("//", "/")
+        collection_url = urljoin(_origin(current_url), collection_path)
+        if collection_url in seen:
+            continue
+        seen.add(collection_url)
+        candidates.append(
+            _RegistryCollectionCandidate(
+                collection_url=collection_url,
+                methods=("GET", "POST"),
+                source="collection_registry",
+            )
+        )
+    return candidates
+
+
+def _pocketbase_collection_candidates(
+    current_url: str,
+    payload: Any,
+) -> list[_RegistryCollectionCandidate]:
+    collection_items = _extract_collection_items(payload)
+    if collection_items is None:
+        return []
+
+    parsed_current = urlparse(current_url)
+    registry_root = parsed_current._replace(query="", fragment="").geturl().rstrip("/")
+    seen: set[str] = set()
+    candidates: list[_RegistryCollectionCandidate] = []
+    for item in collection_items:
+        if not isinstance(item, dict):
+            continue
+        collection_name = item.get("name")
+        if not isinstance(collection_name, str) or not collection_name.strip():
+            continue
+        collection_type = item.get("type")
+        if collection_name.startswith("_") or collection_type not in {None, "base", "view"}:
+            continue
+        collection_url = _join_relative_url(registry_root, f"{collection_name}/records")
+        if collection_url in seen:
+            continue
+        seen.add(collection_url)
+        candidates.append(
+            _RegistryCollectionCandidate(
+                collection_url=collection_url,
+                methods=("GET", "POST"),
+                source="collection_registry",
+            )
+        )
+    return candidates
+
+
+def _pagination_followup_urls(current_url: str, payload: Any) -> list[str]:
+    followups: set[str] = set()
+    if isinstance(payload, dict):
+        for key in ("@odata.nextLink", "next", "next_link", "nextLink", "next_url", "nextUrl"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                normalized = _normalize_same_origin_candidate(current_url, value)
+                if normalized is not None:
+                    followups.add(normalized)
+
+    pagination_state = _pagination_state(payload)
+    if pagination_state is not None:
+        current_page, total_pages, per_page = pagination_state
+        if current_page < total_pages:
+            next_page_url = _set_query_param(current_url, "page", current_page + 1)
+            if per_page is not None:
+                next_page_url = _set_query_param(next_page_url, "perPage", per_page)
+            followups.add(next_page_url)
+    return sorted(followups)
+
+
+def _pagination_state(payload: Any) -> tuple[int, int, int | None] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    candidates: list[dict[str, Any]] = [payload]
+    meta = payload.get("meta")
+    if isinstance(meta, dict):
+        candidates.append(meta)
+        pagination = meta.get("pagination")
+        if isinstance(pagination, dict):
+            candidates.append(pagination)
+    pagination = payload.get("pagination")
+    if isinstance(pagination, dict):
+        candidates.append(pagination)
+
+    for candidate in candidates:
+        current_page = _int_like(candidate.get("page"))
+        if current_page is None:
+            continue
+        per_page = _int_like(candidate.get("perPage")) or _int_like(candidate.get("per_page"))
+        total_pages = _int_like(candidate.get("totalPages")) or _int_like(
+            candidate.get("total_pages")
+        )
+        total_items = _int_like(candidate.get("totalItems")) or _int_like(candidate.get("total"))
+        if total_pages is None and per_page and total_items is not None and total_items >= 0:
+            total_pages = max(1, (total_items + per_page - 1) // per_page)
+        if total_pages is None:
+            continue
+        return current_page, total_pages, per_page
+    return None
+
+
+def _normalize_same_origin_candidate(base_url: str, candidate: str) -> str | None:
+    absolute = urljoin(base_url, candidate)
+    if urlparse(absolute).netloc != urlparse(base_url).netloc:
+        return None
+    return absolute
+
+
+def _set_query_param(url: str, name: str, value: int) -> str:
+    parsed = urlparse(url)
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    filtered = [(key, existing) for key, existing in query_pairs if key != name]
+    filtered.append((name, str(value)))
+    encoded = urlencode(filtered, doseq=True)
+    return parsed._replace(query=encoded).geturl()
+
+
+def _int_like(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _retry_after_seconds(response: httpx.Response) -> float:
+    retry_after = response.headers.get("retry-after")
+    if retry_after is None:
+        return _DEFAULT_RETRY_AFTER_SECONDS
+    try:
+        return max(float(retry_after), 0.0)
+    except ValueError:
+        return _DEFAULT_RETRY_AFTER_SECONDS
+
+
 def _resource_param_name_from_path(path: str) -> str:
     clean = path.split("?", 1)[0].rstrip("/")
     leaf = clean.rsplit("/", 1)[-1] if clean else "resource"
@@ -1444,8 +1698,40 @@ def _normalized_base_path(url: str) -> str:
     return raw_path.rstrip("/")
 
 
-def _runtime_base_url(url: str) -> str:
-    return f"{_origin(url)}{_normalized_base_path(url)}"
+def _discovery_base_path(url: str, endpoints: list[DiscoveredEndpoint]) -> str:
+    entrypoint_path = _normalized_base_path(url)
+    if not entrypoint_path:
+        return ""
+    candidate_paths = [entrypoint_path] + [
+        _normalized_base_path(endpoint.path) for endpoint in endpoints
+    ]
+    return _common_path_prefix(candidate_paths)
+
+
+def _common_path_prefix(paths: list[str]) -> str:
+    normalized_paths = [
+        [segment for segment in path.split("/") if segment]
+        for path in paths
+        if path not in {"", "/"}
+    ]
+    if not normalized_paths:
+        return ""
+    prefix = normalized_paths[0]
+    for path_segments in normalized_paths[1:]:
+        shared: list[str] = []
+        for left, right in zip(prefix, path_segments, strict=False):
+            if left != right:
+                break
+            shared.append(left)
+        prefix = shared
+        if not prefix:
+            return ""
+    return f"/{'/'.join(prefix)}" if prefix else ""
+
+
+def _runtime_base_url(url: str, *, base_path: str | None = None) -> str:
+    resolved_base_path = _normalized_base_path(url) if base_path is None else base_path
+    return f"{_origin(url)}{resolved_base_path}"
 
 
 def _normalize_classification_path(path: str, *, base_path: str) -> str:

@@ -144,6 +144,7 @@ Once the compiler, worker, runtime, and access-control images are built and push
 NAMESPACE="tool-compiler-llm-all-audit-$(date +%H%M%S)" \
 PROTOCOL=all \
 AUDIT_ALL_GENERATED_TOOLS=1 \
+AUDIT_MUTATING_TOOLS=1 \
 ACCESS_CONTROL_IMAGE="us-central1-docker.pkg.dev/insightcompass-465300/tool-compiler/access-control:20260325-b0e27e6-r20" \
 COMPILER_API_IMAGE="us-central1-docker.pkg.dev/insightcompass-465300/tool-compiler/compiler-api:20260326-b0e27e6-r28" \
 COMPILER_WORKER_IMAGE="us-central1-docker.pkg.dev/insightcompass-465300/tool-compiler/compiler-worker:20260326-b0e27e6-r28" \
@@ -153,7 +154,7 @@ KEEP_NAMESPACE=1 \
 make gke-llm-e2e-smoke
 ```
 
-The live harness requires the local DeepSeek key file at `/home/guoxy/esoc-agents/.deepseek_api_key` unless you override `LLM_API_KEY_FILE`. It emits one JSON record per protocol, including `job_id`, `operations_enhanced`, `active_version`, `llm_field_count`, and the final runtime tool invocation result. When you set `AUDIT_ALL_GENERATED_TOOLS=1`, the proof runner appends an `audit_summary` block that records per-tool `passed`, `failed`, and `skipped` outcomes for all safe generated tools. The first audit-enabled REST run in namespace `tool-compiler-llm-rest-audit-041525` intentionally surfaced real discovery drift (`passed=1`, `failed=5`, `skipped=0`), while the current clean cross-protocol audit baseline in `tool-compiler-llm-all-audit-075849` shows those REST false positives are gone and the aggregate audited result is green.
+The live harness requires the local DeepSeek key file at `/home/guoxy/esoc-agents/.deepseek_api_key` unless you override `LLM_API_KEY_FILE`. It emits one JSON record per protocol, including `job_id`, `operations_enhanced`, `active_version`, `llm_field_count`, and the final runtime tool invocation result. When you set `AUDIT_ALL_GENERATED_TOOLS=1`, the proof runner appends an `audit_summary` block that records per-tool `passed`, `failed`, and `skipped` outcomes for all safe generated tools. If you also set `AUDIT_MUTATING_TOOLS=1`, the post-compile proof audit widens to state-mutating, external-side-effect, and destructive tools too; this does not change extractor-side discovery and does not cause the compile-time exploration step to issue writes. The first audit-enabled REST run in namespace `tool-compiler-llm-rest-audit-041525` intentionally surfaced real discovery drift (`passed=1`, `failed=5`, `skipped=0`), while the current clean cross-protocol audit baseline in `tool-compiler-llm-all-audit-075849` shows those REST false positives are gone and the aggregate audited result is green.
 
 For stepwise hardening, you can now run a single protocol at a time while keeping the same Helm/GKE harness:
 

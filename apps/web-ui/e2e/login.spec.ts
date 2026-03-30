@@ -58,4 +58,175 @@ test.describe("Login Page", () => {
     await page.getByRole("button", { name: "Sign in with PAT" }).click();
     await expect(page.locator(".text-destructive").first()).toBeVisible({ timeout: 10000 });
   });
+
+  test("successful login stores auth_token so dashboard requests stay authenticated", async ({
+    page,
+  }) => {
+    let servicesAuthorization: string | undefined;
+
+    await page.route("http://localhost:8001/api/v1/authn/validate", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          subject: "admin@example.com",
+          username: "admin",
+          token_type: "jwt",
+          claims: {
+            preferred_username: "admin",
+            email: "admin@example.com",
+            roles: ["admin"],
+          },
+        }),
+      });
+    });
+    await page.route("http://localhost:8000/api/v1/services", async (route) => {
+      servicesAuthorization = route.request().headers()["authorization"];
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ services: [] }),
+      });
+    });
+    await page.route("http://localhost:8000/api/v1/compilations", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      });
+    });
+    await page.route("http://localhost:8001/api/v1/audit/logs", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [] }),
+      });
+    });
+
+    await page.fill("#jwt-token", "jwt-session-token");
+    await page.getByRole("button", { name: "Sign in with JWT" }).click();
+
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+    await expect.poll(() => servicesAuthorization).toBe(
+      "Bearer jwt-session-token",
+    );
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("auth_token")))
+      .toBe("jwt-session-token");
+  });
+
+  test("successful PAT login preserves admin roles in stored auth state", async ({
+    page,
+  }) => {
+    await page.route("http://localhost:8001/api/v1/authn/validate", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          subject: "admin",
+          username: "admin",
+          token_type: "pat",
+          claims: {
+            roles: ["admin"],
+          },
+        }),
+      });
+    });
+    await page.route("http://localhost:8000/api/v1/services", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ services: [] }),
+      });
+    });
+    await page.route("http://localhost:8000/api/v1/compilations", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      });
+    });
+    await page.route("http://localhost:8001/api/v1/audit/logs", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [] }),
+      });
+    });
+
+    await page.getByRole("tab", { name: "PAT Token" }).click();
+    await page.fill("#pat", "pat-session-token");
+    await page.getByRole("button", { name: "Sign in with PAT" }).click();
+
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const raw = localStorage.getItem("auth-storage");
+          if (!raw) return null;
+          return JSON.parse(raw).state.user?.roles;
+        }),
+      )
+      .toEqual(["admin"]);
+  });
+
+  test("logout clears auth state and returns to login", async ({ page }) => {
+    await page.route("http://localhost:8001/api/v1/authn/validate", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          subject: "admin@example.com",
+          username: "admin",
+          token_type: "jwt",
+          claims: {
+            preferred_username: "admin",
+            email: "admin@example.com",
+            roles: ["admin"],
+          },
+        }),
+      });
+    });
+    await page.route("http://localhost:8000/api/v1/services", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ services: [] }),
+      });
+    });
+    await page.route("http://localhost:8000/api/v1/compilations", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
+      });
+    });
+    await page.route("http://localhost:8001/api/v1/audit/logs", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [] }),
+      });
+    });
+
+    await page.fill("#jwt-token", "jwt-session-token");
+    await page.getByRole("button", { name: "Sign in with JWT" }).click();
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Logout" }).click();
+
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByRole("heading", { name: "Tool Compiler v2" })).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("auth_token")))
+      .toBeNull();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const raw = localStorage.getItem("auth-storage");
+          return raw ? JSON.parse(raw).state.isAuthenticated : null;
+        }),
+      )
+      .toBe(false);
+  });
 });

@@ -259,6 +259,43 @@ def test_setup_tracer_already_configured():
         mock_provider_class.assert_not_called()
 
 
+def test_setup_tracer_reconfigures_for_new_service_name():
+    """A second service in the same process should get a fresh provider."""
+    import libs.observability.tracing as tracing_module
+    from libs.observability.tracing import get_tracer, setup_tracer
+
+    tracing_module._is_configured = False
+    tracing_module._tracer_provider = None
+    tracing_module._configured_service_name = None
+    tracing_module._configured_endpoint = None
+    tracing_module._configured_enable_local = False
+
+    with (
+        patch("opentelemetry.sdk.trace.TracerProvider") as mock_provider_class,
+        patch("opentelemetry.sdk.resources.Resource") as mock_resource_class,
+        patch("opentelemetry.trace") as mock_trace,
+    ):
+        first_resource = MagicMock()
+        second_resource = MagicMock()
+        mock_resource_class.create.side_effect = [first_resource, second_resource]
+
+        first_provider = MagicMock()
+        second_provider = MagicMock()
+        first_provider.get_tracer.return_value = MagicMock(name="first_tracer")
+        second_provider.get_tracer.return_value = MagicMock(name="second_tracer")
+        mock_provider_class.side_effect = [first_provider, second_provider]
+
+        setup_tracer("service-a", enable_local=True)
+        setup_tracer("service-b", enable_local=True)
+
+        assert mock_resource_class.create.call_args_list[0].args[0] == {"service.name": "service-a"}
+        assert mock_resource_class.create.call_args_list[1].args[0] == {"service.name": "service-b"}
+        mock_trace.set_tracer_provider.assert_called_once_with(first_provider)
+        tracer = get_tracer("runtime")
+        second_provider.get_tracer.assert_called_once_with("runtime")
+        assert tracer is second_provider.get_tracer.return_value
+
+
 def test_get_tracer_when_configured():
     """Test get_tracer returns tracer when configured."""
     # Mock configured state
@@ -266,15 +303,13 @@ def test_get_tracer_when_configured():
     from libs.observability.tracing import get_tracer
 
     tracing_module._is_configured = True
+    tracing_module._tracer_provider = MagicMock()
+    tracing_module._tracer_provider.get_tracer.return_value = MagicMock()
 
-    with patch("opentelemetry.trace") as mock_trace:
-        mock_tracer = MagicMock()
-        mock_trace.get_tracer.return_value = mock_tracer
+    tracer = get_tracer("test-tracer")
 
-        tracer = get_tracer("test-tracer")
-
-        mock_trace.get_tracer.assert_called_once_with("test-tracer")
-        assert tracer == mock_tracer
+    tracing_module._tracer_provider.get_tracer.assert_called_once_with("test-tracer")
+    assert tracer == tracing_module._tracer_provider.get_tracer.return_value
 
 
 def test_get_tracer_when_not_configured():

@@ -48,11 +48,13 @@ class TestCompilationCreateRequest:
     def test_to_workflow_request(self) -> None:
         req = CompilationCreateRequest(
             source_url="https://example.com/spec.yaml",
+            service_id="billing-api",
             service_name="my-svc",
             options={"key": "val"},
         )
         wf = req.to_workflow_request()
         assert wf.source_url == "https://example.com/spec.yaml"
+        assert wf.service_id == "billing-api"
         assert wf.service_name == "my-svc"
         assert wf.options == {"key": "val"}
 
@@ -77,12 +79,17 @@ class TestCompilationJobResponse:
             service_name="petstore",
             created_at=now,
             updated_at=now,
+            tenant="team-a",
+            environment="prod",
         )
         resp = CompilationJobResponse.from_record(record)
         assert resp.id == record.id
         assert resp.status == "succeeded"
         assert resp.current_stage == "register"
         assert resp.protocol == "openapi"
+        assert resp.service_id == "petstore"
+        assert resp.tenant == "team-a"
+        assert resp.environment == "prod"
 
     def test_from_record_none_stage(self) -> None:
         now = datetime.utcnow()
@@ -147,12 +154,14 @@ class TestServiceSummaryResponse:
         resp = ServiceSummaryResponse(
             service_id="svc-1",
             active_version=1,
+            version_count=2,
             service_name="petstore",
             tool_count=10,
             created_at=now,
         )
         assert resp.service_id == "svc-1"
         assert resp.protocol is None
+        assert resp.version_count == 2
 
 
 class TestServiceListResponse:

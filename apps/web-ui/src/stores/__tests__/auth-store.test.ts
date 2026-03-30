@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { useAuthStore } from "../auth-store";
 
 const STORAGE_KEY = "auth-storage";
+const NETWORK_TOKEN_KEY = "auth_token";
 
 function resetStore() {
   useAuthStore.setState({
@@ -13,6 +14,7 @@ function resetStore() {
 
 describe("auth-store", () => {
   beforeEach(() => {
+    localStorage.clear();
     resetStore();
   });
 
@@ -44,6 +46,7 @@ describe("auth-store", () => {
     expect(state.token).toBe("tok-123");
     expect(state.user).toEqual(user);
     expect(state.isAuthenticated).toBe(true);
+    expect(localStorage.getItem(NETWORK_TOKEN_KEY)).toBe("tok-123");
   });
 
   it("login() with minimal user (username only)", () => {
@@ -67,6 +70,7 @@ describe("auth-store", () => {
     expect(state.token).toBeNull();
     expect(state.user).toBeNull();
     expect(state.isAuthenticated).toBe(false);
+    expect(localStorage.getItem(NETWORK_TOKEN_KEY)).toBeNull();
   });
 
   it("logout() is safe to call when already logged out", () => {
@@ -90,6 +94,7 @@ describe("auth-store", () => {
     expect(state.token).toBe("new-token");
     expect(state.user).toEqual(user);
     expect(state.isAuthenticated).toBe(true);
+    expect(localStorage.getItem(NETWORK_TOKEN_KEY)).toBe("new-token");
   });
 
   it("setToken() does not change isAuthenticated when called before login", () => {
@@ -178,5 +183,6 @@ describe("auth-store", () => {
     expect(state.token).toBe("rehydrate-tok");
     expect(state.isAuthenticated).toBe(true);
     expect(state.user?.username).toBe("rehydrate");
+    expect(localStorage.getItem(NETWORK_TOKEN_KEY)).toBe("rehydrate-tok");
   });
 });

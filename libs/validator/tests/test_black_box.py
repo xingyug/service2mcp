@@ -35,6 +35,8 @@ def _make_op(
     *,
     writes_state: bool = False,
     destructive: bool = False,
+    external_side_effect: bool = False,
+    idempotent: bool = True,
     risk_level: RiskLevel = RiskLevel.safe,
 ) -> Operation:
     return Operation(
@@ -45,6 +47,8 @@ def _make_op(
         risk=RiskMetadata(
             writes_state=writes_state,
             destructive=destructive,
+            external_side_effect=external_side_effect,
+            idempotent=idempotent,
             risk_level=risk_level,
         ),
     )
@@ -56,6 +60,8 @@ def _make_truth(
     *,
     writes_state: bool = False,
     destructive: bool = False,
+    external_side_effect: bool = False,
+    idempotent: bool = True,
     resource_group: str = "test",
 ) -> EndpointTruth:
     return EndpointTruth(
@@ -63,6 +69,8 @@ def _make_truth(
         path=path,
         writes_state=writes_state,
         destructive=destructive,
+        external_side_effect=external_side_effect,
+        idempotent=idempotent,
         resource_group=resource_group,
     )
 
@@ -183,6 +191,45 @@ class TestEvaluateBlackBox:
         assert report.matched_count == 1
         assert report.risk_accuracy == 0.0
 
+    def test_external_side_effect_mismatch_counted(self) -> None:
+        truth = [
+            _make_truth("POST", "/users", writes_state=True, external_side_effect=True),
+        ]
+        ops = [
+            _make_op(
+                "create_user",
+                "POST",
+                "/users",
+                writes_state=True,
+                external_side_effect=False,
+                idempotent=False,
+            ),
+        ]
+        ir = _make_ir(ops)
+        report = evaluate_black_box(ir, truth)
+
+        assert report.matched_count == 1
+        assert report.risk_accuracy == 0.0
+
+    def test_idempotent_mismatch_counted(self) -> None:
+        truth = [
+            _make_truth("POST", "/users", writes_state=True, idempotent=False),
+        ]
+        ops = [
+            _make_op(
+                "create_user",
+                "POST",
+                "/users",
+                writes_state=True,
+                idempotent=True,
+            ),
+        ]
+        ir = _make_ir(ops)
+        report = evaluate_black_box(ir, truth)
+
+        assert report.matched_count == 1
+        assert report.risk_accuracy == 0.0
+
     def test_disabled_operations_excluded(self) -> None:
         """Disabled operations should not count as discovered."""
         truth = [_make_truth("GET", "/users")]
@@ -199,6 +246,8 @@ class TestEvaluateBlackBox:
 
         assert report.discovery_coverage == 0.0
         assert report.discovered_operations == 0
+        pattern_names = {pattern.pattern_name for pattern in report.failure_patterns}
+        assert "no_operations_extracted" in pattern_names
 
     def test_resource_groups_populated(self) -> None:
         truth = [

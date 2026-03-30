@@ -29,6 +29,7 @@ from libs.ir.models import (
     GrpcStreamRuntimeConfig,
     GrpcUnaryRuntimeConfig,
     Operation,
+    OAuth2ClientCredentialsConfig,
     Param,
     RequestSigningConfig,
     RiskLevel,
@@ -231,7 +232,7 @@ def test_generate_generic_manifests_sanitizes_service_names_and_suffixes() -> No
 
 
 def test_generate_generic_manifests_supports_version_coexistence_route_config() -> None:
-    service_ir = _load_service_ir()
+    service_ir = _load_service_ir().model_copy(update={"tenant": None, "environment": None})
 
     manifest_set = generate_generic_manifests(
         service_ir,
@@ -269,6 +270,34 @@ def test_generate_generic_manifests_supports_version_coexistence_route_config() 
     }
 
 
+def test_generate_generic_manifests_scopes_gateway_route_ids_by_service_scope() -> None:
+    service_ir = _load_service_ir().model_copy(
+        update={"tenant": "Team A", "environment": "Prod"}
+    )
+
+    manifest_set = generate_generic_manifests(
+        service_ir,
+        config=GenericManifestConfig(
+            runtime_image="ghcr.io/example/generic-runtime:stable",
+            service_id="billing-api",
+            version_number=2,
+            namespace="runtime-system",
+            service_port=8080,
+        ),
+    )
+
+    route_config = manifest_set.route_config
+    assert route_config["service_id"] == "billing-api"
+    assert route_config["tenant"] == "Team A"
+    assert route_config["environment"] == "Prod"
+    assert route_config["default_route"]["route_id"] == (
+        "billing-api-tenant-team-a-env-prod-active"
+    )
+    assert route_config["version_route"]["route_id"] == (
+        "billing-api-tenant-team-a-env-prod-v2"
+    )
+
+
 def test_generate_generic_manifests_injects_runtime_auth_secret_envs() -> None:
     service_ir = _load_service_ir().model_copy(
         update={
@@ -301,6 +330,35 @@ def test_generate_generic_manifests_injects_runtime_auth_secret_envs() -> None:
     }
 
 
+def test_generate_generic_manifests_normalizes_url_like_runtime_secret_keys() -> None:
+    service_ir = _load_service_ir().model_copy(
+        update={
+            "auth": AuthConfig(
+                type=AuthType.bearer,
+                runtime_secret_ref="secret://bearer",
+                request_signing=RequestSigningConfig(secret_ref="secret://signing"),
+            )
+        }
+    )
+
+    manifest_set = generate_generic_manifests(
+        service_ir,
+        config=GenericManifestConfig(runtime_image="ghcr.io/example/generic-runtime:secure"),
+    )
+
+    container = manifest_set.deployment["spec"]["template"]["spec"]["containers"][0]
+    env_entries = {item["name"]: item for item in container["env"]}
+
+    assert env_entries["SECRET_BEARER"]["valueFrom"]["secretKeyRef"] == {
+        "name": "tool-compiler-runtime-secrets",
+        "key": "SECRET_BEARER",
+    }
+    assert env_entries["SECRET_SIGNING"]["valueFrom"]["secretKeyRef"] == {
+        "name": "tool-compiler-runtime-secrets",
+        "key": "SECRET_SIGNING",
+    }
+
+
 def test_generate_generic_manifests_enables_native_grpc_stream_runtime_when_required() -> None:
     service_ir = _build_grpc_stream_ir()
 
@@ -318,6 +376,35 @@ def test_generate_generic_manifests_enables_native_grpc_stream_runtime_when_requ
     assert env_entries["ENABLE_NATIVE_GRPC_STREAM"] == "true"
 
 
+def test_generate_generic_manifests_skips_native_grpc_stream_for_client_mode() -> None:
+    service_ir = _build_grpc_stream_ir().model_copy(
+        update={
+            "event_descriptors": [
+                _build_grpc_stream_ir().event_descriptors[0].model_copy(
+                    update={
+                        "grpc_stream": _build_grpc_stream_ir()
+                        .event_descriptors[0]
+                        .grpc_stream.model_copy(update={"mode": GrpcStreamMode.client})
+                    }
+                )
+            ]
+        }
+    )
+
+    manifest_set = generate_generic_manifests(
+        service_ir,
+        config=GenericManifestConfig(
+            runtime_image="ghcr.io/example/generic-runtime:grpc",
+            namespace="runtime-system",
+        ),
+    )
+
+    container = manifest_set.deployment["spec"]["template"]["spec"]["containers"][0]
+    env_entries = {item["name"]: item.get("value") for item in container["env"]}
+
+    assert "ENABLE_NATIVE_GRPC_STREAM" not in env_entries
+
+
 def test_generate_generic_manifests_enables_native_grpc_unary_runtime_when_required() -> None:
     service_ir = _build_grpc_unary_ir()
 
@@ -333,6 +420,95 @@ def test_generate_generic_manifests_enables_native_grpc_unary_runtime_when_requi
     env_entries = {item["name"]: item["value"] for item in container["env"]}
 
     assert env_entries["ENABLE_NATIVE_GRPC_UNARY"] == "true"
+
+
+def test_generate_generic_manifests_rejects_missing_runtime_secret_name_when_auth_uses_refs() -> None:
+    service_ir = _load_service_ir().model_copy(
+        update={
+            "auth": AuthConfig(
+                type=AuthType.bearer,
+                runtime_secret_ref="billing-secret",
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="runtime_secret_name must be configured"):
+        generate_generic_manifests(
+            service_ir,
+            config=GenericManifestConfig(
+                runtime_image="ghcr.io/example/generic-runtime:secure",
+                runtime_secret_name=None,
+            ),
+        )
+
+
+def test_generate_generic_manifests_rejects_colliding_runtime_secret_env_names() -> None:
+    service_ir = _load_service_ir().model_copy(
+        update={
+            "auth": AuthConfig(
+                type=AuthType.bearer,
+                runtime_secret_ref="client-id",
+                request_signing=RequestSigningConfig(secret_ref="client_id"),
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="normalize to the same env name"):
+        generate_generic_manifests(
+            service_ir,
+            config=GenericManifestConfig(
+                runtime_image="ghcr.io/example/generic-runtime:secure",
+            ),
+        )
+
+
+def test_generate_generic_manifests_includes_oauth_token_port_in_network_policy() -> None:
+    service_ir = _load_service_ir().model_copy(
+        update={
+            "base_url": "http://api.internal:8080",
+            "auth": AuthConfig(
+                type=AuthType.oauth2,
+                oauth2=OAuth2ClientCredentialsConfig(
+                    token_url="https://auth.example.com:8443/token",
+                    client_id="inventory-client",
+                    client_secret_ref="oauth2-secret",
+                ),
+            ),
+        }
+    )
+
+    manifest_set = generate_generic_manifests(
+        service_ir,
+        config=GenericManifestConfig(
+            runtime_image="ghcr.io/example/generic-runtime:oauth",
+            namespace="runtime-system",
+        ),
+    )
+
+    egress_rules = manifest_set.network_policy["spec"]["egress"]
+    assert egress_rules[0]["ports"] == [{"protocol": "TCP", "port": 8080}]
+    assert egress_rules[1]["ports"] == [{"protocol": "TCP", "port": 8443}]
+    assert egress_rules[2]["ports"] == [
+        {"protocol": "UDP", "port": 53},
+        {"protocol": "TCP", "port": 53},
+    ]
+
+
+def test_generate_generic_manifests_truncates_kubernetes_names_to_dns_limit() -> None:
+    service_ir = _load_service_ir().model_copy(update={"service_name": "x"})
+
+    manifest_set = generate_generic_manifests(
+        service_ir,
+        config=GenericManifestConfig(
+            runtime_image="ghcr.io/example/generic-runtime:stable",
+            name_suffix="a" * 63,
+        ),
+    )
+
+    assert len(manifest_set.config_map["metadata"]["name"]) <= 63
+    assert len(manifest_set.deployment["metadata"]["name"]) <= 63
+    assert len(manifest_set.service["metadata"]["name"]) <= 63
+    assert len(manifest_set.network_policy["metadata"]["name"]) <= 63
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +548,13 @@ class TestGenericManifestConfigValidation:
     def test_rejects_empty_runtime_secret_name_when_provided(self) -> None:
         with pytest.raises(ValueError, match="runtime_secret_name must not be empty when provided"):
             GenericManifestConfig(runtime_image="img:latest", runtime_secret_name="  ")
+
+    def test_rejects_selector_label_overrides(self) -> None:
+        with pytest.raises(ValueError, match="reserved selector labels"):
+            GenericManifestConfig(
+                runtime_image="img:latest",
+                labels={"app.kubernetes.io/name": "override"},
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +597,8 @@ def test_sanitize_dns_label_falls_back_to_service_for_non_alnum_input() -> None:
 def test_resource_name_falls_back_to_service_when_trimmed_base_is_empty() -> None:
     long_suffix = "a" * 63
     result = _resource_name("x", long_suffix)
-    assert result == f"service-{long_suffix}"
+    assert result.startswith("service-")
+    assert len(result) == 63
 
 
 def test_versioned_resource_name_falls_back_to_service_when_trimmed_base_is_empty() -> None:

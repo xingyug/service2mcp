@@ -12,9 +12,13 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from apps.compiler_api.repository import (
+    AmbiguousServiceVersionError,
     ArtifactRegistryRepository,
     CompilationRepository,
+    MalformedServiceVersionError,
     ServiceCatalogRepository,
 )
 from libs.db_models import CompilationJob
@@ -48,6 +52,8 @@ def _fake_job(**overrides: Any) -> SimpleNamespace:
         "options": {"key": "value"},
         "created_by": "user@example.com",
         "service_name": "Test API",
+        "tenant": None,
+        "environment": None,
         "created_at": _utcnow(),
         "updated_at": _utcnow(),
     }
@@ -143,6 +149,8 @@ class TestListJobs:
         result = await repo.list_jobs()
 
         assert result == []
+        query = mock_session.scalars.call_args.args[0]
+        assert query._limit_clause is None
 
     async def test_multiple_jobs(self) -> None:
         jobs = [_fake_job(status="pending"), _fake_job(status="completed")]
@@ -157,6 +165,9 @@ class TestListJobs:
         assert len(result) == 2
         assert result[0].status == "pending"
         assert result[1].status == "completed"
+        query = mock_session.scalars.call_args.args[0]
+        assert query._limit_clause is not None
+        assert getattr(query._limit_clause, "value", None) == 10
 
     async def test_jobs_with_none_optional_fields(self) -> None:
         job = _fake_job(
@@ -186,6 +197,18 @@ class TestListJobs:
         assert r.options is None
         assert r.created_by is None
         assert r.service_name is None
+
+    async def test_default_list_jobs_has_no_hard_cap(self) -> None:
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        mock_session.scalars.return_value = mock_result
+
+        repo = CompilationRepository(mock_session)
+        await repo.list_jobs()
+
+        query = mock_session.scalars.call_args.args[0]
+        assert query._limit_clause is None
 
 
 class TestListEvents:
@@ -265,7 +288,9 @@ class TestGetService:
 
     async def test_not_found_returns_none(self) -> None:
         mock_session = AsyncMock()
-        mock_session.scalar.return_value = None
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        mock_session.execute.return_value = mock_result
 
         repo = ServiceCatalogRepository(mock_session)
         result = await repo.get_service("nonexistent")
@@ -275,7 +300,9 @@ class TestGetService:
     async def test_found_returns_summary(self) -> None:
         version = _fake_service_version()
         mock_session = AsyncMock()
-        mock_session.scalar.return_value = version
+        mock_result = MagicMock()
+        mock_result.all.return_value = [(version, 2, _utcnow())]
+        mock_session.execute.return_value = mock_result
 
         repo = ServiceCatalogRepository(mock_session)
         result = await repo.get_service("test-svc")
@@ -284,37 +311,135 @@ class TestGetService:
         assert result.service_id == "test-svc"
         assert result.service_name == "Test Service"
         assert result.tool_count == 0
+        assert result.version_count == 2
 
     async def test_with_tenant_filter(self) -> None:
         mock_session = AsyncMock()
-        mock_session.scalar.return_value = None
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        mock_session.execute.return_value = mock_result
 
         repo = ServiceCatalogRepository(mock_session)
         result = await repo.get_service("svc", tenant="acme")
 
         assert result is None
-        mock_session.scalar.assert_called_once()
+        mock_session.execute.assert_called_once()
 
     async def test_with_environment_filter(self) -> None:
         mock_session = AsyncMock()
-        mock_session.scalar.return_value = None
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        mock_session.execute.return_value = mock_result
 
         repo = ServiceCatalogRepository(mock_session)
         result = await repo.get_service("svc", environment="staging")
 
         assert result is None
-        mock_session.scalar.assert_called_once()
+        mock_session.execute.assert_called_once()
 
     async def test_with_both_filters(self) -> None:
         version = _fake_service_version(tenant="acme", environment="prod")
         mock_session = AsyncMock()
-        mock_session.scalar.return_value = version
+        mock_result = MagicMock()
+        mock_result.all.return_value = [(version, 4, _utcnow())]
+        mock_session.execute.return_value = mock_result
 
         repo = ServiceCatalogRepository(mock_session)
         result = await repo.get_service("test-svc", tenant="acme", environment="prod")
 
         assert result is not None
         assert result.service_id == "test-svc"
+        assert result.version_count == 4
+
+    async def test_raises_for_ambiguous_matches(self) -> None:
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.all.return_value = [
+            (_fake_service_version(service_id="billing-api", tenant="team-a", environment="prod"), 1, _utcnow()),
+            (
+                _fake_service_version(
+                    service_id="billing-api",
+                    tenant="team-b",
+                    environment="staging",
+                ),
+                1,
+                _utcnow(),
+            ),
+        ]
+        mock_session.execute.return_value = mock_result
+
+        repo = ServiceCatalogRepository(mock_session)
+
+        with pytest.raises(
+            AmbiguousServiceVersionError,
+            match="billing-api",
+        ):
+            await repo.get_service("billing-api")
+
+
+class TestServiceCatalogMalformedActiveIr:
+    async def test_list_services_skips_malformed_active_record(self) -> None:
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.all.return_value = [
+            (_fake_service_version(service_id="good-svc"), 2, _utcnow()),
+            (
+                _fake_service_version(
+                    service_id="bad-svc",
+                    version_number=7,
+                    ir_json={"service_id": "bad-svc"},
+                ),
+                1,
+                _utcnow(),
+            ),
+        ]
+        mock_session.execute.return_value = mock_result
+
+        repo = ServiceCatalogRepository(mock_session)
+        result = await repo.list_services()
+
+        assert [service.service_id for service in result.services] == ["good-svc"]
+
+    async def test_get_service_raises_for_malformed_active_record(self) -> None:
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.all.return_value = [(
+            _fake_service_version(
+                service_id="bad-svc",
+                version_number=7,
+                ir_json={"service_id": "bad-svc"},
+            ),
+            1,
+            _utcnow(),
+        )]
+        mock_session.execute.return_value = mock_result
+
+        repo = ServiceCatalogRepository(mock_session)
+
+        with pytest.raises(
+            MalformedServiceVersionError,
+            match="bad-svc v7",
+        ):
+            await repo.get_service("bad-svc")
+
+
+class TestArtifactRegistryAmbiguity:
+    async def test_get_active_version_raises_for_multiple_matches(self) -> None:
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.all.return_value = [
+            _fake_service_version(service_id="billing-api", version_number=1, is_active=True),
+            _fake_service_version(service_id="billing-api", version_number=2, is_active=True),
+        ]
+        mock_session.scalars.return_value = mock_result
+
+        repo = ArtifactRegistryRepository(mock_session)
+
+        with pytest.raises(
+            AmbiguousServiceVersionError,
+            match="billing-api",
+        ):
+            await repo.get_active_version("billing-api")
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +776,11 @@ class TestToServiceSummaryEdgeCases:
 
     def test_version_protocol_overrides_ir(self) -> None:
         version = _fake_service_version(protocol="grpc")
-        result = ServiceCatalogRepository._to_service_summary(version)  # type: ignore[arg-type]
+        result = ServiceCatalogRepository._to_service_summary(
+            version,
+            2,
+            _utcnow(),
+        )  # type: ignore[arg-type]
         assert result.protocol == "grpc"
 
     def test_tenant_and_environment_populated(self) -> None:
@@ -660,7 +789,11 @@ class TestToServiceSummaryEdgeCases:
             environment="staging",
             deployment_revision="deploy-42",
         )
-        result = ServiceCatalogRepository._to_service_summary(version)  # type: ignore[arg-type]
+        result = ServiceCatalogRepository._to_service_summary(
+            version,
+            2,
+            _utcnow(),
+        )  # type: ignore[arg-type]
         assert result.tenant == "acme"
         assert result.environment == "staging"
         assert result.deployment_revision == "deploy-42"

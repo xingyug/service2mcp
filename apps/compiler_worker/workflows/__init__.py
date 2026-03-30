@@ -7,6 +7,12 @@ from apps.compiler_worker.workflows.compile_workflow import (
     CompilationWorkflow,
     CompilationWorkflowError,
 )
+from apps.compiler_worker.workflows.rollback_workflow import (
+    RollbackPublisher,
+    RollbackRequest,
+    RollbackResult,
+    RollbackWorkflow,
+)
 
 __all__ = [
     "CompilationActivities",
@@ -14,4 +20,8 @@ __all__ = [
     "CompilationWorkflow",
     "CompilationWorkflowError",
     "DEFAULT_STAGE_DEFINITIONS",
+    "RollbackPublisher",
+    "RollbackRequest",
+    "RollbackResult",
+    "RollbackWorkflow",
 ]

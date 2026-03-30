@@ -13,7 +13,9 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { appendServiceScope } from "@/lib/service-scope";
 import { useWorkflowStore, type WorkflowState } from "@/stores/workflow-store";
+import type { ServiceScope } from "@/types/api";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -67,6 +69,7 @@ const badgeConfig: Record<
 interface ReviewStatusBadgeProps {
   serviceId: string;
   versionNumber: number;
+  scope?: ServiceScope;
   className?: string;
 }
 
@@ -77,6 +80,7 @@ interface ReviewStatusBadgeProps {
 export function ReviewStatusBadge({
   serviceId,
   versionNumber,
+  scope,
   className,
 }: ReviewStatusBadgeProps) {
   const workflow = useWorkflowStore((s) => s.getWorkflow(serviceId, versionNumber));
@@ -86,7 +90,10 @@ export function ReviewStatusBadge({
 
   return (
     <Link
-      href={`/services/${serviceId}/review?version=${versionNumber}`}
+      href={appendServiceScope(
+        `/services/${serviceId}/review?version=${versionNumber}`,
+        scope,
+      )}
       className={cn(
         "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors",
         cfg.color,

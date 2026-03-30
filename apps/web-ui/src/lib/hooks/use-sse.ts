@@ -22,20 +22,6 @@ type RawCompilationEvent = {
   attempt?: number | null;
 };
 
-const SSE_EVENT_TYPES = [
-  "job.started",
-  "job.succeeded",
-  "job.failed",
-  "job.rolled_back",
-  "stage.started",
-  "stage.succeeded",
-  "stage.retrying",
-  "stage.failed",
-  "rollback.started",
-  "rollback.succeeded",
-  "rollback.failed",
-] as const;
-
 function normalizeEventType(rawEventType: string): CompilationEventType | null {
   switch (rawEventType) {
     case "job.started":

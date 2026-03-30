@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { ErrorState } from "@/components/ui/error-state";
 import {
   Table,
   TableBody,
@@ -53,6 +54,8 @@ import {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+const PAT_PAGE_SIZE = 100;
+
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const secs = Math.floor(diff / 1000);
@@ -70,6 +73,8 @@ function relativeTime(iso: string): string {
 export default function PATTokensPage() {
   const user = useAuthStore((s) => s.user);
   const queryClient = useQueryClient();
+  const canManagePats = !!user?.username;
+  const [page, setPage] = useState(1);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [tokenName, setTokenName] = useState("");
@@ -82,23 +87,32 @@ export default function PATTokensPage() {
   // Revoke confirmation
   const [revokeTarget, setRevokeTarget] = useState<PATResponse | null>(null);
 
-  const { data, isLoading } = useQuery({
-    queryKey: [...queryKeys.auth.pats, user?.username ?? ""] as const,
-    queryFn: () => authApi.listPATs(user?.username ?? ""),
-    enabled: !!user?.username,
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: [...queryKeys.auth.pats, user?.username ?? "", page, PAT_PAGE_SIZE] as const,
+    queryFn: () => authApi.listPATs(user?.username ?? "", page, PAT_PAGE_SIZE),
+    enabled: canManagePats,
   });
 
   const pats = useMemo(() => data?.pats ?? [], [data]);
+  const effectivePage = data?.page ?? page;
+  const total = data?.total ?? pats.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAT_PAGE_SIZE));
+  const showingStart = total === 0 ? 0 : (effectivePage - 1) * PAT_PAGE_SIZE + 1;
+  const showingEnd = Math.min(effectivePage * PAT_PAGE_SIZE, total);
 
   const createMutation = useMutation({
-    mutationFn: () =>
-      authApi.createPAT({
-        username: user?.username ?? "",
+    mutationFn: async () => {
+      if (!user?.username) {
+        throw new Error("A platform username is required to manage PATs.");
+      }
+      return authApi.createPAT({
+        username: user.username,
         name: tokenName.trim(),
-        email: user?.email,
-      }),
+      });
+    },
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.auth.pats });
+      setPage(1);
       setCreateOpen(false);
       setTokenName("");
       if (res.token) {
@@ -136,9 +150,14 @@ export default function PATTokensPage() {
           <p className="text-sm text-muted-foreground">
             Create and manage personal access tokens for API authentication.
           </p>
+          {!canManagePats && (
+            <p className="text-sm text-amber-600 dark:text-amber-400">
+              This identity does not expose a platform username, so PAT management is unavailable.
+            </p>
+          )}
         </div>
         <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-          <DialogTrigger render={<Button />}>
+          <DialogTrigger render={<Button disabled={!canManagePats} />}>
             <Plus data-icon="inline-start" />
             Create Token
           </DialogTrigger>
@@ -274,6 +293,18 @@ export default function PATTokensPage() {
             <Skeleton key={i} className="h-10 w-full rounded-lg" />
           ))}
         </div>
+      ) : error ? (
+        <ErrorState
+          title="Failed to load personal access tokens"
+          message={
+            error instanceof Error
+              ? error.message
+              : "The PAT list request did not succeed."
+          }
+          onAction={() => {
+            void refetch();
+          }}
+        />
       ) : pats.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-20 text-center">
           <Key className="size-12 text-muted-foreground/40" />
@@ -289,88 +320,115 @@ export default function PATTokensPage() {
           </Button>
         </div>
       ) : (
-        <div className="rounded-lg border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Username</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {pats.map((pat) => {
-                const isRevoked = !!pat.revoked_at;
-                return (
-                  <TableRow key={pat.pat_id}>
-                    <TableCell>
-                      <span
-                        className={cn(
-                          "font-medium",
-                          isRevoked && "line-through text-muted-foreground",
-                        )}
-                      >
-                        {pat.name}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <span
-                        className={cn(
-                          "text-sm",
-                          isRevoked && "line-through text-muted-foreground",
-                        )}
-                      >
-                        {pat.username}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={<span />}
-                            className={cn(
-                              "cursor-default text-sm",
-                              isRevoked && "text-muted-foreground",
-                            )}
-                          >
-                            {relativeTime(pat.created_at)}
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {new Date(pat.created_at).toLocaleString()}
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    </TableCell>
-                    <TableCell>
-                      {isRevoked ? (
-                        <Badge variant="secondary" className="text-muted-foreground">
-                          Revoked
-                        </Badge>
-                      ) : (
-                        <Badge className="bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">
-                          Active
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {!isRevoked && (
-                        <Button
-                          variant="destructive"
-                          size="xs"
-                          onClick={() => setRevokeTarget(pat)}
+        <div className="space-y-3">
+          <div className="rounded-lg border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Username</TableHead>
+                  <TableHead>Created</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pats.map((pat) => {
+                  const isRevoked = !!pat.revoked_at;
+                  return (
+                    <TableRow key={pat.pat_id}>
+                      <TableCell>
+                        <span
+                          className={cn(
+                            "font-medium",
+                            isRevoked && "line-through text-muted-foreground",
+                          )}
                         >
-                          <Trash2 data-icon="inline-start" />
-                          Revoke
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+                          {pat.name}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <span
+                          className={cn(
+                            "text-sm",
+                            isRevoked && "line-through text-muted-foreground",
+                          )}
+                        >
+                          {pat.username}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={<span />}
+                              className={cn(
+                                "cursor-default text-sm",
+                                isRevoked && "text-muted-foreground",
+                              )}
+                            >
+                              {relativeTime(pat.created_at)}
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {new Date(pat.created_at).toLocaleString()}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </TableCell>
+                      <TableCell>
+                        {isRevoked ? (
+                          <Badge variant="secondary" className="text-muted-foreground">
+                            Revoked
+                          </Badge>
+                        ) : (
+                          <Badge className="bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">
+                            Active
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {!isRevoked && (
+                          <Button
+                            variant="destructive"
+                            size="xs"
+                            onClick={() => setRevokeTarget(pat)}
+                          >
+                            <Trash2 data-icon="inline-start" />
+                            Revoke
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>
+                Showing {showingStart}–{showingEnd} of {total}
+              </span>
+              <div className="flex gap-1">
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={effectivePage <= 1}
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  disabled={effectivePage >= totalPages}
+                  onClick={() => setPage((current) => current + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

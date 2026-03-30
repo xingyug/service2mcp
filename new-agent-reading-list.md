@@ -15,6 +15,7 @@ Next directions (spec tasks defined in `docs/post-sdd-modular-expansion-plan.md`
 
 Core documentation:
 - `tool-compiler-v2-sdd.md`: `../tool-compiler-v2-sdd.md`
+- `service2mcp-unified-spec.md`: `./specs/service2mcp-unified-spec.md`
 - `agent.md`: `./agent.md`
 - `devlog.md`: `./devlog.md`
 - `context-engineering.md`: `./docs/context-engineering.md`
@@ -58,4 +59,3 @@ ADRs:
 - `003-pipeline-orchestration-abstraction.md`: `./docs/adr/003-pipeline-orchestration-abstraction.md`
 - `004-oidc-jwt-auth-and-pats.md`: `./docs/adr/004-oidc-jwt-auth-and-pats.md`
 - `005-semantic-risk-classification.md`: `./docs/adr/005-semantic-risk-classification.md`
-

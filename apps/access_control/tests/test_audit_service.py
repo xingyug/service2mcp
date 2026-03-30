@@ -136,4 +136,55 @@ class TestAppendEntry:
 
 
 class TestListEntries:
-    pass
+    @pytest.mark.asyncio
+    async def test_list_entries_applies_default_limit(self) -> None:
+        session = _mock_session()
+        mock_scalars_result = MagicMock()
+        mock_scalars_result.all.return_value = []
+        session.scalars.return_value = mock_scalars_result
+        svc = AuditLogService(session)
+
+        await svc.list_entries()
+
+        query = session.scalars.await_args.args[0]
+        assert query._limit_clause is not None
+        assert query._limit_clause.value == 1000
+
+    @pytest.mark.asyncio
+    async def test_list_entries_can_disable_limit(self) -> None:
+        session = _mock_session()
+        mock_scalars_result = MagicMock()
+        mock_scalars_result.all.return_value = []
+        session.scalars.return_value = mock_scalars_result
+        svc = AuditLogService(session)
+
+        await svc.list_entries(limit=None)
+
+        query = session.scalars.await_args.args[0]
+        assert query._limit_clause is None
+
+
+class TestGetEntry:
+    @pytest.mark.asyncio
+    async def test_returns_matching_entry(self) -> None:
+        session = _mock_session()
+        entry = _fake_entry()
+        session.get.return_value = entry
+        svc = AuditLogService(session)
+
+        result = await svc.get_entry(entry.id)
+
+        session.get.assert_awaited_once()
+        assert result is not None
+        assert result.id == entry.id
+        assert result.action == entry.action
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_missing(self) -> None:
+        session = _mock_session()
+        session.get.return_value = None
+        svc = AuditLogService(session)
+
+        result = await svc.get_entry(uuid.uuid4())
+
+        assert result is None

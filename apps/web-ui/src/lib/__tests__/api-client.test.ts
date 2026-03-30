@@ -3,6 +3,7 @@ import {
   ApiError,
   compilationApi,
   serviceApi,
+  workflowApi,
   artifactApi,
   authApi,
   policyApi,
@@ -175,7 +176,10 @@ describe("api-client", () => {
           error_detail: null,
           created_at: "2026-03-29T00:00:00Z",
           updated_at: "2026-03-29T00:01:00Z",
-          service_name: "billing-api",
+          service_id: "billing-api",
+          service_name: "Billing API",
+          tenant: "team-a",
+          environment: "prod",
         },
       ]),
     );
@@ -192,6 +196,10 @@ describe("api-client", () => {
         created_at: "2026-03-29T00:00:00Z",
         completed_at: undefined,
         error_message: undefined,
+        service_id: "billing-api",
+        service_name: "Billing API",
+        tenant: "team-a",
+        environment: "prod",
         artifacts: { ir_id: "billing-api" },
       },
     ]);
@@ -203,12 +211,23 @@ describe("api-client", () => {
   });
 
   it("compilationApi.retry sends POST with fromStage query param", async () => {
-    await compilationApi.retry("job-42", "validate");
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        id: "job-43",
+        status: "pending",
+        current_stage: "queued",
+        created_at: "2026-03-29T00:00:00Z",
+        updated_at: "2026-03-29T00:00:00Z",
+      }),
+    );
+
+    const response = await compilationApi.retry("job-42", "validate");
 
     expect(lastFetchUrl()).toBe(
       `${COMPILER_API}/api/v1/compilations/job-42/retry?from_stage=validate`,
     );
     expect(lastFetchOptions().method).toBe("POST");
+    expect(response.job_id).toBe("job-43");
   });
 
   it("compilationApi.retry sends POST without query param when fromStage omitted", async () => {
@@ -218,10 +237,21 @@ describe("api-client", () => {
   });
 
   it("compilationApi.rollback sends POST", async () => {
-    await compilationApi.rollback("job-42");
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        id: "job-44",
+        status: "pending",
+        current_stage: "queued",
+        created_at: "2026-03-29T00:00:00Z",
+        updated_at: "2026-03-29T00:00:00Z",
+      }),
+    );
+
+    const response = await compilationApi.rollback("job-42");
 
     expect(lastFetchUrl()).toBe(`${COMPILER_API}/api/v1/compilations/job-42/rollback`);
     expect(lastFetchOptions().method).toBe("POST");
+    expect(response.job_id).toBe("job-44");
   });
 
   it("compilationApi.streamEvents includes auth token in the SSE URL", () => {
@@ -263,6 +293,13 @@ describe("api-client", () => {
     expect(lastFetchUrl()).toBe(`${COMPILER_API}/api/v1/services/svc-99`);
   });
 
+  it("serviceApi.get includes scope query params when provided", async () => {
+    await serviceApi.get("svc-99", { tenant: "acme", environment: "prod" });
+    expect(lastFetchUrl()).toBe(
+      `${COMPILER_API}/api/v1/services/svc-99?tenant=acme&environment=prod`,
+    );
+  });
+
   it("serviceApi.list normalizes backend service summaries", async () => {
     mockFetch.mockResolvedValueOnce(
       mockResponse({
@@ -270,12 +307,13 @@ describe("api-client", () => {
           {
             service_id: "svc-1",
             active_version: 2,
+            version_count: 5,
             service_name: "Billing API",
             tool_count: 3,
             protocol: "openapi",
             tenant: "team-a",
             environment: "prod",
-            created_at: "2026-03-29T00:00:00Z",
+            created_at: "2026-03-29T01:00:00Z",
           },
         ],
       }),
@@ -291,13 +329,63 @@ describe("api-client", () => {
           protocol: "openapi",
           tool_count: 3,
           active_version: 2,
-          version_count: 2,
-          last_compiled: "2026-03-29T00:00:00Z",
+          version_count: 5,
+          last_compiled: "2026-03-29T01:00:00Z",
           tenant: "team-a",
           environment: "prod",
         },
       ],
     });
+  });
+
+  // -----------------------------------------------------------------------
+  // workflowApi
+  // -----------------------------------------------------------------------
+
+  it("workflowApi.get includes scope query params when provided", async () => {
+    await workflowApi.get("svc-99", 7, { tenant: "acme", environment: "prod" });
+
+    expect(lastFetchUrl()).toBe(
+      `${COMPILER_API}/api/v1/workflows/svc-99/v/7?tenant=acme&environment=prod`,
+    );
+  });
+
+  it("workflowApi.transition includes scope query params when provided", async () => {
+    await workflowApi.transition(
+      "svc-99",
+      7,
+      "approved",
+      "alice",
+      "LGTM",
+      { tenant: "acme", environment: "prod" },
+    );
+
+    expect(lastFetchUrl()).toBe(
+      `${COMPILER_API}/api/v1/workflows/svc-99/v/7/transition?tenant=acme&environment=prod`,
+    );
+  });
+
+  it("workflowApi.saveNotes includes scope query params when provided", async () => {
+    await workflowApi.saveNotes(
+      "svc-99",
+      7,
+      { "op-1": "ok" },
+      "Ship it",
+      ["op-1"],
+      { tenant: "acme", environment: "prod" },
+    );
+
+    expect(lastFetchUrl()).toBe(
+      `${COMPILER_API}/api/v1/workflows/svc-99/v/7/notes?tenant=acme&environment=prod`,
+    );
+  });
+
+  it("workflowApi.history includes scope query params when provided", async () => {
+    await workflowApi.history("svc-99", 7, { tenant: "acme", environment: "prod" });
+
+    expect(lastFetchUrl()).toBe(
+      `${COMPILER_API}/api/v1/workflows/svc-99/v/7/history?tenant=acme&environment=prod`,
+    );
   });
 
   // -----------------------------------------------------------------------
@@ -314,6 +402,12 @@ describe("api-client", () => {
             version_number: 3,
             is_active: true,
             created_at: "2026-03-29T00:00:00Z",
+            tenant: "team-a",
+            environment: "prod",
+            route_config: {
+              service_id: "svc-1",
+              default_route: { route_id: "svc-1-active" },
+            },
             ir_json: {
               service_name: "Billing API",
               operations: [],
@@ -331,11 +425,26 @@ describe("api-client", () => {
       version_number: 3,
       is_active: true,
       created_at: "2026-03-29T00:00:00Z",
+      tenant: "team-a",
+      environment: "prod",
+      route_config: {
+        service_id: "svc-1",
+        default_route: { route_id: "svc-1-active" },
+        tenant: "team-a",
+        environment: "prod",
+      },
       ir: {
         service_name: "Billing API",
         operations: [],
       },
     });
+  });
+
+  it("artifactApi.listVersions includes scope query params when provided", async () => {
+    await artifactApi.listVersions("svc-1", { tenant: "acme", environment: "prod" });
+    expect(lastFetchUrl()).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/versions?tenant=acme&environment=prod`,
+    );
   });
 
   it("artifactApi.diff uses artifact registry paths and reconstructs operation details", async () => {
@@ -441,6 +550,50 @@ describe("api-client", () => {
     ]);
   });
 
+  it("artifactApi.diff includes scope query params on all requests", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        mockResponse({
+          service_id: "svc-1",
+          from_version: 1,
+          to_version: 2,
+          added_operations: [],
+          removed_operations: [],
+          changed_operations: [],
+        }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          service_id: "svc-1",
+          version_number: 1,
+          is_active: false,
+          created_at: "2026-03-29T00:00:00Z",
+          ir_json: { operations: [] },
+        }),
+      )
+      .mockResolvedValueOnce(
+        mockResponse({
+          service_id: "svc-1",
+          version_number: 2,
+          is_active: true,
+          created_at: "2026-03-29T00:00:00Z",
+          ir_json: { operations: [] },
+        }),
+      );
+
+    await artifactApi.diff("svc-1", 1, 2, { tenant: "acme", environment: "prod" });
+
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/diff?tenant=acme&environment=prod&from=1&to=2`,
+    );
+    expect(mockFetch.mock.calls[1]?.[0]).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/versions/1?tenant=acme&environment=prod`,
+    );
+    expect(mockFetch.mock.calls[2]?.[0]).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/versions/2?tenant=acme&environment=prod`,
+    );
+  });
+
   it("artifactApi.activateVersion uses activation endpoint", async () => {
     mockFetch.mockResolvedValueOnce(
       mockResponse({
@@ -460,6 +613,27 @@ describe("api-client", () => {
     expect(lastFetchOptions().method).toBe("POST");
   });
 
+  it("artifactApi.activateVersion includes scope query params when provided", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        service_id: "svc-1",
+        version_number: 2,
+        is_active: true,
+        created_at: "2026-03-29T00:00:00Z",
+        ir_json: { operations: [] },
+      }),
+    );
+
+    await artifactApi.activateVersion("svc-1", 2, {
+      tenant: "acme",
+      environment: "prod",
+    });
+
+    expect(lastFetchUrl()).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/versions/2/activate?tenant=acme&environment=prod`,
+    );
+  });
+
   it("artifactApi.deleteVersion uses delete endpoint", async () => {
     mockFetch.mockResolvedValueOnce(
       mockResponse(undefined, { status: 204, statusText: "No Content" }),
@@ -473,6 +647,21 @@ describe("api-client", () => {
     expect(lastFetchOptions().method).toBe("DELETE");
   });
 
+  it("artifactApi.deleteVersion includes scope query params when provided", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(undefined, { status: 204, statusText: "No Content" }),
+    );
+
+    await artifactApi.deleteVersion("svc-1", 2, {
+      tenant: "acme",
+      environment: "prod",
+    });
+
+    expect(lastFetchUrl()).toBe(
+      `${COMPILER_API}/api/v1/artifacts/svc-1/versions/2?tenant=acme&environment=prod`,
+    );
+  });
+
   // -----------------------------------------------------------------------
   // authApi
   // -----------------------------------------------------------------------
@@ -480,26 +669,131 @@ describe("api-client", () => {
   it("authApi.validateToken sends POST to /authn/validate with JSON body", async () => {
     mockFetch.mockResolvedValueOnce(
       mockResponse({
-        subject: "alice",
+        subject: "alice@example.com",
+        username: "alice",
         token_type: "jwt",
-        claims: { email: "alice@example.com", roles: ["admin"] },
+        claims: {
+          preferred_username: "alice",
+          email: "alice@example.com",
+          roles: ["admin"],
+        },
       }),
     );
 
-    await authApi.validateToken({ token: "jwt-token" });
+    const result = await authApi.validateToken({ token: "jwt-token" });
 
     expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/authn/validate`);
     expect(lastFetchOptions().method).toBe("POST");
     expect(lastFetchOptions().body).toBe(JSON.stringify({ token: "jwt-token" }));
+    expect(result).toMatchObject({
+      subject: "alice@example.com",
+      username: "alice",
+      email: "alice@example.com",
+      roles: ["admin"],
+    });
+  });
+
+  it("authApi.validateToken does not treat JWT subject as username", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        subject: "opaque-subject",
+        token_type: "jwt",
+        claims: {},
+      }),
+    );
+
+    const result = await authApi.validateToken({ token: "jwt-token" });
+
+    expect(result.subject).toBe("opaque-subject");
+    expect(result.username).toBeUndefined();
+  });
+
+  it("authApi.validateToken keeps PAT subject as username for legacy responses", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        subject: "alice",
+        token_type: "pat",
+        claims: {},
+      }),
+    );
+
+    const result = await authApi.validateToken({ token: "pat-token" });
+
+    expect(result.subject).toBe("alice");
+    expect(result.username).toBe("alice");
+  });
+
+  it("authApi.validateToken preserves PAT roles from claims", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        subject: "admin",
+        token_type: "pat",
+        claims: { roles: ["admin"] },
+      }),
+    );
+
+    const result = await authApi.validateToken({ token: "pat-token" });
+
+    expect(result.username).toBe("admin");
+    expect(result.roles).toEqual(["admin"]);
   });
 
   it("authApi.listPATs sends username query param to /authn/pats", async () => {
-    mockFetch.mockResolvedValueOnce(mockResponse({ items: [] }));
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({ items: [], total: 0, page: 1, page_size: 100 }),
+    );
 
-    await authApi.listPATs("alice");
+    const result = await authApi.listPATs("alice");
 
     expect(lastFetchUrl()).toBe(
-      `${ACCESS_CONTROL_API}/api/v1/authn/pats?username=alice`,
+      `${ACCESS_CONTROL_API}/api/v1/authn/pats?username=alice&page=1&page_size=100`,
+    );
+    expect(result).toEqual({
+      pats: [],
+      total: 0,
+      page: 1,
+      pageSize: 100,
+    });
+  });
+
+  it("authApi.listPATs accepts explicit pagination parameters", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        items: [],
+        total: 101,
+        page: 2,
+        page_size: 100,
+      }),
+    );
+
+    const result = await authApi.listPATs("alice", 2, 100);
+
+    expect(lastFetchUrl()).toBe(
+      `${ACCESS_CONTROL_API}/api/v1/authn/pats?username=alice&page=2&page_size=100`,
+    );
+    expect(result.total).toBe(101);
+    expect(result.page).toBe(2);
+    expect(result.pageSize).toBe(100);
+  });
+
+  it("authApi.createPAT posts only username and name", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        id: "pat-1",
+        username: "alice",
+        name: "CI token",
+        token: "pat_secret",
+        created_at: "2026-03-30T00:00:00Z",
+        revoked_at: null,
+      }),
+    );
+
+    await authApi.createPAT({ username: "alice", name: "CI token" });
+
+    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/authn/pats`);
+    expect(lastFetchOptions().method).toBe("POST");
+    expect(lastFetchOptions().body).toBe(
+      JSON.stringify({ username: "alice", name: "CI token" }),
     );
   });
 
@@ -514,6 +808,21 @@ describe("api-client", () => {
     expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/authz/policies`);
     expect(lastFetchOptions().method).toBe("POST");
     expect(lastFetchOptions().body).toBe(JSON.stringify(body));
+  });
+
+  it("policyApi.list sends subject_type filters to the backend", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ items: [] }));
+
+    await policyApi.list({
+      subject_type: "role",
+      subject_id: "editor",
+      resource_id: "doc-1",
+    });
+
+    const url = lastFetchUrl();
+    expect(url).toContain("subject_type=role");
+    expect(url).toContain("subject_id=editor");
+    expect(url).toContain("resource_id=doc-1");
   });
 
   it("policyApi.update sends PUT", async () => {
@@ -532,6 +841,36 @@ describe("api-client", () => {
 
     expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/authz/policies/pol-1`);
     expect(lastFetchOptions().method).toBe("DELETE");
+  });
+
+  it("policyApi.evaluate sends the explicit risk level", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({
+        decision: "allow",
+        matched_policy_id: "pol-1",
+        reason: "matched",
+      }),
+    );
+
+    await policyApi.evaluate({
+      subject_type: "role",
+      subject_id: "editor",
+      action: "read",
+      resource_id: "doc-1",
+      risk_level: "dangerous",
+    });
+
+    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/authz/evaluate`);
+    expect(lastFetchOptions().method).toBe("POST");
+    expect(lastFetchOptions().body).toBe(
+      JSON.stringify({
+        subject_type: "role",
+        subject_id: "editor",
+        action: "read",
+        resource_id: "doc-1",
+        risk_level: "dangerous",
+      }),
+    );
   });
 
   // -----------------------------------------------------------------------
@@ -553,32 +892,43 @@ describe("api-client", () => {
     expect(url).toContain("start_at=2024-01-01");
   });
 
-  it("auditApi.get falls back to list() and returns the matching entry", async () => {
-    mockFetch.mockResolvedValueOnce(
-      mockResponse({ detail: "not found" }, { status: 404, statusText: "Not Found" }),
-    );
+  it("auditApi.list can request the full export dataset", async () => {
+    mockFetch.mockResolvedValueOnce(mockResponse({ items: [] }));
+
+    await auditApi.list({ actor: "alice" }, { include_all: true });
+
+    expect(lastFetchUrl()).toContain("actor=alice");
+    expect(lastFetchUrl()).toContain("include_all=true");
+  });
+
+  it("auditApi.get requests the direct audit entry endpoint", async () => {
     mockFetch.mockResolvedValueOnce(
       mockResponse({
-        items: [
-          {
-            id: "entry-7",
-            actor: "alice",
-            action: "policy.created",
-            resource: "svc-1",
-            detail: { ok: true },
-            timestamp: "2026-03-29T00:00:00Z",
-          },
-        ],
+        id: "entry-7",
+        actor: "alice",
+        action: "policy.created",
+        resource: "svc-1",
+        detail: { ok: true },
+        timestamp: "2026-03-29T00:00:00Z",
       }),
     );
 
     const entry = await auditApi.get("entry-7");
 
     expect(entry.id).toBe("entry-7");
-    expect(mockFetch.mock.calls[0]?.[0]).toBe(
-      `${ACCESS_CONTROL_API}/api/v1/audit/logs/entry-7`,
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(lastFetchUrl()).toBe(`${ACCESS_CONTROL_API}/api/v1/audit/logs/entry-7`);
+  });
+
+  it("auditApi.get surfaces backend 404s without a list fallback", async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse({ detail: "not found" }, { status: 404, statusText: "Not Found" }),
     );
-    expect(mockFetch.mock.calls[1]?.[0]).toBe(`${ACCESS_CONTROL_API}/api/v1/audit/logs`);
+
+    await expect(auditApi.get("missing-entry")).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   // -----------------------------------------------------------------------

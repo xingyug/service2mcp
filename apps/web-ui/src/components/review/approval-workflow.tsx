@@ -32,6 +32,7 @@ import {
   type WorkflowState,
 } from "@/stores/workflow-store";
 import { artifactApi, gatewayApi } from "@/lib/api-client";
+import type { GatewayPreviousRoutes, ServiceScope } from "@/types/api";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -102,6 +103,7 @@ const happyPath: WorkflowState[] = [
 interface ApprovalWorkflowProps {
   serviceId: string;
   versionNumber: number;
+  scope?: ServiceScope;
   currentState: WorkflowState;
   onStateChange?: (newState: WorkflowState) => void;
   onEditIR?: () => void;
@@ -182,6 +184,7 @@ function Connector({ active }: { active: boolean }) {
 export function ApprovalWorkflow({
   serviceId,
   versionNumber,
+  scope,
   currentState,
   onStateChange,
   onEditIR,
@@ -224,25 +227,85 @@ export function ApprovalWorkflow({
     setConfirmDialog({ targetState: to, label, description });
   }
 
+  async function rollbackPublishedActivation(version: number | undefined) {
+    if (version == null || version === versionNumber) {
+      return;
+    }
+    await artifactApi.activateVersion(serviceId, version, scope);
+  }
+
+  function gatewayPreviousRoutesForService(routes: Awaited<ReturnType<typeof gatewayApi.listRoutes>>) {
+    return Object.fromEntries(
+      routes.routes
+        .filter((route) => route.service_id === serviceId)
+        .map((route) => [route.route_id, route]),
+    ) as GatewayPreviousRoutes;
+  }
+
   async function executeTransition() {
     if (!confirmDialog) return;
-    const actor = user?.username ?? "anonymous";
+    const actor = user?.username ?? user?.subject ?? "anonymous";
+    let publishRollbackVersion: number | undefined;
+    let deployedRouteConfig: Record<string, unknown> | undefined;
+    let deployRollbackRoutes: GatewayPreviousRoutes | undefined;
     setSubmitting(true);
     try {
-      // Run side-effects BEFORE transition so we can abort cleanly on failure
+      // Run side-effects first, but keep enough state to roll them back if the
+      // workflow transition itself fails.
       if (confirmDialog.targetState === "published") {
-        await artifactApi.activateVersion(serviceId, versionNumber);
+        const versions = await artifactApi.listVersions(serviceId, scope);
+        publishRollbackVersion = versions.versions.find((version) => version.is_active)?.version_number;
+        await artifactApi.activateVersion(serviceId, versionNumber, scope);
       }
       if (confirmDialog.targetState === "deployed") {
-        await gatewayApi.syncRoutes({
-          route_config: { service_id: serviceId, version_number: versionNumber },
+        const version = await artifactApi.getVersion(serviceId, versionNumber, scope);
+        if (!version.route_config) {
+          throw new Error("Selected version has no route configuration to deploy.");
+        }
+        const currentRoutes = await gatewayApi.listRoutes();
+        const syncResult = await gatewayApi.syncRoutes({
+          route_config: version.route_config,
+          previous_routes: gatewayPreviousRoutesForService(currentRoutes),
         });
+        deployedRouteConfig = version.route_config;
+        deployRollbackRoutes = syncResult.previous_routes;
       }
 
-      await transition(serviceId, versionNumber, confirmDialog.targetState, actor, comment || undefined);
+      await transition(
+        serviceId,
+        versionNumber,
+        confirmDialog.targetState,
+        actor,
+        comment || undefined,
+        scope,
+      );
       onStateChange?.(confirmDialog.targetState);
       toast.success(`Workflow transitioned to "${stateConfig[confirmDialog.targetState].label}"`);
     } catch (err) {
+      try {
+        if (confirmDialog.targetState === "published") {
+          await rollbackPublishedActivation(publishRollbackVersion);
+        }
+        if (
+          confirmDialog.targetState === "deployed" &&
+          deployedRouteConfig &&
+          deployRollbackRoutes
+        ) {
+          await gatewayApi.rollbackRoutes({
+            route_config: deployedRouteConfig,
+            previous_routes: deployRollbackRoutes,
+          });
+        }
+      } catch (rollbackError) {
+        const message =
+          err instanceof Error ? err.message : "Transition failed";
+        const rollbackMessage =
+          rollbackError instanceof Error
+            ? rollbackError.message
+            : "Automatic rollback failed.";
+        toast.error(`${message} ${rollbackMessage}`);
+        return;
+      }
       toast.error(err instanceof Error ? err.message : "Transition failed");
     } finally {
       setSubmitting(false);

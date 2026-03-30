@@ -5,9 +5,12 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pytest
+
 from apps.compiler_api.repository import (
     ArtifactRegistryRepository,
     CompilationRepository,
+    MalformedArtifactDiffError,
     ServiceCatalogRepository,
 )
 from libs.db_models import CompilationJob
@@ -88,14 +91,16 @@ class TestServiceCatalogRepositoryUncoveredLines:
         # Mock the entire chain to avoid coroutine issues
         mock_result = MagicMock()
         mock_result.all.return_value = []
-        mock_session.scalars.return_value = mock_result
+        mock_session.execute.return_value = mock_result
 
         repo = ServiceCatalogRepository(mock_session)
 
         result = await repo.list_services(tenant="test-tenant")
 
         # Verify query was built with tenant filter and result is correct
-        mock_session.scalars.assert_called_once()
+        mock_session.execute.assert_called_once()
+        query = mock_session.execute.call_args.args[0]
+        assert query._limit_clause is None
         assert hasattr(result, "services")
         assert result.services == []
 
@@ -104,14 +109,16 @@ class TestServiceCatalogRepositoryUncoveredLines:
         mock_session = AsyncMock()
         mock_result = MagicMock()
         mock_result.all.return_value = []
-        mock_session.scalars.return_value = mock_result
+        mock_session.execute.return_value = mock_result
 
         repo = ServiceCatalogRepository(mock_session)
 
         result = await repo.list_services(environment="prod")
 
         # Verify query was built with environment filter and result is correct
-        mock_session.scalars.assert_called_once()
+        mock_session.execute.assert_called_once()
+        query = mock_session.execute.call_args.args[0]
+        assert query._limit_clause is None
         assert hasattr(result, "services")
         assert result.services == []
 
@@ -120,19 +127,37 @@ class TestServiceCatalogRepositoryUncoveredLines:
         mock_session = AsyncMock()
         mock_result = MagicMock()
         mock_result.all.return_value = []
-        mock_session.scalars.return_value = mock_result
+        mock_session.execute.return_value = mock_result
 
         repo = ServiceCatalogRepository(mock_session)
 
         result = await repo.list_services(tenant="test-tenant", environment="prod")
 
         # Verify query was built with both filters and result is correct
-        mock_session.scalars.assert_called_once()
+        mock_session.execute.assert_called_once()
+        query = mock_session.execute.call_args.args[0]
+        assert query._limit_clause is None
         assert hasattr(result, "services")
         assert result.services == []
 
 
 class TestArtifactRegistryRepositoryUncoveredLines:
+    async def test_list_versions_has_no_hard_cap(self) -> None:
+        """Artifact version listings should not silently stop at 1000 rows."""
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.all.return_value = []
+        mock_session.scalars.return_value = mock_result
+
+        repo = ArtifactRegistryRepository(mock_session)
+
+        result = await repo.list_versions("svc-1")
+
+        query = mock_session.scalars.call_args.args[0]
+        assert query._limit_clause is None
+        assert result.service_id == "svc-1"
+        assert result.versions == []
+
     async def test_get_version_nonexistent_returns_none(self) -> None:
         """Test line 219: return None when version doesn't exist."""
         mock_session = AsyncMock()
@@ -287,6 +312,27 @@ class TestArtifactRegistryRepositoryUncoveredLines:
             result = await repo.diff_versions("test-service", from_version=1, to_version=2)
 
             assert result is None
+
+    async def test_diff_versions_invalid_from_ir_raises_controlled_error(self) -> None:
+        mock_session = AsyncMock()
+        from_record = MagicMock(ir_json={"protocol": "openapi"})
+        to_record = MagicMock(
+            ir_json={
+                "source_hash": "sha256:test",
+                "protocol": "openapi",
+                "service_name": "svc",
+                "base_url": "https://api.example.com",
+                "operations": [],
+            }
+        )
+
+        with patch.object(ArtifactRegistryRepository, "_get_version_record") as mock_get:
+            mock_get.side_effect = [from_record, to_record]
+
+            repo = ArtifactRegistryRepository(mock_session)
+
+            with pytest.raises(MalformedArtifactDiffError, match="test-service:1"):
+                await repo.diff_versions("test-service", from_version=1, to_version=2)
 
     def test_normalize_optional_ir_json_with_none(self) -> None:
         """Test line 447: return None when payload is None."""

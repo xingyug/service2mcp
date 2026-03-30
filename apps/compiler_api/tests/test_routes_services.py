@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from apps.compiler_api.models import ServiceListResponse, ServiceSummaryResponse
+from apps.compiler_api.repository import MalformedServiceVersionError
 from apps.compiler_api.routes.services import get_service, list_services
 
 
@@ -71,3 +72,20 @@ class TestGetService:
 
             assert exc_info.value.status_code == 404
             assert "missing-service" in exc_info.value.detail
+
+    async def test_raises_409_when_service_record_is_malformed(self) -> None:
+        mock_session = AsyncMock()
+
+        with patch("apps.compiler_api.routes.services.ServiceCatalogRepository") as mock_repo_class:
+            mock_repo = AsyncMock()
+            mock_repo_class.return_value = mock_repo
+            mock_repo.get_service.side_effect = MalformedServiceVersionError(
+                service_id="billing-api",
+                version_number=3,
+            )
+
+            with pytest.raises(HTTPException) as exc_info:
+                await get_service("billing-api", session=mock_session)
+
+            assert exc_info.value.status_code == 409
+            assert "billing-api v3" in exc_info.value.detail

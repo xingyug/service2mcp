@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { auditApi } from "@/lib/api-client";
 import { useAuditLogs } from "@/hooks/use-api";
 import { cn } from "@/lib/utils";
 import type { AuditLogEntry } from "@/types/api";
@@ -19,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -108,6 +110,12 @@ function entriesToCSV(entries: AuditLogEntry[]): string {
   ].join("\n");
 }
 
+function sortEntries(entries: AuditLogEntry[]): AuditLogEntry[] {
+  return [...entries].sort(
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+  );
+}
+
 // ── Component ───────────────────────────────────────────────────────────────
 
 export default function AuditLogPage() {
@@ -130,11 +138,12 @@ export default function AuditLogPage() {
 
   // Auto-refresh
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
 
   // Detail sheet
   const [selectedEntry, setSelectedEntry] = useState<AuditLogEntry | null>(null);
 
-  const { data, isLoading } = useAuditLogs(
+  const { data, isLoading, error, refetch } = useAuditLogs(
     appliedFilters,
     {
       refetchInterval: autoRefresh ? 30_000 : false,
@@ -142,11 +151,7 @@ export default function AuditLogPage() {
   );
 
   const entries = useMemo(() => {
-    const list = data?.entries ?? [];
-    // Sort by timestamp, newest first
-    return [...list].sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-    );
+    return sortEntries(data?.entries ?? []);
   }, [data]);
 
   const totalPages = Math.max(1, Math.ceil(entries.length / ITEMS_PER_PAGE));
@@ -174,16 +179,25 @@ export default function AuditLogPage() {
     setPage(0);
   }
 
-  function exportCSV() {
-    const csv = entriesToCSV(entries);
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success(`Exported ${entries.length} entries`);
+  async function exportCSV() {
+    setIsExporting(true);
+    try {
+      const exportResult = await auditApi.list(appliedFilters, { include_all: true });
+      const exportEntries = sortEntries(exportResult.entries);
+      const csv = entriesToCSV(exportEntries);
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${exportEntries.length} matching entries`);
+    } catch {
+      toast.error("Failed to export audit log CSV");
+    } finally {
+      setIsExporting(false);
+    }
   }
 
   const hasActiveFilters =
@@ -222,9 +236,14 @@ export default function AuditLogPage() {
             </Tooltip>
           </TooltipProvider>
 
-          <Button variant="outline" size="sm" onClick={exportCSV} disabled={entries.length === 0}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportCSV}
+            disabled={entries.length === 0 || isExporting}
+          >
             <Download data-icon="inline-start" />
-            Export CSV
+            {isExporting ? "Exporting…" : "Export CSV"}
           </Button>
         </div>
       </div>
@@ -366,6 +385,18 @@ export default function AuditLogPage() {
             <Skeleton key={i} className="h-10 w-full rounded-lg" />
           ))}
         </div>
+      ) : error ? (
+        <ErrorState
+          title="Failed to load audit log entries"
+          message={
+            error instanceof Error
+              ? error.message
+              : "The audit log request did not succeed."
+          }
+          onAction={() => {
+            void refetch();
+          }}
+        />
       ) : entries.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-20 text-center">
           <ScrollText className="size-12 text-muted-foreground/40" />

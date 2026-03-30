@@ -35,6 +35,7 @@ export interface CompilationCreateRequest {
   source_url?: string;
   source_content?: string;
   created_by: string;
+  service_id?: string;
   service_name?: string;
   options?: CompilationOptions;
 }
@@ -54,10 +55,10 @@ export interface CompilationOptions {
   skip_enhancement?: boolean;
   tenant?: string;
   environment?: string;
-  auth_config?: AuthConfig;
+  auth?: AuthConfig;
 }
 
-export interface CompilationJobResponse {
+export interface CompilationJobResponse extends ServiceScope {
   job_id: string;
   status: CompilationStatus;
   protocol?: string;
@@ -67,11 +68,18 @@ export interface CompilationJobResponse {
   created_at: string;
   completed_at?: string;
   error_message?: string;
+  service_id?: string;
+  service_name?: string;
   artifacts?: {
     ir_id?: string;
     image_digest?: string;
     deployment_id?: string;
   };
+}
+
+export interface ServiceScope {
+  tenant?: string;
+  environment?: string;
 }
 
 export interface CompilationEvent {
@@ -84,7 +92,7 @@ export interface CompilationEvent {
 
 // === Service Types ===
 
-export interface ServiceSummary {
+export interface ServiceSummary extends ServiceScope {
   service_id: string;
   name: string;
   protocol: string;
@@ -92,8 +100,6 @@ export interface ServiceSummary {
   active_version?: number;
   version_count: number;
   last_compiled?: string;
-  tenant?: string;
-  environment?: string;
 }
 
 export interface ServiceListResponse {
@@ -162,11 +168,24 @@ export interface AuthConfig {
   compile_time_secret_ref?: string;
   runtime_secret_ref?: string;
   header_name?: string;
-  username?: string;
-  password_secret_ref?: string;
-  token_url?: string;
+  header_prefix?: string;
+  api_key_param?: string;
+  api_key_location?: "header" | "query";
+  oauth2_token_url?: string;
+  oauth2_scopes?: string[];
+  basic_username?: string;
+  basic_password_ref?: string;
+  oauth2?: OAuth2ClientCredentialsConfig;
+}
+
+export interface OAuth2ClientCredentialsConfig {
+  token_url: string;
   client_id?: string;
-  client_secret_ref?: string;
+  client_id_ref?: string;
+  client_secret_ref: string;
+  scopes?: string[];
+  audience?: string;
+  client_auth_method?: "client_secret_basic" | "client_secret_post";
 }
 
 export interface ServiceIR {
@@ -191,7 +210,7 @@ export interface ServiceIR {
 
 export type ArtifactDiffOp = "add" | "remove" | "modify";
 
-export interface ArtifactVersionResponse {
+export interface ArtifactVersionResponse extends ServiceScope {
   service_id: string;
   version_number: number;
   ir: ServiceIR;
@@ -202,6 +221,21 @@ export interface ArtifactVersionResponse {
 
 export interface ArtifactVersionListResponse {
   versions: ArtifactVersionResponse[];
+}
+
+export interface ArtifactVersionUpdateRequest {
+  ir_json?: ServiceIR;
+  raw_ir_json?: ServiceIR;
+  compiler_version?: string;
+  source_url?: string;
+  source_hash?: string;
+  protocol?: string;
+  validation_report?: Record<string, unknown>;
+  deployment_revision?: string;
+  route_config?: Record<string, unknown>;
+  tenant?: string;
+  environment?: string;
+  artifacts?: Array<Record<string, unknown>>;
 }
 
 export interface ArtifactDiffChange {
@@ -234,7 +268,7 @@ export interface TokenPrincipal {
   subject: string;
   token_type: string;
   claims: Record<string, unknown>;
-  username: string;
+  username?: string;
   email?: string;
   roles?: string[];
 }
@@ -242,7 +276,6 @@ export interface TokenPrincipal {
 export interface PATCreateRequest {
   username: string;
   name: string;
-  email?: string;
 }
 
 export interface PATResponse {
@@ -256,11 +289,14 @@ export interface PATResponse {
 
 export interface PATListResponse {
   pats: PATResponse[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 // === Authorization Types ===
 
-export type SubjectType = "user" | "group";
+export type SubjectType = string;
 export type PolicyDecision = "allow" | "deny" | "require_approval";
 
 export interface PolicyCreateRequest {
@@ -299,7 +335,7 @@ export interface PolicyEvaluationRequest {
   subject_id: string;
   action: string;
   resource_id: string;
-  risk_level?: RiskLevel;
+  risk_level: RiskLevel;
 }
 
 export interface PolicyEvaluationResponse {
@@ -339,6 +375,8 @@ export interface GatewayRouteDocument {
   route_type: "default" | "version";
   service_id: string;
   service_name: string;
+  tenant?: string;
+  environment?: string;
   namespace: string;
   target_service: Record<string, unknown>;
   version_number?: number;

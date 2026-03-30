@@ -9,8 +9,10 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from libs.registry_client.client import RegistryClient, RegistryClientError
+from libs.registry_client.models import ArtifactVersionUpdate
 
 
 def _version_response_json(
@@ -84,6 +86,16 @@ class TestRegistryClientError:
             assert exc_info.value.__cause__ is not None
             assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
 
+    @pytest.mark.asyncio
+    async def test_malformed_success_payload_wraps_validation_error(self) -> None:
+        transport = _mock_transport(200, {"service_id": "svc"})
+        http = httpx.AsyncClient(transport=transport, base_url="http://test")
+        async with RegistryClient("http://test", client=http) as client:
+            with pytest.raises(RegistryClientError, match="Malformed JSON response") as exc_info:
+                await client.get_version("svc", 1)
+        assert exc_info.value.__cause__ is not None
+        assert isinstance(exc_info.value.__cause__, ValidationError)
+
 
 class TestActivateVersion:
     @pytest.mark.asyncio
@@ -106,6 +118,63 @@ class TestActivateVersion:
         async with RegistryClient("http://test", client=http) as client:
             with pytest.raises(RegistryClientError):
                 await client.activate_version("test-svc", 99)
+
+    @pytest.mark.asyncio
+    async def test_activate_version_sends_scope_params(self) -> None:
+        captured: list[httpx.Request] = []
+        payload = _version_response_json(is_active=True)
+        transport = _mock_transport(200, payload, capture=captured)
+        http = httpx.AsyncClient(transport=transport, base_url="http://test")
+        async with RegistryClient("http://test", client=http) as client:
+            await client.activate_version(
+                "test-svc",
+                1,
+                tenant="acme",
+                environment="prod",
+            )
+
+        assert len(captured) == 1
+        assert captured[0].url.params["tenant"] == "acme"
+        assert captured[0].url.params["environment"] == "prod"
+
+
+class TestMutationScopeParams:
+    @pytest.mark.asyncio
+    async def test_update_version_sends_scope_params(self) -> None:
+        captured: list[httpx.Request] = []
+        transport = _mock_transport(200, _version_response_json(), capture=captured)
+        http = httpx.AsyncClient(transport=transport, base_url="http://test")
+
+        async with RegistryClient("http://test", client=http) as client:
+            await client.update_version(
+                "test-svc",
+                1,
+                ArtifactVersionUpdate(validation_report={"status": "passed"}),
+                tenant="acme",
+                environment="prod",
+            )
+
+        assert len(captured) == 1
+        assert captured[0].url.params["tenant"] == "acme"
+        assert captured[0].url.params["environment"] == "prod"
+
+    @pytest.mark.asyncio
+    async def test_delete_version_sends_scope_params(self) -> None:
+        captured: list[httpx.Request] = []
+        transport = _mock_transport(204, None, capture=captured)
+        http = httpx.AsyncClient(transport=transport, base_url="http://test")
+
+        async with RegistryClient("http://test", client=http) as client:
+            await client.delete_version(
+                "test-svc",
+                1,
+                tenant="acme",
+                environment="prod",
+            )
+
+        assert len(captured) == 1
+        assert captured[0].url.params["tenant"] == "acme"
+        assert captured[0].url.params["environment"] == "prod"
 
 
 class TestFilterParams:

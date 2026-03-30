@@ -173,7 +173,7 @@ export default function DashboardPage() {
     0,
   );
 
-  const apisHealthy = !servicesError && !compilationsError;
+  const apisHealthy = !servicesError && !compilationsError && !auditError;
 
   const recentCompilations = [...allCompilations]
     .sort(
@@ -253,7 +253,7 @@ export default function DashboardPage() {
                   Last 10 compilation jobs
                 </CardDescription>
               </div>
-              <Button variant="ghost" size="sm" render={<Link href="/compilations" />}>
+              <Button variant="ghost" size="sm" nativeButton={false} render={<Link href="/compilations" />}>
                   View All
                   <ArrowRight className="ml-1 h-3.5 w-3.5" />
               </Button>
@@ -329,7 +329,7 @@ export default function DashboardPage() {
                 <CardTitle className="text-base">Recent Activity</CardTitle>
                 <CardDescription>Audit log timeline</CardDescription>
               </div>
-              <Button variant="ghost" size="sm" render={<Link href="/audit" />}>
+              <Button variant="ghost" size="sm" nativeButton={false} render={<Link href="/audit" />}>
                   View All
                   <ArrowRight className="ml-1 h-3.5 w-3.5" />
               </Button>
@@ -408,13 +408,13 @@ export default function DashboardPage() {
               <CardTitle className="text-base">Quick Actions</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-2">
-              <Button render={<Link href="/compilations/new" />}>
+              <Button nativeButton={false} render={<Link href="/compilations/new" />}>
                 New Compilation
               </Button>
-              <Button variant="outline" render={<Link href="/services" />}>
+              <Button variant="outline" nativeButton={false} render={<Link href="/services" />}>
                 Browse Services
               </Button>
-              <Button variant="outline" render={<Link href="/policies" />}>
+              <Button variant="outline" nativeButton={false} render={<Link href="/policies" />}>
                 Manage Access
               </Button>
             </CardContent>

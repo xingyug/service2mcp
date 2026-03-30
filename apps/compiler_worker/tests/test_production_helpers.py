@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from apps.compiler_worker.activities.production import (
     _apply_auth_override,
+    _apply_scope_override,
     _apply_post_enhancement,
     _build_extractors,
     _close_extractors,
@@ -34,7 +36,10 @@ from apps.compiler_worker.activities.production import (
     _tool_grouping_enabled,
     _validation_failure_message,
     build_sample_invocations,
+    create_default_activity_registry,
 )
+from apps.compiler_worker.models import CompilationContext, CompilationRequest, CompilationStage
+from apps.compiler_worker.models import StageExecutionResult
 from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthType,
@@ -55,6 +60,7 @@ from libs.ir.models import (
     SqlOperationType,
     SqlRelationKind,
 )
+from libs.sample_placeholders import PATH_PLACEHOLDER_ID_SAMPLE
 
 _TEST_UUID = "00000000-0000-0000-0000-000000000001"
 
@@ -194,7 +200,7 @@ class TestBuildSampleInvocations:
 
         result = build_sample_invocations(ir)
 
-        assert result["get_comment"] == {"id": "1"}
+        assert result["get_comment"] == {"id": PATH_PLACEHOLDER_ID_SAMPLE}
 
     def test_empty_operations(self) -> None:
         ir = _ir(operations=[])
@@ -383,6 +389,30 @@ class TestSampleSqlArguments:
         assert "name" in result
         assert "bio" not in result
 
+    def test_update_includes_primary_key_and_one_mutation_value(self) -> None:
+        op = _op(
+            sql=SqlOperationConfig(
+                schema_name="public",
+                relation_name="users",
+                relation_kind=SqlRelationKind.table,
+                action=SqlOperationType.update,
+                primary_key_columns=["id"],
+                updatable_columns=["email", "tier"],
+            ),
+            method="POST",
+            params=[
+                Param(name="id", type="integer", required=True),
+                Param(name="email", type="string", required=False),
+                Param(name="tier", type="string", required=False),
+            ],
+        )
+
+        result = _sample_sql_arguments(op)
+
+        assert result["id"] == 1
+        assert "email" in result or "tier" in result
+        assert len(result) == 2
+
 
 # --- Feature flags ---
 
@@ -562,6 +592,70 @@ class TestApplyAuthOverride:
         with pytest.raises(ValueError, match="custom_header auth requires header_name"):
             _apply_auth_override(ir, {"auth": {"type": "custom_header"}})
 
+    def test_applies_frontend_auth_config_key(self) -> None:
+        ir = _ir()
+        updated = _apply_auth_override(
+            ir,
+            {
+                "auth_config": {
+                    "type": "bearer",
+                    "runtime_secret_ref": "frontend-bearer-secret",
+                }
+            },
+        )
+
+        assert updated.auth.type == AuthType.bearer
+        assert updated.auth.runtime_secret_ref == "frontend-bearer-secret"
+
+    def test_normalizes_legacy_frontend_basic_override(self) -> None:
+        ir = _ir()
+        updated = _apply_auth_override(
+            ir,
+            {
+                "auth_config": {
+                    "type": "basic",
+                    "username": "svc-user",
+                    "password_secret_ref": "secret://password",
+                }
+            },
+        )
+
+        assert updated.auth.type == AuthType.basic
+        assert updated.auth.basic_username == "svc-user"
+        assert updated.auth.basic_password_ref == "secret://password"
+
+    def test_normalizes_legacy_frontend_oauth2_override(self) -> None:
+        ir = _ir()
+        updated = _apply_auth_override(
+            ir,
+            {
+                "auth_config": {
+                    "type": "oauth2",
+                    "token_url": "https://auth.example.com/token",
+                    "client_id": "client-id",
+                    "client_secret_ref": "secret://oauth2-secret",
+                }
+            },
+        )
+
+        assert updated.auth.type == AuthType.oauth2
+        assert updated.auth.oauth2 is not None
+        assert updated.auth.oauth2.token_url == "https://auth.example.com/token"
+        assert updated.auth.oauth2.client_id == "client-id"
+        assert updated.auth.oauth2.client_secret_ref == "secret://oauth2-secret"
+
+
+class TestApplyScopeOverride:
+    def test_applies_tenant_and_environment_from_options(self) -> None:
+        ir = _ir()
+        updated = _apply_scope_override(
+            ir,
+            {"tenant": "team-a", "environment": "prod"},
+        )
+
+        assert updated.tenant == "team-a"
+        assert updated.environment == "prod"
+
 
 # --- Extractor helpers ---
 
@@ -580,6 +674,27 @@ class TestBuildExtractors:
         assert "odata" in names
         assert "scim" in names
         assert "jsonrpc" in names
+
+    def test_enables_rest_llm_seed_mutation_when_hint_is_set(self) -> None:
+        source = SourceConfig(url="https://api.example.com", hints={"llm_seed_mutation": "true"})
+        llm_client = MagicMock()
+
+        with (
+            patch(
+                "apps.compiler_worker.activities.production.EnhancerConfig.from_env",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "apps.compiler_worker.activities.production.create_llm_client",
+                return_value=llm_client,
+            ),
+        ):
+            extractors = _build_extractors(source)
+
+        rest_extractor = next(
+            extractor for extractor in extractors if extractor.protocol_name == "rest"
+        )
+        assert getattr(rest_extractor, "_llm_client") is llm_client
 
 
 class TestResolveExtractor:
@@ -636,6 +751,40 @@ class TestStageResult:
         )
         assert result.context_updates == {"key": "val"}
         assert result.protocol == "openapi"
+
+    @pytest.mark.asyncio
+    async def test_extract_stage_prefers_explicit_service_id_over_display_name(self) -> None:
+        registry = create_default_activity_registry(session_factory=MagicMock())
+        extractor = MagicMock()
+        extractor.extract.return_value = _ir()
+        context = CompilationContext(
+            job_id=MagicMock(),
+            request=CompilationRequest(
+                source_url="https://example.com/spec.yaml",
+                service_id="billing-api",
+                service_name="Billing API",
+            ),
+        )
+
+        with (
+            patch(
+                "apps.compiler_worker.activities.production._build_extractors",
+                return_value=[],
+            ),
+            patch(
+                "apps.compiler_worker.activities.production._resolve_extractor",
+                return_value=extractor,
+            ),
+            patch(
+                "apps.compiler_worker.activities.production._next_version_number",
+                new=AsyncMock(return_value=1),
+            ),
+        ):
+            result = await registry.run_stage(CompilationStage.EXTRACT, context)
+
+        assert result.context_updates["service_id"] == "billing-api"
+        assert result.service_name == "billing-api"
+        assert result.context_updates["service_ir"]["service_name"] == "Billing API"
 
 
 # --- Validation failure message ---
@@ -806,6 +955,73 @@ class TestFloatEnv:
             assert _float_env("MY_TEST_FLOAT", 99.0) == 99.0
 
 
+class TestRoutePublishConfiguration:
+    def test_from_env_requires_explicit_route_publish_mode(self) -> None:
+        from apps.compiler_worker.activities.production import ProductionActivitySettings
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ROUTE_PUBLISH_MODE", None)
+            settings = ProductionActivitySettings.from_env()
+
+        assert settings.route_publish_mode is None
+
+    def test_resolve_route_publisher_rejects_missing_mode(self) -> None:
+        from apps.compiler_worker.activities.production import (
+            ProductionActivitySettings,
+            _resolve_route_publisher,
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="ROUTE_PUBLISH_MODE must be explicitly set",
+        ):
+            _resolve_route_publisher(
+                ProductionActivitySettings(route_publish_mode=None),
+                None,
+            )
+
+    def test_resolve_route_publisher_allows_explicit_deferred_mode(self) -> None:
+        from apps.compiler_worker.activities.production import (
+            DeferredRoutePublisher,
+            ProductionActivitySettings,
+            _resolve_route_publisher,
+        )
+
+        publisher = _resolve_route_publisher(
+            ProductionActivitySettings(route_publish_mode="deferred"),
+            None,
+        )
+
+        assert isinstance(publisher, DeferredRoutePublisher)
+
+    @pytest.mark.asyncio
+    async def test_route_stage_requires_explicit_mode(self) -> None:
+        from apps.compiler_worker.activities.production import ProductionActivitySettings
+
+        registry = create_default_activity_registry(
+            session_factory=MagicMock(),
+            settings=ProductionActivitySettings(route_publish_mode=None),
+        )
+        context = CompilationContext(
+            job_id=MagicMock(),
+            request=CompilationRequest(service_name="billing-api"),
+            payload={
+                "service_id": "billing-api",
+                "route_config": {
+                    "default_route": {"route_id": "billing-api-active"},
+                    "version_route": {"route_id": "billing-api-v1"},
+                },
+            },
+            protocol="openapi",
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="ROUTE_PUBLISH_MODE must be explicitly set",
+        ):
+            await registry.run_stage(CompilationStage.ROUTE, context)
+
+
 # --- DeferredRoutePublisher ---
 
 
@@ -866,6 +1082,281 @@ class TestAccessControlRoutePublisherPost:
 
         with pytest.raises(RuntimeError, match="non-object response"):
             await publisher._post("/test", route_config={"key": "value"})
+
+    @pytest.mark.asyncio
+    async def test_rollback_rejects_non_object_publication(self) -> None:
+        from apps.compiler_worker.activities.production import AccessControlRoutePublisher
+
+        publisher = AccessControlRoutePublisher(
+            base_url="http://fake",
+            client=AsyncMock(),
+            auth_token="fake-token",
+        )
+
+        with pytest.raises(RuntimeError, match="publication must be an object"):
+            await publisher.rollback({"default_route": {"route_id": "r1"}}, "published")  # type: ignore[arg-type]
+
+
+class TestKubernetesManifestDeployerResponseShape:
+    @pytest.mark.asyncio
+    async def test_apply_manifest_non_object_response_raises(self) -> None:
+        from apps.compiler_worker.activities.production import KubernetesManifestDeployer
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.is_error = False
+        mock_response.json.return_value = []
+
+        mock_client = AsyncMock()
+        mock_client.patch = AsyncMock(return_value=mock_response)
+
+        deployer = KubernetesManifestDeployer(
+            api=SimpleNamespace(client=mock_client, namespace="default"),
+            owns_api_client=False,
+        )
+
+        with pytest.raises(RuntimeError, match="non-object response"):
+            await deployer._apply_manifest(
+                "deployments",
+                "apps/v1",
+                {"metadata": {"name": "demo"}},
+            )
+
+    @pytest.mark.asyncio
+    async def test_wait_for_rollout_non_object_response_raises(self) -> None:
+        from apps.compiler_worker.activities.production import KubernetesManifestDeployer
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = []
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        deployer = KubernetesManifestDeployer(
+            api=SimpleNamespace(client=mock_client, namespace="default"),
+            owns_api_client=False,
+        )
+
+        with pytest.raises(RuntimeError, match="non-object response"):
+            await deployer._wait_for_rollout("demo", expected_replicas=1)
+
+    @pytest.mark.asyncio
+    async def test_deploy_cleans_up_partial_apply_failure(self) -> None:
+        from apps.compiler_worker.activities.production import KubernetesManifestDeployer
+
+        deployer = KubernetesManifestDeployer(
+            api=SimpleNamespace(client=AsyncMock(), namespace="default"),
+            owns_api_client=False,
+        )
+        deployer._apply_manifest = AsyncMock(
+            side_effect=[
+                {"metadata": {"resourceVersion": "1"}},
+                {"metadata": {"resourceVersion": "2"}},
+                RuntimeError("service apply failed"),
+            ]
+        )
+        deployer._delete_manifest = AsyncMock()
+        manifest_set = SimpleNamespace(
+            config_map={"metadata": {"name": "demo-ir"}},
+            deployment={"metadata": {"name": "demo"}, "spec": {"replicas": 1}},
+            service={"metadata": {"name": "demo"}, "spec": {"ports": [{"port": 8003}]}},
+            network_policy={"metadata": {"name": "demo"}},
+        )
+
+        with pytest.raises(RuntimeError, match="service apply failed"):
+            await deployer.deploy(manifest_set)
+
+        deleted = [call.args for call in deployer._delete_manifest.await_args_list]
+        assert deleted == [
+            ("deployments", "apps/v1", "demo"),
+            ("configmaps", "v1", "demo-ir"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_rollback_attempts_all_deletes_before_raising(self) -> None:
+        from apps.compiler_worker.activities.production import KubernetesManifestDeployer
+
+        deployer = KubernetesManifestDeployer(
+            api=SimpleNamespace(client=AsyncMock(), namespace="default"),
+            owns_api_client=False,
+        )
+        deployer._delete_manifest = AsyncMock(
+            side_effect=[RuntimeError("np failed"), None, None, None]
+        )
+        manifest_set = SimpleNamespace(
+            config_map={"metadata": {"name": "demo-ir"}},
+            deployment={"metadata": {"name": "demo"}},
+            service={"metadata": {"name": "demo"}},
+            network_policy={"metadata": {"name": "demo"}},
+        )
+
+        with pytest.raises(RuntimeError, match="networkpolicies/demo"):
+            await deployer.rollback(manifest_set, MagicMock())
+
+        assert deployer._delete_manifest.await_count == 4
+
+    @pytest.mark.asyncio
+    async def test_wait_for_rollout_counts_request_time_against_timeout(self) -> None:
+        from apps.compiler_worker.activities.production import KubernetesManifestDeployer
+
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "metadata": {"generation": 1},
+            "status": {
+                "observedGeneration": 0,
+                "availableReplicas": 0,
+                "updatedReplicas": 0,
+            },
+        }
+        calls = 0
+
+        async def slow_get(_: str) -> MagicMock:
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.2)
+            return response
+
+        deployer = KubernetesManifestDeployer(
+            api=SimpleNamespace(client=SimpleNamespace(get=slow_get), namespace="default"),
+            owns_api_client=False,
+            rollout_poll_seconds=0.01,
+            rollout_timeout_seconds=0.1,
+        )
+
+        with pytest.raises(RuntimeError, match="Timed out waiting for Kubernetes rollout"):
+            await deployer._wait_for_rollout("demo", expected_replicas=1)
+
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_wait_for_rollout_requires_updated_replicas(self) -> None:
+        from apps.compiler_worker.activities.production import KubernetesManifestDeployer
+
+        first = MagicMock()
+        first.raise_for_status = MagicMock()
+        first.json.return_value = {
+            "metadata": {"generation": 2},
+            "status": {
+                "observedGeneration": 2,
+                "availableReplicas": 1,
+                "updatedReplicas": 0,
+            },
+        }
+        second = MagicMock()
+        second.raise_for_status = MagicMock()
+        second.json.return_value = {
+            "metadata": {"generation": 2},
+            "status": {
+                "observedGeneration": 2,
+                "availableReplicas": 1,
+                "updatedReplicas": 1,
+            },
+        }
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=[first, second])
+
+        deployer = KubernetesManifestDeployer(
+            api=SimpleNamespace(client=mock_client, namespace="default"),
+            owns_api_client=False,
+            rollout_poll_seconds=0.01,
+            rollout_timeout_seconds=1.0,
+        )
+
+        with patch("apps.compiler_worker.activities.production._sleep_seconds", new=AsyncMock()):
+            observed_generation = await deployer._wait_for_rollout("demo", expected_replicas=1)
+
+        assert observed_generation == 2
+        assert mock_client.get.await_count == 2
+
+
+class TestRuntimeReadinessTimeouts:
+    @pytest.mark.asyncio
+    async def test_wait_for_runtime_http_ready_counts_request_time_against_timeout(self) -> None:
+        from apps.compiler_worker.activities.production import _wait_for_runtime_http_ready
+
+        client_calls = 0
+
+        class SlowClient:
+            async def get(self, _: str) -> SimpleNamespace:
+                await asyncio.sleep(0.2)
+                return SimpleNamespace(status_code=503)
+
+            async def aclose(self) -> None:
+                return None
+
+        def client_factory(_: str) -> SlowClient:
+            nonlocal client_calls
+            client_calls += 1
+            return SlowClient()
+
+        with pytest.raises(RuntimeError, match="Runtime readiness check timed out"):
+            await _wait_for_runtime_http_ready(
+                "http://runtime.example.test",
+                client_factory=client_factory,
+                timeout_seconds=0.1,
+                poll_seconds=0.01,
+            )
+
+        assert client_calls == 1
+
+
+class TestRollbackHandlerPayloadValidation:
+    @pytest.mark.asyncio
+    async def test_deploy_rollback_skips_partial_manifest_payload(self) -> None:
+        deployer = AsyncMock()
+        deployer.rollback = AsyncMock()
+        registry = create_default_activity_registry(session_factory=MagicMock(), deployer=deployer)
+
+        await registry.rollback_handlers[CompilationStage.DEPLOY](
+            CompilationContext(
+                job_id=MagicMock(),
+                request=CompilationRequest(source_url="https://example.com/spec.yaml"),
+            ),
+            StageExecutionResult(
+                rollback_payload={
+                    "manifest_set": {
+                        "deployment": {},
+                        "service": {},
+                        "network_policy": {},
+                        "route_config": {},
+                        "yaml": "apiVersion: v1",
+                    },
+                    "deployment": {
+                        "deployment_revision": "rev-1",
+                        "runtime_base_url": "http://svc.default",
+                        "manifest_storage_path": "k8s://default/deployments/demo",
+                    },
+                }
+            ),
+        )
+
+        deployer.rollback.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_route_rollback_skips_non_dict_publication_payload(self) -> None:
+        route_publisher = AsyncMock()
+        route_publisher.rollback = AsyncMock()
+        registry = create_default_activity_registry(
+            session_factory=MagicMock(),
+            route_publisher=route_publisher,
+        )
+
+        await registry.rollback_handlers[CompilationStage.ROUTE](
+            CompilationContext(
+                job_id=MagicMock(),
+                request=CompilationRequest(source_url="https://example.com/spec.yaml"),
+            ),
+            StageExecutionResult(
+                rollback_payload={
+                    "route_config": {"default_route": {"route_id": "r1"}},
+                    "publication": "published",
+                }
+            ),
+        )
+
+        route_publisher.rollback.assert_not_awaited()
 
 
 # --- KubernetesAPISession.from_in_cluster() ---

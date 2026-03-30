@@ -123,14 +123,18 @@ class ServiceVersion(Base):
         Index(
             "uq_service_versions_one_active",
             "service_id",
-            "tenant",
-            "environment",
+            text("coalesce(tenant, '')"),
+            text("coalesce(environment, '')"),
             unique=True,
             postgresql_where=text("is_active = true"),
         ),
-        UniqueConstraint(
-            "service_id", "version_number", "tenant", "environment",
-            name="uq_service_version",
+        Index(
+            "uq_service_version",
+            "service_id",
+            "version_number",
+            text("coalesce(tenant, '')"),
+            text("coalesce(environment, '')"),
+            unique=True,
         ),
         {"schema": "registry"},
     )
@@ -202,6 +206,12 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ldap_dn: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    roles: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
@@ -283,15 +293,17 @@ class ReviewWorkflow(Base):
     __tablename__ = "review_workflows"
     __table_args__ = (
         UniqueConstraint(
-            "service_id", "version_number", name="uq_review_workflow",
+            "service_id", "version_number", "tenant", "environment", name="uq_review_workflow",
         ),
-        Index("ix_review_workflows_service", "service_id"),
+        Index("ix_review_workflows_service", "service_id", "tenant", "environment"),
         {"schema": "compiler"},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     service_id: Mapped[str] = mapped_column(String(255), nullable=False)
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    tenant: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    environment: Mapped[str | None] = mapped_column(String(64), nullable=True)
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
     review_notes: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     history: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)

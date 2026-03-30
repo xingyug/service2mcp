@@ -18,6 +18,7 @@ class TokenPrincipalResponse(BaseModel):
     """Validated token subject."""
 
     subject: str
+    username: str | None = None
     token_type: str
     claims: dict[str, object]
 
@@ -27,7 +28,6 @@ class PATCreateRequest(BaseModel):
 
     username: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    email: str | None = None
 
 
 class PATResponse(BaseModel):
@@ -50,3 +50,6 @@ class PATListResponse(BaseModel):
     """List of PATs for a user."""
 
     items: list[PATResponse]
+    total: int = Field(default=0, ge=0)
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=100, ge=1)

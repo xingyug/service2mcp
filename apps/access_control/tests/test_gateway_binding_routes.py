@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from apps.access_control.authn.models import TokenPrincipalResponse
 from apps.access_control.gateway_binding.routes import (
@@ -37,6 +39,23 @@ def _user_caller() -> TokenPrincipalResponse:
     )
 
 
+def _route_config() -> dict[str, Any]:
+    return {
+        "service_id": "svc-1",
+        "service_name": "Billing API",
+        "namespace": "default",
+        "version_number": 1,
+        "default_route": {
+            "route_id": "svc-1-active",
+            "target_service": {"name": "svc-1-v1", "port": 8000},
+        },
+        "version_route": {
+            "route_id": "svc-1-v1",
+            "target_service": {"name": "svc-1-v1", "port": 8000},
+        },
+    }
+
+
 def test_require_admin_principal_rejects_non_admin_gateway_caller() -> None:
     with pytest.raises(HTTPException) as exc_info:
         require_admin_principal(_user_caller())
@@ -66,6 +85,7 @@ async def test_reconcile_gateway_state_calls_service_for_admin() -> None:
 @pytest.mark.asyncio
 async def test_sync_delete_and_rollback_forward_route_payloads() -> None:
     gateway_binding = AsyncMock()
+    route_config = _route_config()
     gateway_binding.sync_service_routes.return_value = {
         "route_ids": ["active"],
         "service_routes_synced": 1,
@@ -85,7 +105,7 @@ async def test_sync_delete_and_rollback_forward_route_payloads() -> None:
         "previous_routes": {"active": {"route_id": "old"}},
     }
     request = ServiceRouteRequest(
-        route_config={"service_id": "svc-1"},
+        route_config=route_config,
         previous_routes={"active": {"route_id": "old"}},
     )
     caller = _admin_caller()
@@ -97,12 +117,33 @@ async def test_sync_delete_and_rollback_forward_route_payloads() -> None:
     assert sync_response.service_routes_synced == 1
     assert delete_response.service_routes_deleted == 1
     assert rollback_response.previous_routes == {"active": {"route_id": "old"}}
-    gateway_binding.sync_service_routes.assert_awaited_once_with({"service_id": "svc-1"})
-    gateway_binding.delete_service_routes.assert_awaited_once_with({"service_id": "svc-1"})
-    gateway_binding.rollback_service_routes.assert_awaited_once_with(
-        {"service_id": "svc-1"},
+    gateway_binding.sync_service_routes.assert_awaited_once_with(
+        route_config,
         {"active": {"route_id": "old"}},
     )
+    gateway_binding.delete_service_routes.assert_awaited_once_with(route_config)
+    gateway_binding.rollback_service_routes.assert_awaited_once_with(
+        route_config,
+        {"active": {"route_id": "old"}},
+    )
+
+
+def test_service_route_request_rejects_invalid_route_config() -> None:
+    with pytest.raises(ValidationError, match="namespace"):
+        ServiceRouteRequest(
+            route_config={"service_id": "svc-1", "service_name": "Billing API"},
+        )
+
+
+def test_service_route_request_rejects_non_string_service_id() -> None:
+    with pytest.raises(ValidationError, match="service_id"):
+        ServiceRouteRequest(
+            route_config={
+                "service_id": None,
+                "service_name": "Billing API",
+                "namespace": "default",
+            },
+        )
 
 
 @pytest.mark.asyncio
@@ -114,6 +155,8 @@ async def test_list_service_routes_returns_current_gateway_documents() -> None:
             "route_type": "default",
             "service_id": "svc-1",
             "service_name": "Billing API",
+            "tenant": "team-a",
+            "environment": "prod",
             "namespace": "runtime-system",
             "target_service": {
                 "name": "billing-runtime-v2",
@@ -133,6 +176,8 @@ async def test_list_service_routes_returns_current_gateway_documents() -> None:
                 route_type="default",
                 service_id="svc-1",
                 service_name="Billing API",
+                tenant="team-a",
+                environment="prod",
                 namespace="runtime-system",
                 target_service={
                     "name": "billing-runtime-v2",

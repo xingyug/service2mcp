@@ -27,6 +27,21 @@ def _make_record(
     return record
 
 
+def _structured_handlers(root: logging.Logger) -> list[logging.Handler]:
+    return [handler for handler in root.handlers if isinstance(handler.formatter, StructuredFormatter)]
+
+
+def _restore_root_logger(
+    root: logging.Logger,
+    original_handlers: list[logging.Handler],
+    original_level: int,
+) -> None:
+    root.handlers.clear()
+    for handler in original_handlers:
+        root.addHandler(handler)
+    root.setLevel(original_level)
+
+
 class TestStructuredFormatter:
     def test_output_is_json(self) -> None:
         fmt = StructuredFormatter(component="test-component")
@@ -102,15 +117,60 @@ class TestGetLogger:
 
 class TestSetupLogging:
     def test_configures_root_logger(self) -> None:
-        setup_logging("test-component", level="DEBUG")
         root = logging.getLogger()
-        assert root.level == logging.DEBUG
-        assert len(root.handlers) >= 1
-        # Clean up
-        root.handlers.clear()
+        original_handlers = list(root.handlers)
+        original_level = root.level
+
+        try:
+            setup_logging("test-component", level="DEBUG")
+            assert root.level == logging.DEBUG
+            assert _structured_handlers(root)
+        finally:
+            _restore_root_logger(root, original_handlers, original_level)
 
     def test_int_level(self) -> None:
-        setup_logging("test-component", level=logging.WARNING)
         root = logging.getLogger()
-        assert root.level == logging.WARNING
-        root.handlers.clear()
+        original_handlers = list(root.handlers)
+        original_level = root.level
+
+        try:
+            setup_logging("test-component", level=logging.WARNING)
+            assert root.level == logging.WARNING
+        finally:
+            _restore_root_logger(root, original_handlers, original_level)
+
+    def test_preserves_existing_root_handlers(self) -> None:
+        root = logging.getLogger()
+        original_handlers = list(root.handlers)
+        original_level = root.level
+        existing_handler = logging.NullHandler()
+        root.addHandler(existing_handler)
+
+        try:
+            setup_logging("test-component")
+            assert existing_handler in root.handlers
+            assert _structured_handlers(root)
+        finally:
+            _restore_root_logger(root, original_handlers, original_level)
+
+    def test_repeated_calls_do_not_replace_structured_handler_component(self) -> None:
+        root = logging.getLogger()
+        original_handlers = list(root.handlers)
+        original_level = root.level
+
+        try:
+            setup_logging("component-a")
+            handlers = _structured_handlers(root)
+            assert len(handlers) == 1
+            formatter = handlers[0].formatter
+            assert isinstance(formatter, StructuredFormatter)
+            assert formatter.component == "component-a"
+
+            setup_logging("component-b")
+            handlers = _structured_handlers(root)
+            assert len(handlers) == 1
+            formatter = handlers[0].formatter
+            assert isinstance(formatter, StructuredFormatter)
+            assert formatter.component == "component-a"
+        finally:
+            _restore_root_logger(root, original_handlers, original_level)

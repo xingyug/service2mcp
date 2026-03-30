@@ -1,4 +1,4 @@
-"""Native SQL runtime executor for reflected query and insert operations."""
+"""Native SQL runtime executor for reflected CRUD operations."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from mcp.server.fastmcp.exceptions import ToolError
-from sqlalchemy import MetaData, Table, insert, select
+from sqlalchemy import MetaData, Table, delete, insert, select, update
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -45,6 +45,10 @@ class SQLRuntimeExecutor:
             return await self._query(operation, arguments, config, table)
         if config.action is SqlOperationType.insert:
             return await self._insert(operation, arguments, config, table)
+        if config.action is SqlOperationType.update:
+            return await self._update(operation, arguments, config, table)
+        if config.action is SqlOperationType.delete:
+            return await self._delete(operation, arguments, config, table)
         raise ToolError(
             f"Unsupported SQL runtime action {config.action.value} for operation {operation.id}."
         )
@@ -69,7 +73,10 @@ class SQLRuntimeExecutor:
             value = arguments[column_name]
             column = table.c.get(column_name)
             if column is None:
-                continue
+                raise ToolError(
+                    f"SQL query operation {operation.id} requested filter column {column_name!r} "
+                    f"that is not present in relation {config.relation_name}."
+                )
             if isinstance(value, list):
                 statement = statement.where(column.in_(value))
                 continue
@@ -101,7 +108,7 @@ class SQLRuntimeExecutor:
         values = {
             column_name: arguments[column_name]
             for column_name in config.insertable_columns
-            if column_name in arguments and arguments[column_name] is not None
+            if column_name in arguments
         }
         if not values:
             raise ToolError(
@@ -129,6 +136,84 @@ class SQLRuntimeExecutor:
             "action": config.action.value,
             "row_count": row_count,
             "inserted_primary_key": inserted_primary_key,
+        }
+
+    async def _update(
+        self,
+        operation: Operation,
+        arguments: dict[str, Any],
+        config: SqlOperationConfig,
+        table: Table,
+    ) -> dict[str, Any]:
+        primary_key_values = _required_primary_key_values(
+            operation_id=operation.id,
+            arguments=arguments,
+            primary_key_columns=config.primary_key_columns,
+        )
+        values = {
+            column_name: arguments[column_name]
+            for column_name in config.updatable_columns
+            if column_name in arguments and arguments[column_name] is not None
+        }
+        if not values:
+            raise ToolError(
+                f"SQL update operation {operation.id} requires at least one updatable value."
+            )
+
+        statement = update(table).values(**values)
+        for column_name, value in primary_key_values.items():
+            column = table.c.get(column_name)
+            if column is None:
+                raise ToolError(
+                    f"SQL update operation {operation.id} references unknown column {column_name}."
+                )
+            statement = statement.where(column == value)
+
+        async with self._engine.begin() as connection:
+            result = await connection.execute(statement)
+            row_count = (
+                result.rowcount if result.rowcount is not None and result.rowcount >= 0 else 0
+            )
+
+        return {
+            "relation": config.relation_name,
+            "action": config.action.value,
+            "row_count": row_count,
+            "updated_primary_key": _json_safe_row(primary_key_values),
+        }
+
+    async def _delete(
+        self,
+        operation: Operation,
+        arguments: dict[str, Any],
+        config: SqlOperationConfig,
+        table: Table,
+    ) -> dict[str, Any]:
+        primary_key_values = _required_primary_key_values(
+            operation_id=operation.id,
+            arguments=arguments,
+            primary_key_columns=config.primary_key_columns,
+        )
+        statement = delete(table)
+        for column_name, value in primary_key_values.items():
+            column = table.c.get(column_name)
+            if column is None:
+                raise ToolError(
+                    f"SQL delete operation {operation.id} references unknown column {column_name}."
+                )
+            statement = statement.where(column == value)
+
+        async with self._engine.begin() as connection:
+            result = await connection.execute(statement)
+            row_count = (
+                result.rowcount if result.rowcount is not None and result.rowcount >= 0 else 0
+            )
+
+        return {
+            "relation": config.relation_name,
+            "action": config.action.value,
+            "row_count": row_count,
+            "deleted_primary_key": _json_safe_row(primary_key_values),
         }
 
     async def _get_table(self, config: SqlOperationConfig) -> Table:
@@ -192,6 +277,22 @@ def _resolve_limit(
     if limit <= 0:
         raise ToolError(f"SQL query operation {operation_id} requires limit > 0.")
     return min(limit, max_limit)
+
+
+def _required_primary_key_values(
+    *,
+    operation_id: str,
+    arguments: dict[str, Any],
+    primary_key_columns: list[str],
+) -> dict[str, Any]:
+    values: dict[str, Any] = {}
+    for column_name in primary_key_columns:
+        if column_name not in arguments or arguments[column_name] is None:
+            raise ToolError(
+                f"SQL operation {operation_id} requires primary key parameter {column_name}."
+            )
+        values[column_name] = arguments[column_name]
+    return values
 
 
 def _json_safe_row(row: dict[str, Any]) -> dict[str, Any]:

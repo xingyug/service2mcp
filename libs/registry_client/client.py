@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Self, TypeVar
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from libs.registry_client.models import (
     ArtifactDiffResponse,
@@ -86,10 +86,14 @@ class RegistryClient:
         service_id: str,
         version_number: int,
         payload: ArtifactVersionUpdate,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
     ) -> ArtifactVersionResponse:
         response = await self._client.put(
             f"/api/v1/artifacts/{service_id}/versions/{version_number}",
             json=payload.model_dump(mode="json", exclude_none=True),
+            params=self._filter_params(tenant=tenant, environment=environment),
         )
         return self._parse_model(response, ArtifactVersionResponse)
 
@@ -97,15 +101,27 @@ class RegistryClient:
         self,
         service_id: str,
         version_number: int,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
     ) -> ArtifactVersionResponse:
         response = await self._client.post(
-            f"/api/v1/artifacts/{service_id}/versions/{version_number}/activate"
+            f"/api/v1/artifacts/{service_id}/versions/{version_number}/activate",
+            params=self._filter_params(tenant=tenant, environment=environment),
         )
         return self._parse_model(response, ArtifactVersionResponse)
 
-    async def delete_version(self, service_id: str, version_number: int) -> None:
+    async def delete_version(
+        self,
+        service_id: str,
+        version_number: int,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
+    ) -> None:
         response = await self._client.delete(
-            f"/api/v1/artifacts/{service_id}/versions/{version_number}"
+            f"/api/v1/artifacts/{service_id}/versions/{version_number}",
+            params=self._filter_params(tenant=tenant, environment=environment),
         )
         self._ensure_success(response)
 
@@ -153,4 +169,9 @@ class RegistryClient:
             raise RegistryClientError(
                 f"Non-JSON response from registry: {response.status_code}"
             ) from exc
-        return model_type.model_validate(data)
+        try:
+            return model_type.model_validate(data)
+        except ValidationError as exc:
+            raise RegistryClientError(
+                f"Malformed JSON response from registry: {response.status_code}"
+            ) from exc

@@ -2,6 +2,7 @@
 
 import { use, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   RotateCcw,
@@ -21,10 +22,12 @@ import {
 } from "@/hooks/use-api";
 import { isCompilationInProgress } from "@/lib/compilation-status";
 import { useCompilationEvents } from "@/lib/hooks/use-sse";
+import { buildServiceDetailHref } from "@/lib/service-scope";
 import type { CompilationStage } from "@/types/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ErrorState } from "@/components/ui/error-state";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/compilations/status-badge";
@@ -64,11 +67,12 @@ export default function CompilationDetailPage({
   params: Promise<{ jobId: string }>;
 }) {
   const { jobId } = use(params);
+  const router = useRouter();
   const [selectedStage, setSelectedStage] = useState<
     CompilationStage | undefined
   >();
 
-  const { data: job, isLoading } = useCompilation(jobId, {
+  const { data: job, isLoading, error } = useCompilation(jobId, {
     refetchInterval: (query) =>
       isCompilationInProgress(query.state.data?.status) ? 5_000 : false,
   });
@@ -84,7 +88,10 @@ export default function CompilationDetailPage({
     retryMutation.mutate(
       { jobId, fromStage },
       {
-        onSuccess: () => toast.success("Retry started"),
+        onSuccess: (newJob) => {
+          toast.success("Retry started");
+          router.push(`/compilations/${newJob.job_id}`);
+        },
         onError: () => toast.error("Failed to retry"),
       },
     );
@@ -92,7 +99,10 @@ export default function CompilationDetailPage({
 
   function handleRollback() {
     rollbackMutation.mutate(jobId, {
-      onSuccess: () => toast.success("Rollback initiated"),
+      onSuccess: (newJob) => {
+        toast.success("Rollback initiated");
+        router.push(`/compilations/${newJob.job_id}`);
+      },
       onError: () => toast.error("Failed to rollback"),
     });
   }
@@ -110,10 +120,29 @@ export default function CompilationDetailPage({
     );
   }
 
+  if (error) {
+    return (
+      <div className="space-y-4">
+        <Button variant="ghost" size="sm" nativeButton={false} render={<Link href="/compilations" />}>
+          <ArrowLeft data-icon="inline-start" />
+          Back to Jobs
+        </Button>
+        <ErrorState
+          title="Failed to load compilation job"
+          message={
+            error instanceof Error
+              ? error.message
+              : "The compilation detail request did not succeed."
+          }
+        />
+      </div>
+    );
+  }
+
   if (!job) {
     return (
       <div className="space-y-4">
-        <Button variant="ghost" size="sm" render={<Link href="/compilations" />}>
+        <Button variant="ghost" size="sm" nativeButton={false} render={<Link href="/compilations" />}>
           <ArrowLeft data-icon="inline-start" />
           Back to Jobs
         </Button>
@@ -127,7 +156,7 @@ export default function CompilationDetailPage({
       {/* ── Top Section ─────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-1">
-          <Button variant="ghost" size="sm" className="-ml-2 mb-1" render={<Link href="/compilations" />}>
+          <Button variant="ghost" size="sm" className="-ml-2 mb-1" nativeButton={false} render={<Link href="/compilations" />}>
             <ArrowLeft data-icon="inline-start" />
             Back to Jobs
           </Button>
@@ -282,13 +311,13 @@ export default function CompilationDetailPage({
                   <dt className="text-xs font-medium text-muted-foreground">
                     IR ID
                   </dt>
-                  <dd className="mt-0.5 font-mono text-xs">
-                    <Link
-                      href={`/services/${job.artifacts.ir_id}`}
-                      className={cn(
-                        "inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline",
-                      )}
-                    >
+                    <dd className="mt-0.5 font-mono text-xs">
+                      <Link
+                        href={buildServiceDetailHref(job.artifacts.ir_id, job)}
+                        className={cn(
+                          "inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline",
+                        )}
+                      >
                       {job.artifacts.ir_id.slice(0, 12)}…
                       <ExternalLink className="size-3" />
                     </Link>

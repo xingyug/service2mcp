@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from libs.ir.models import EventSupportLevel, EventTransport, ServiceIR
+from libs.ir.models import EventDescriptor, EventSupportLevel, EventTransport, GrpcStreamMode, ServiceIR
 
 
 @dataclass(frozen=True)
@@ -197,14 +197,11 @@ def protocol_capability_matrix() -> tuple[ProtocolCapability, ...]:
 def protocol_capability_key(service_ir: ServiceIR) -> str:
     """Resolve the capability row key for a concrete IR instance."""
 
-    if service_ir.protocol != "grpc":
-        return service_ir.protocol
+    protocol = str(service_ir.protocol)
+    if protocol != "grpc":
+        return protocol
 
-    if any(
-        descriptor.transport is EventTransport.grpc_stream
-        and descriptor.support is EventSupportLevel.supported
-        for descriptor in service_ir.event_descriptors
-    ):
+    if any(_supports_native_grpc_stream_capability(descriptor) for descriptor in service_ir.event_descriptors):
         return "grpc_stream"
 
     if any(
@@ -219,4 +216,31 @@ def protocol_capability_key(service_ir: ServiceIR) -> str:
 def protocol_capability_for_service(service_ir: ServiceIR) -> ProtocolCapability:
     """Return the capability row that matches a concrete IR instance."""
 
-    return _CAPABILITY_ROWS[protocol_capability_key(service_ir)]
+    key = protocol_capability_key(service_ir)
+    return _CAPABILITY_ROWS.get(key, _unknown_protocol_capability(key))
+
+
+def _supports_native_grpc_stream_capability(descriptor: EventDescriptor) -> bool:
+    return (
+        descriptor.transport is EventTransport.grpc_stream
+        and descriptor.support is EventSupportLevel.supported
+        and descriptor.operation_id is not None
+        and descriptor.grpc_stream is not None
+        and descriptor.grpc_stream.mode is GrpcStreamMode.server
+    )
+
+
+def _unknown_protocol_capability(protocol: str) -> ProtocolCapability:
+    return ProtocolCapability(
+        key=protocol,
+        label=f"Unknown ({protocol})",
+        extract=False,
+        compile=False,
+        runtime=False,
+        live_proof=False,
+        llm_e2e=False,
+        notes=(
+            "Unknown protocol; no curated capability row is available, so extraction, "
+            "runtime, and proof support are treated conservatively as unsupported."
+        ),
+    )

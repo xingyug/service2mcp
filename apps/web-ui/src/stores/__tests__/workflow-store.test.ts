@@ -67,7 +67,7 @@ describe("workflow-store", () => {
     expect(wf.serviceId).toBe("s");
     expect(wf.versionNumber).toBe(1);
     expect(wf.state).toBe("in_review");
-    expect(mockGet).toHaveBeenCalledWith("s", 1);
+    expect(mockGet).toHaveBeenCalledWith("s", 1, undefined);
   });
 
   it("loadWorkflow returns cached workflow without re-fetching", async () => {
@@ -119,7 +119,7 @@ describe("workflow-store", () => {
     await useWorkflowStore.getState().transition("s", 1, "submitted", "a");
 
     expect(useWorkflowStore.getState().getWorkflow("s", 1)!.state).toBe("submitted");
-    expect(mockTransition).toHaveBeenCalledWith("s", 1, "submitted", "a", undefined);
+    expect(mockTransition).toHaveBeenCalledWith("s", 1, "submitted", "a", undefined, undefined);
   });
 
   it("transitions submitted → in_review", async () => {
@@ -220,7 +220,14 @@ describe("workflow-store", () => {
     const wf = await useWorkflowStore.getState().saveNotes("s", 1, notesPayload, "Ship it");
 
     expect(wf.reviewNotes).toEqual({ operation_notes: notesPayload, overall_note: "Ship it" });
-    expect(mockSaveNotes).toHaveBeenCalledWith("s", 1, notesPayload, "Ship it");
+    expect(mockSaveNotes).toHaveBeenCalledWith(
+      "s",
+      1,
+      notesPayload,
+      "Ship it",
+      undefined,
+      undefined,
+    );
   });
 
   // -----------------------------------------------------------------------
@@ -253,6 +260,58 @@ describe("workflow-store", () => {
 
     expect(useWorkflowStore.getState().getWorkflow("svc", 1)!.state).toBe("submitted");
     expect(useWorkflowStore.getState().getWorkflow("svc", 2)!.state).toBe("draft");
+  });
+
+  it("keeps tenant/environment variants in separate cache entries", async () => {
+    mockGet
+      .mockResolvedValueOnce(
+        apiResponse({
+          service_id: "svc",
+          version_number: 7,
+          tenant: "team-a",
+          environment: "prod",
+          state: "approved",
+        }),
+      )
+      .mockResolvedValueOnce(
+        apiResponse({
+          service_id: "svc",
+          version_number: 7,
+          tenant: "team-b",
+          environment: "prod",
+          state: "draft",
+        }),
+      );
+
+    await useWorkflowStore.getState().loadWorkflow("svc", 7, {
+      tenant: "team-a",
+      environment: "prod",
+    });
+    await useWorkflowStore.getState().loadWorkflow("svc", 7, {
+      tenant: "team-b",
+      environment: "prod",
+    });
+
+    expect(mockGet).toHaveBeenNthCalledWith(1, "svc", 7, {
+      tenant: "team-a",
+      environment: "prod",
+    });
+    expect(mockGet).toHaveBeenNthCalledWith(2, "svc", 7, {
+      tenant: "team-b",
+      environment: "prod",
+    });
+    expect(
+      useWorkflowStore.getState().getWorkflow("svc", 7, {
+        tenant: "team-a",
+        environment: "prod",
+      })?.state,
+    ).toBe("approved");
+    expect(
+      useWorkflowStore.getState().getWorkflow("svc", 7, {
+        tenant: "team-b",
+        environment: "prod",
+      })?.state,
+    ).toBe("draft");
   });
 
   // -----------------------------------------------------------------------

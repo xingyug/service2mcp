@@ -17,11 +17,14 @@ from apps.mcp_runtime.main import (
     build_runtime_state,
 )
 from libs.ir.models import (
+    AuthConfig,
+    AuthType,
     EventDescriptor,
     EventSupportLevel,
     EventTransport,
     GrpcUnaryRuntimeConfig,
     Operation,
+    RequestSigningConfig,
     RiskLevel,
     RiskMetadata,
     ServiceIR,
@@ -108,6 +111,21 @@ class TestBuildRuntimeState:
             ir_path = _write_ir(ir, Path(tmpdir))
             state = build_runtime_state(str(ir_path))
         assert state.proxy is not None
+
+    def test_rejects_ambiguous_runtime_secret_refs(self) -> None:
+        ir = _minimal_ir(
+            auth=AuthConfig(
+                type=AuthType.bearer,
+                runtime_secret_ref="client-id",
+                request_signing=RequestSigningConfig(secret_ref="client_id"),
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ir_path = _write_ir(ir, Path(tmpdir))
+            state = build_runtime_state(str(ir_path))
+        assert state.is_loaded is False
+        assert state.load_error is not None
+        assert "normalize to the same env name" in state.load_error
 
     def test_operations_registered(self) -> None:
         op = Operation(

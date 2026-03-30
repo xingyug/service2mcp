@@ -105,8 +105,6 @@ class AuthzService:
             policy.risk_threshold = payload.risk_threshold.value
         if payload.decision is not None:
             policy.decision = payload.decision
-        if payload.created_by is not None:
-            policy.created_by = payload.created_by
 
         await self._session.flush()
         if commit:

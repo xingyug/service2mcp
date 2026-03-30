@@ -36,6 +36,23 @@ def _minimal_ir_dict() -> dict[str, Any]:
     return ir.model_dump()
 
 
+def _minimal_route_config() -> dict[str, Any]:
+    return {
+        "service_id": "svc-1",
+        "service_name": "Svc 1",
+        "namespace": "default",
+        "version_number": 1,
+        "default_route": {
+            "route_id": "svc-1-active",
+            "target_service": {"name": "svc-1-v1", "port": 8000},
+        },
+        "version_route": {
+            "route_id": "svc-1-v1",
+            "target_service": {"name": "svc-1-v1", "port": 8000},
+        },
+    }
+
+
 class TestArtifactRecordPayload:
     def test_valid(self) -> None:
         payload = ArtifactRecordPayload(
@@ -128,6 +145,15 @@ class TestArtifactVersionCreate:
         )
         assert len(version.artifacts) == 1
 
+    def test_invalid_route_config_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="namespace"):
+            ArtifactVersionCreate(
+                service_id="svc-1",
+                version_number=1,
+                ir_json=_minimal_ir_dict(),
+                route_config={"service_id": "svc-1", "service_name": "Svc 1"},
+            )
+
 
 class TestArtifactVersionUpdate:
     def test_valid_single_field(self) -> None:
@@ -149,6 +175,15 @@ class TestArtifactVersionUpdate:
     def test_valid_ir_json(self) -> None:
         update = ArtifactVersionUpdate(ir_json=_minimal_ir_dict())
         assert update.ir_json is not None
+
+    def test_invalid_route_config_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="target_service"):
+            ArtifactVersionUpdate(
+                route_config={
+                    **_minimal_route_config(),
+                    "default_route": {"route_id": "svc-1-active"},
+                }
+            )
 
 
 class TestArtifactVersionResponse:

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import Select, delete, desc, select, update
+from pydantic import ValidationError
+from sqlalchemy import Select, and_, delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -16,7 +18,12 @@ from apps.compiler_api.models import (
     ServiceListResponse,
     ServiceSummaryResponse,
 )
-from apps.compiler_worker.models import CompilationRequest
+from apps.compiler_worker.models import (
+    CompilationRequest,
+    public_compilation_options,
+    request_scope_from_options,
+    store_compilation_request_options,
+)
 from libs.db_models import ArtifactRecord, CompilationEvent, CompilationJob, ServiceVersion
 from libs.ir.diff import ParamChange, compute_diff
 from libs.ir.models import ServiceIR
@@ -33,6 +40,54 @@ from libs.registry_client.models import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
+class MalformedServiceVersionError(RuntimeError):
+    """Raised when an active service version cannot be materialized into ServiceIR."""
+
+    def __init__(self, *, service_id: str, version_number: int) -> None:
+        super().__init__(
+            f"Active service record for {service_id} v{version_number} is malformed and cannot be served."
+        )
+        self.service_id = service_id
+        self.version_number = version_number
+
+
+class MalformedArtifactDiffError(RuntimeError):
+    """Raised when a stored version cannot be materialized during artifact diffing."""
+
+    def __init__(self, *, service_id: str, version_number: int) -> None:
+        super().__init__(
+            f"Stored artifact version {service_id}:{version_number} is malformed and cannot be diffed."
+        )
+        self.service_id = service_id
+        self.version_number = version_number
+
+
+class AmbiguousServiceVersionError(RuntimeError):
+    """Raised when a registry lookup that expects one row matches multiple rows."""
+
+    def __init__(
+        self,
+        *,
+        service_id: str,
+        version_number: int | None = None,
+        tenant: str | None = None,
+        environment: str | None = None,
+    ) -> None:
+        identifier = f"{service_id}:{version_number}" if version_number is not None else service_id
+        super().__init__(
+            "Registry lookup for "
+            f"{identifier} matched multiple service versions "
+            f"(tenant={tenant!r}, environment={environment!r})."
+        )
+        self.service_id = service_id
+        self.version_number = version_number
+        self.tenant = tenant
+        self.environment = environment
+
+
 class CompilationRepository:
     """Persistence helpers for compilation jobs and workflow events."""
 
@@ -44,19 +99,25 @@ class CompilationRepository:
         request: CompilationRequest,
         *,
         job_id: UUID | None = None,
+        commit: bool = True,
     ) -> CompilationJobResponse:
         resolved_job_id = job_id or request.job_id or uuid.uuid4()
+        tenant, environment = request_scope_from_options(request.options)
         job = CompilationJob(
             id=resolved_job_id,
             source_url=request.source_url,
             source_hash=request.source_hash,
             status="pending",
-            options=request.options or None,
+            options=store_compilation_request_options(request),
             created_by=request.created_by,
             service_name=request.service_name,
+            tenant=tenant,
+            environment=environment,
         )
         self._session.add(job)
-        await self._session.commit()
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
         await self._session.refresh(job)
         return self._to_job_response(job)
 
@@ -67,16 +128,26 @@ class CompilationRepository:
         await self._session.delete(job)
         await self._session.commit()
 
-    async def get_job(self, job_id: UUID) -> CompilationJobResponse | None:
+    async def get_job(
+        self,
+        job_id: UUID,
+        *,
+        include_internal_options: bool = False,
+    ) -> CompilationJobResponse | None:
         job = await self._session.get(CompilationJob, job_id)
         if job is None:
             return None
-        return self._to_job_response(job)
+        return self._to_job_response(job, include_internal_options=include_internal_options)
 
-    async def list_jobs(self, *, limit: int = 1000) -> list[CompilationJobResponse]:
-        result = await self._session.scalars(
-            select(CompilationJob).order_by(desc(CompilationJob.created_at)).limit(limit)
-        )
+    async def list_jobs(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> list[CompilationJobResponse]:
+        query = select(CompilationJob).order_by(desc(CompilationJob.created_at))
+        if limit is not None:
+            query = query.limit(limit)
+        result = await self._session.scalars(query)
         return [self._to_job_response(job) for job in result.all()]
 
     async def list_events(
@@ -94,7 +165,11 @@ class CompilationRepository:
         return [self._to_event_response(event) for event in result.all()]
 
     @staticmethod
-    def _to_job_response(job: CompilationJob) -> CompilationJobResponse:
+    def _to_job_response(
+        job: CompilationJob,
+        *,
+        include_internal_options: bool = False,
+    ) -> CompilationJobResponse:
         return CompilationJobResponse(
             id=job.id,
             source_url=job.source_url,
@@ -103,11 +178,14 @@ class CompilationRepository:
             status=job.status,
             current_stage=job.current_stage,
             error_detail=job.error_detail,
-            options=job.options,
+            options=job.options if include_internal_options else public_compilation_options(job.options),
             created_by=job.created_by,
+            service_id=job.service_name,
             service_name=job.service_name,
             created_at=job.created_at,
             updated_at=job.updated_at,
+            tenant=job.tenant,
+            environment=job.environment,
         )
 
     @staticmethod
@@ -137,16 +215,35 @@ class ServiceCatalogRepository:
         tenant: str | None = None,
         environment: str | None = None,
     ) -> ServiceListResponse:
-        query = select(ServiceVersion).where(ServiceVersion.is_active.is_(True))
+        stats = self._service_stats_subquery()
+        query = (
+            select(
+                ServiceVersion,
+                stats.c.version_count,
+                stats.c.last_compiled_at,
+            )
+            .join(stats, self._service_stats_join_condition(stats))
+            .where(ServiceVersion.is_active.is_(True))
+        )
         if tenant is not None:
             query = query.where(ServiceVersion.tenant == tenant)
         if environment is not None:
             query = query.where(ServiceVersion.environment == environment)
 
-        result = await self._session.scalars(query.order_by(ServiceVersion.service_id).limit(1000))
-        versions = result.all()
+        result = await self._session.execute(query.order_by(ServiceVersion.service_id))
+        services: list[ServiceSummaryResponse] = []
+        for version, version_count, last_compiled_at in result.all():
+            try:
+                services.append(self._to_service_summary(version, version_count, last_compiled_at))
+            except MalformedServiceVersionError:
+                logger.warning(
+                    "Skipping malformed active service version %s v%s from service catalog list.",
+                    version.service_id,
+                    version.version_number,
+                    exc_info=True,
+                )
         return ServiceListResponse(
-            services=[self._to_service_summary(version) for version in versions]
+            services=services
         )
 
     async def get_service(
@@ -156,8 +253,14 @@ class ServiceCatalogRepository:
         tenant: str | None = None,
         environment: str | None = None,
     ) -> ServiceSummaryResponse | None:
+        stats = self._service_stats_subquery()
         query = (
-            select(ServiceVersion)
+            select(
+                ServiceVersion,
+                stats.c.version_count,
+                stats.c.last_compiled_at,
+            )
+            .join(stats, self._service_stats_join_condition(stats))
             .where(ServiceVersion.is_active.is_(True))
             .where(ServiceVersion.service_id == service_id)
         )
@@ -166,28 +269,69 @@ class ServiceCatalogRepository:
         if environment is not None:
             query = query.where(ServiceVersion.environment == environment)
 
-        version = cast(
-            ServiceVersion | None,
-            await self._session.scalar(query.limit(1)),
-        )
-        if version is None:
+        rows = (await self._session.execute(query.limit(2))).all()
+        if not rows:
             return None
-        return self._to_service_summary(version)
+        if len(rows) > 1:
+            raise AmbiguousServiceVersionError(
+                service_id=service_id,
+                tenant=tenant,
+                environment=environment,
+            )
+        version, version_count, last_compiled_at = rows[0]
+        return self._to_service_summary(version, version_count, last_compiled_at)
 
     @staticmethod
-    def _to_service_summary(version: ServiceVersion) -> ServiceSummaryResponse:
-        service_ir = ServiceIR.model_validate(version.ir_json)
+    def _to_service_summary(
+        version: ServiceVersion,
+        version_count: int,
+        last_compiled_at: Any,
+    ) -> ServiceSummaryResponse:
+        try:
+            service_ir = ServiceIR.model_validate(version.ir_json)
+        except ValidationError as exc:
+            raise MalformedServiceVersionError(
+                service_id=version.service_id,
+                version_number=version.version_number,
+            ) from exc
         return ServiceSummaryResponse(
             service_id=version.service_id,
             active_version=version.version_number,
+            version_count=int(version_count),
             service_name=service_ir.service_name,
             service_description=service_ir.service_description,
-            tool_count=len(service_ir.operations),
+            tool_count=sum(1 for operation in service_ir.operations if operation.enabled),
             protocol=version.protocol or service_ir.protocol,
             tenant=version.tenant,
             environment=version.environment,
             deployment_revision=version.deployment_revision,
-            created_at=version.created_at,
+            created_at=cast(Any, last_compiled_at) or version.created_at,
+        )
+
+    @staticmethod
+    def _service_stats_subquery():
+        return (
+            select(
+                ServiceVersion.service_id.label("service_id"),
+                ServiceVersion.tenant.label("tenant"),
+                ServiceVersion.environment.label("environment"),
+                func.count(ServiceVersion.id).label("version_count"),
+                func.max(ServiceVersion.created_at).label("last_compiled_at"),
+            )
+            .group_by(
+                ServiceVersion.service_id,
+                ServiceVersion.tenant,
+                ServiceVersion.environment,
+            )
+            .subquery()
+        )
+
+    @staticmethod
+    def _service_stats_join_condition(stats: Any):
+        return and_(
+            ServiceVersion.service_id == stats.c.service_id,
+            ServiceVersion.tenant.is_not_distinct_from(stats.c.tenant),
+            ServiceVersion.environment.is_not_distinct_from(stats.c.environment),
         )
 
 
@@ -197,7 +341,12 @@ class ArtifactRegistryRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create_version(self, payload: ArtifactVersionCreate) -> ArtifactVersionResponse:
+    async def create_version(
+        self,
+        payload: ArtifactVersionCreate,
+        *,
+        commit: bool = True,
+    ) -> ArtifactVersionResponse:
         existing_versions = await self.list_versions(
             payload.service_id,
             tenant=payload.tenant,
@@ -234,9 +383,15 @@ class ArtifactRegistryRepository:
         self._session.add(version)
         await self._session.flush()
         await self._replace_artifacts(version.id, payload.artifacts)
-        await self._session.commit()
+        if commit:
+            await self._session.commit()
 
-        return await self._require_version(payload.service_id, payload.version_number)
+        return await self._require_version(
+            payload.service_id,
+            payload.version_number,
+            tenant=payload.tenant,
+            environment=payload.environment,
+        )
 
     async def get_version(
         self,
@@ -266,7 +421,6 @@ class ArtifactRegistryRepository:
         query = (
             self._version_query(service_id, tenant=tenant, environment=environment)
             .order_by(desc(ServiceVersion.version_number))
-            .limit(1000)
         )
         result = await self._session.scalars(query)
         versions = [self._to_response(record) for record in result.all()]
@@ -282,7 +436,12 @@ class ArtifactRegistryRepository:
         query = self._version_query(service_id, tenant=tenant, environment=environment).where(
             ServiceVersion.is_active.is_(True)
         )
-        record = cast(ServiceVersion | None, await self._session.scalar(query))
+        record = await self._require_unique_version_record(
+            query,
+            service_id=service_id,
+            tenant=tenant,
+            environment=environment,
+        )
         if record is None:
             return None
         return self._to_response(record)
@@ -295,6 +454,7 @@ class ArtifactRegistryRepository:
         *,
         tenant: str | None = None,
         environment: str | None = None,
+        commit: bool = True,
     ) -> ArtifactVersionResponse | None:
         record = await self._get_version_record(
             service_id,
@@ -330,7 +490,9 @@ class ArtifactRegistryRepository:
         if payload.artifacts is not None:
             await self._replace_artifacts(record.id, payload.artifacts)
 
-        await self._session.commit()
+        await self._session.flush()
+        if commit:
+            await self._session.commit()
         await self._session.refresh(record)
         return self._to_response(record)
 
@@ -445,10 +607,22 @@ class ArtifactRegistryRepository:
         if from_record is None or to_record is None:
             return None
 
-        diff = compute_diff(
-            ServiceIR.model_validate(from_record.ir_json),
-            ServiceIR.model_validate(to_record.ir_json),
-        )
+        try:
+            from_ir = ServiceIR.model_validate(from_record.ir_json)
+        except ValidationError as exc:
+            raise MalformedArtifactDiffError(
+                service_id=service_id,
+                version_number=from_version,
+            ) from exc
+        try:
+            to_ir = ServiceIR.model_validate(to_record.ir_json)
+        except ValidationError as exc:
+            raise MalformedArtifactDiffError(
+                service_id=service_id,
+                version_number=to_version,
+            ) from exc
+
+        diff = compute_diff(from_ir, to_ir)
         return ArtifactDiffResponse(
             service_id=service_id,
             from_version=from_version,
@@ -516,7 +690,34 @@ class ArtifactRegistryRepository:
         query = self._version_query(service_id, tenant=tenant, environment=environment).where(
             ServiceVersion.version_number == version_number
         )
-        return cast(ServiceVersion | None, await self._session.scalar(query))
+        return await self._require_unique_version_record(
+            query,
+            service_id=service_id,
+            version_number=version_number,
+            tenant=tenant,
+            environment=environment,
+        )
+
+    async def _require_unique_version_record(
+        self,
+        query: Select[tuple[ServiceVersion]],
+        *,
+        service_id: str,
+        version_number: int | None = None,
+        tenant: str | None = None,
+        environment: str | None = None,
+    ) -> ServiceVersion | None:
+        records = (await self._session.scalars(query.limit(2))).all()
+        if not records:
+            return None
+        if len(records) > 1:
+            raise AmbiguousServiceVersionError(
+                service_id=service_id,
+                version_number=version_number,
+                tenant=tenant,
+                environment=environment,
+            )
+        return cast(ServiceVersion, records[0])
 
     def _version_query(
         self,
@@ -560,8 +761,16 @@ class ArtifactRegistryRepository:
         self,
         service_id: str,
         version_number: int,
+        *,
+        tenant: str | None = None,
+        environment: str | None = None,
     ) -> ArtifactVersionResponse:
-        record = await self.get_version(service_id, version_number)
+        record = await self.get_version(
+            service_id,
+            version_number,
+            tenant=tenant,
+            environment=environment,
+        )
         if record is None:
             raise RuntimeError("Artifact version disappeared after commit.")
         return record

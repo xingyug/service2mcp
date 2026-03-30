@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from libs.ir.models import Operation, ToolIntent
+from libs.sample_placeholders import (
+    PATH_PLACEHOLDER_ID_SAMPLE,
+    PATH_PLACEHOLDER_INT_SAMPLE,
+    PATH_PLACEHOLDER_NUMBER_SAMPLE,
+    PATH_PLACEHOLDER_STRING_SAMPLE,
+)
 
 
 @dataclass(frozen=True)
@@ -148,11 +154,18 @@ def _contains_synthetic_placeholder_sample(
     include_numeric_fallbacks: bool,
 ) -> bool:
     if isinstance(value, str):
-        if value == "sample":
+        if value in {PATH_PLACEHOLDER_STRING_SAMPLE, PATH_PLACEHOLDER_ID_SAMPLE}:
             return True
-        return include_numeric_fallbacks and value == "1"
+        return include_numeric_fallbacks and value in {
+            str(PATH_PLACEHOLDER_INT_SAMPLE),
+            str(int(PATH_PLACEHOLDER_NUMBER_SAMPLE)),
+        }
+    if isinstance(value, bool):
+        return False
     if isinstance(value, int):
-        return include_numeric_fallbacks and value == 1
+        return include_numeric_fallbacks and value == PATH_PLACEHOLDER_INT_SAMPLE
+    if isinstance(value, float):
+        return include_numeric_fallbacks and value == PATH_PLACEHOLDER_NUMBER_SAMPLE
     if isinstance(value, list):
         return any(
             _contains_synthetic_placeholder_sample(
@@ -197,14 +210,22 @@ def check_thresholds(
 
     violations: list[str] = []
 
-    if summary.generated_tools > 0:
-        actual_ratio = summary.audited_tools / summary.generated_tools
-        if actual_ratio < thresholds.min_audited_ratio:
-            violations.append(
-                f"Audited ratio {actual_ratio:.2f} is below minimum "
-                f"{thresholds.min_audited_ratio:.2f} "
-                f"({summary.audited_tools}/{summary.generated_tools})."
-            )
+    actual_ratio = (
+        summary.audited_tools / summary.generated_tools
+        if summary.generated_tools > 0
+        else 0.0
+    )
+    if actual_ratio < thresholds.min_audited_ratio:
+        ratio_detail = (
+            f"({summary.audited_tools}/{summary.generated_tools})."
+            if summary.generated_tools > 0
+            else "(0/0; no generated tools were audited)."
+        )
+        violations.append(
+            f"Audited ratio {actual_ratio:.2f} is below minimum "
+            f"{thresholds.min_audited_ratio:.2f} "
+            f"{ratio_detail}"
+        )
 
     if thresholds.max_failed is not None and summary.failed > thresholds.max_failed:
         violations.append(f"Failed count {summary.failed} exceeds maximum {thresholds.max_failed}.")

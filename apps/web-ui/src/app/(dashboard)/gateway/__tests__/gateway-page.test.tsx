@@ -7,6 +7,7 @@ import { renderWithProviders } from "@/__tests__/test-utils";
 import GatewayPage from "../page";
 
 const {
+  mockUseServices,
   mockListVersions,
   mockListRoutes,
   mockSyncRoutes,
@@ -16,6 +17,7 @@ const {
   mockSuccessToast,
   mockErrorToast,
 } = vi.hoisted(() => ({
+  mockUseServices: vi.fn(),
   mockListVersions: vi.fn(),
   mockListRoutes: vi.fn(),
   mockSyncRoutes: vi.fn(),
@@ -111,12 +113,7 @@ const versions = [
 ];
 
 vi.mock("@/hooks/use-api", () => ({
-  useServices: () => ({
-    data: { services: [service] },
-    isLoading: false,
-    error: null,
-    refetch: vi.fn(),
-  }),
+  useServices: mockUseServices,
 }));
 
 vi.mock("@/lib/api-client", () => ({
@@ -142,6 +139,12 @@ vi.mock("sonner", () => ({
 describe("GatewayPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseServices.mockReturnValue({
+      data: { services: [service] },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
     mockListVersions.mockResolvedValue({ versions });
     mockListRoutes.mockResolvedValue({
       routes: [
@@ -206,9 +209,7 @@ describe("GatewayPage", () => {
     });
   });
 
-  it("derives route status from real gateway routes and shows real deployment history", async () => {
-    const user = userEvent.setup();
-
+  it("derives route status from real gateway routes without fabricating gateway history", async () => {
     renderWithProviders(<GatewayPage />);
 
     await waitFor(() => {
@@ -220,9 +221,30 @@ describe("GatewayPage", () => {
 
     expect(screen.getByText("Billing API")).toBeInTheDocument();
     expect(screen.getAllByText("Synced").length).toBeGreaterThan(0);
+    expect(screen.getByText("Artifact Timestamp")).toBeInTheDocument();
+    expect(screen.queryByText("Last Synced")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Deployment history/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/does not currently persist gateway sync\/rollback\/delete events/i),
+    ).toBeInTheDocument();
+  });
 
-    await user.click(screen.getByRole("button", { name: /Deployment History/i }));
-    expect(screen.getByText("v1 → v2")).toBeInTheDocument();
+  it("shows a service load error instead of zero-value gateway states", () => {
+    mockUseServices.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error("services unavailable"),
+      refetch: vi.fn(),
+    });
+
+    renderWithProviders(<GatewayPage />);
+
+    expect(screen.getByText("Failed to load services")).toBeInTheDocument();
+    expect(screen.getByText("services unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No service routes found.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sync Routes")).not.toBeInTheDocument();
   });
 
   it(
@@ -248,7 +270,39 @@ describe("GatewayPage", () => {
     await waitFor(() => {
       expect(mockSyncRoutes).toHaveBeenCalledWith({
         route_config: versionTwoRouteConfig,
-        previous_routes: {},
+        previous_routes: {
+          "svc-1-active": {
+            route_id: "svc-1-active",
+            route_type: "default",
+            service_id: "svc-1",
+            service_name: "Billing API",
+            namespace: "runtime-system",
+            target_service: {
+              name: "billing-runtime-v2",
+              namespace: "runtime-system",
+              port: 8003,
+            },
+            version_number: 2,
+          },
+          "svc-1-v2": {
+            route_id: "svc-1-v2",
+            route_type: "version",
+            service_id: "svc-1",
+            service_name: "Billing API",
+            namespace: "runtime-system",
+            target_service: {
+              name: "billing-runtime-v2",
+              namespace: "runtime-system",
+              port: 8003,
+            },
+            version_number: 2,
+            match: {
+              headers: {
+                "x-tool-compiler-version": "2",
+              },
+            },
+          },
+        },
       });
     });
 
@@ -258,9 +312,13 @@ describe("GatewayPage", () => {
       within(dialog).getByPlaceholderText("Enter service ID");
     const targetVersionInput =
       within(dialog).getByPlaceholderText("Previous version number");
+    await user.clear(rollbackServiceIdInput);
     await user.type(rollbackServiceIdInput, "svc-1");
-    await user.clear(targetVersionInput);
-    await user.type(targetVersionInput, "1");
+
+    await waitFor(() => {
+      expect(rollbackServiceIdInput).toHaveValue("svc-1");
+      expect(targetVersionInput).toHaveValue(1);
+    });
     await user.click(within(dialog).getByRole("button", { name: "Rollback" }));
 
       await waitFor(() => {
@@ -304,4 +362,95 @@ describe("GatewayPage", () => {
     },
     15000,
   );
+
+  it("prefills rollback with the latest real prior version when versions are sparse", async () => {
+    const user = userEvent.setup();
+    mockListVersions.mockResolvedValue({
+      versions: [
+        {
+          service_id: "svc-1",
+          version_number: 1,
+          is_active: false,
+          created_at: "2026-03-29T00:00:00Z",
+          ir: {} as never,
+          route_config: versionOneRouteConfig,
+        },
+        {
+          service_id: "svc-1",
+          version_number: 3,
+          is_active: false,
+          created_at: "2026-03-29T00:30:00Z",
+          ir: {} as never,
+          route_config: {
+            ...versionOneRouteConfig,
+            version_number: 3,
+            version_route: {
+              ...versionOneRouteConfig.version_route,
+              route_id: "svc-1-v3",
+              match: {
+                headers: {
+                  "x-tool-compiler-version": "3",
+                },
+              },
+            },
+          },
+        },
+        {
+          service_id: "svc-1",
+          version_number: 7,
+          is_active: true,
+          created_at: "2026-03-29T01:00:00Z",
+          ir: {} as never,
+          route_config: {
+            ...versionTwoRouteConfig,
+            version_number: 7,
+            version_route: {
+              ...versionTwoRouteConfig.version_route,
+              route_id: "svc-1-v7",
+              match: {
+                headers: {
+                  "x-tool-compiler-version": "7",
+                },
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    renderWithProviders(<GatewayPage />);
+
+    await waitFor(() => {
+      expect(mockListVersions).toHaveBeenCalledWith("svc-1");
+    });
+
+    await user.click(screen.getByRole("button", { name: "Rollback" }));
+
+    const dialog = screen.getByRole("dialog");
+    await user.type(
+      within(dialog).getByPlaceholderText("Enter service ID"),
+      "svc-1",
+    );
+
+    await waitFor(() => {
+      expect(
+        within(dialog).getByPlaceholderText("Previous version number"),
+      ).toHaveValue(3);
+    });
+  });
+
+  it("surfaces artifact version fetch failures instead of treating them as empty histories", async () => {
+    mockListVersions.mockRejectedValueOnce(new Error("registry unavailable"));
+
+    renderWithProviders(<GatewayPage />);
+
+    await waitFor(() => {
+      expect(mockListVersions).toHaveBeenCalledWith("svc-1");
+    });
+
+    expect(
+      await screen.findByText(/Failed to load artifact versions for svc-1/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Artifact versions unavailable")).toBeInTheDocument();
+  });
 });

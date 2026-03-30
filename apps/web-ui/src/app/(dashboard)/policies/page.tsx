@@ -24,6 +24,7 @@ import type {
   SubjectType,
   PolicyDecision,
   RiskLevel,
+  PolicyEvaluationRequest,
   PolicyEvaluationResponse,
 } from "@/types/api";
 import { RiskBadge } from "@/components/services/risk-badge";
@@ -73,6 +74,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ErrorState } from "@/components/ui/error-state";
 import {
   Tooltip,
   TooltipContent,
@@ -94,7 +96,9 @@ function relativeTime(iso: string): string {
   return `${days}d ago`;
 }
 
-const SUBJECT_TYPES: SubjectType[] = ["user", "group"];
+const SUBJECT_TYPE_SUGGESTIONS: SubjectType[] = ["user", "group", "role"];
+const SUBJECT_TYPE_PLACEHOLDER = "e.g. user, group, role";
+const SUBJECT_TYPE_SUGGESTIONS_ID = "policy-subject-type-suggestions";
 const RISK_LEVELS: RiskLevel[] = ["safe", "cautious", "dangerous", "unknown"];
 const DECISIONS: PolicyDecision[] = ["allow", "deny", "require_approval"];
 
@@ -129,6 +133,10 @@ const emptyForm: PolicyForm = {
   decision: "allow",
 };
 
+function evaluationSignature(request: PolicyEvaluationRequest): string {
+  return JSON.stringify(request);
+}
+
 // ── Policy Evaluation Section (F-021) ───────────────────────────────────────
 
 function PolicyEvalSection() {
@@ -137,18 +145,37 @@ function PolicyEvalSection() {
   const [subjectId, setSubjectId] = useState("");
   const [action, setAction] = useState("");
   const [resourceId, setResourceId] = useState("");
+  const [riskLevel, setRiskLevel] = useState<RiskLevel>("safe");
   const [result, setResult] = useState<PolicyEvaluationResponse | null>(null);
+  const [lastEvaluatedSignature, setLastEvaluatedSignature] = useState<string | null>(null);
+  const evaluationRequest = useMemo<PolicyEvaluationRequest>(
+    () => ({
+      subject_type: subjectType,
+      subject_id: subjectId,
+      action,
+      resource_id: resourceId,
+      risk_level: riskLevel,
+    }),
+    [subjectType, subjectId, action, resourceId, riskLevel],
+  );
+  const visibleResult =
+    lastEvaluatedSignature === evaluationSignature(evaluationRequest) ? result : null;
 
   const evalMutation = useMutation({
-    mutationFn: () =>
-      policyApi.evaluate({
-        subject_type: subjectType,
-        subject_id: subjectId,
-        action,
-        resource_id: resourceId,
-      }),
-    onSuccess: (res) => setResult(res),
-    onError: () => toast.error("Policy evaluation failed"),
+    mutationFn: (request: PolicyEvaluationRequest) => policyApi.evaluate(request),
+    onMutate: (request) => {
+      setResult(null);
+      setLastEvaluatedSignature(evaluationSignature(request));
+    },
+    onSuccess: (res, request) => {
+      setResult(res);
+      setLastEvaluatedSignature(evaluationSignature(request));
+    },
+    onError: (_error, request) => {
+      setResult(null);
+      setLastEvaluatedSignature(evaluationSignature(request));
+      toast.error("Policy evaluation failed");
+    },
   });
 
   return (
@@ -169,21 +196,16 @@ function PolicyEvalSection() {
         </CollapsibleTrigger>
         <CollapsibleContent>
           <CardContent className="space-y-4 pt-0">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
               <div className="space-y-1.5">
                 <Label className="text-xs">Subject Type</Label>
-                <Select value={subjectType} onValueChange={(v) => setSubjectType(v as SubjectType)}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SUBJECT_TYPES.map((t) => (
-                      <SelectItem key={t} value={t}>
-                        {t}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Input
+                  list={SUBJECT_TYPE_SUGGESTIONS_ID}
+                  placeholder={SUBJECT_TYPE_PLACEHOLDER}
+                  value={subjectType}
+                  onChange={(e) => setSubjectType(e.target.value)}
+                  className="h-8"
+                />
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Subject ID</Label>
@@ -212,12 +234,31 @@ function PolicyEvalSection() {
                   className="h-8"
                 />
               </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Risk Level</Label>
+                <Select
+                  value={riskLevel}
+                  onValueChange={(value) => setRiskLevel(value as RiskLevel)}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {RISK_LEVELS.map((risk) => (
+                      <SelectItem key={risk} value={risk}>
+                        {risk}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <div className="flex items-center gap-3">
               <Button
                 size="sm"
-                onClick={() => evalMutation.mutate()}
+                onClick={() => evalMutation.mutate(evaluationRequest)}
                 disabled={
+                  !subjectType.trim() ||
                   !subjectId.trim() ||
                   !action.trim() ||
                   !resourceId.trim() ||
@@ -226,24 +267,24 @@ function PolicyEvalSection() {
               >
                 {evalMutation.isPending ? "Evaluating…" : "Evaluate"}
               </Button>
-              {result && (
+              {visibleResult && (
                 <div className="flex items-center gap-2 text-sm">
                   <span className="text-muted-foreground">Decision:</span>
-                  <Badge className={decisionColors[result.decision]}>
-                    {decisionLabels[result.decision]}
+                  <Badge className={decisionColors[visibleResult.decision]}>
+                    {decisionLabels[visibleResult.decision]}
                   </Badge>
-                  {result.matched_policy_id && (
+                  {visibleResult.matched_policy_id && (
                     <>
                       <span className="text-muted-foreground">Policy:</span>
                       <span className="font-mono text-xs text-primary">
-                        {result.matched_policy_id}
+                        {visibleResult.matched_policy_id}
                       </span>
                     </>
                   )}
-                  {result.reason && (
+                  {visibleResult.reason && (
                     <>
                       <span className="text-muted-foreground">Reason:</span>
-                      <span className="text-xs">{result.reason}</span>
+                      <span className="text-xs">{visibleResult.reason}</span>
                     </>
                   )}
                 </div>
@@ -264,7 +305,7 @@ export default function PoliciesPage() {
   const queryClient = useQueryClient();
 
   // Filters
-  const [filterSubjectType, setFilterSubjectType] = useState<string>("all");
+  const [filterSubjectType, setFilterSubjectType] = useState("");
   const [filterSubjectId, setFilterSubjectId] = useState("");
   const [filterResourceId, setFilterResourceId] = useState(initialResourceId);
 
@@ -277,21 +318,15 @@ export default function PoliciesPage() {
   const [deleteTarget, setDeleteTarget] = useState<PolicyResponse | null>(null);
 
   const apiFilters = useMemo(() => {
-    const f: { subject_id?: string; resource_id?: string } = {};
+    const f: { subject_type?: string; subject_id?: string; resource_id?: string } = {};
+    if (filterSubjectType.trim()) f.subject_type = filterSubjectType.trim();
     if (filterSubjectId.trim()) f.subject_id = filterSubjectId.trim();
     if (filterResourceId.trim()) f.resource_id = filterResourceId.trim();
     return Object.keys(f).length > 0 ? f : undefined;
-  }, [filterSubjectId, filterResourceId]);
+  }, [filterSubjectType, filterSubjectId, filterResourceId]);
 
-  const { data, isLoading } = usePolicies(apiFilters);
-
-  const policies = useMemo(() => {
-    let list = data?.policies ?? [];
-    if (filterSubjectType !== "all") {
-      list = list.filter((p) => p.subject_type === filterSubjectType);
-    }
-    return list;
-  }, [data, filterSubjectType]);
+  const { data, isLoading, error, refetch } = usePolicies(apiFilters);
+  const policies = data?.policies ?? [];
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.policies.all });
@@ -379,6 +414,7 @@ export default function PoliciesPage() {
   }
 
   const isFormValid =
+    form.subject_type.trim() &&
     form.subject_id.trim() &&
     form.resource_id.trim() &&
     form.action_pattern.trim();
@@ -406,22 +442,13 @@ export default function PoliciesPage() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
-        <Select
+        <Input
+          list={SUBJECT_TYPE_SUGGESTIONS_ID}
+          placeholder="Any subject type"
+          className="h-8 w-40"
           value={filterSubjectType}
-          onValueChange={(v) => setFilterSubjectType(v ?? "all")}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Subject Type" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Types</SelectItem>
-            {SUBJECT_TYPES.map((t) => (
-              <SelectItem key={t} value={t}>
-                {t}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          onChange={(e) => setFilterSubjectType(e.target.value)}
+        />
 
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -461,24 +488,20 @@ export default function PoliciesPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label className="text-xs">Subject Type</Label>
-                <Select
+                <Input
+                  list={SUBJECT_TYPE_SUGGESTIONS_ID}
+                  placeholder={SUBJECT_TYPE_PLACEHOLDER}
                   value={form.subject_type}
-                  onValueChange={(v) =>
-                    setForm((f) => ({ ...f, subject_type: v as SubjectType }))
+                  onChange={(e) =>
+                    setForm((current) => ({
+                      ...current,
+                      subject_type: e.target.value,
+                    }))
                   }
                   disabled={!!editingPolicy}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SUBJECT_TYPES.map((t) => (
-                      <SelectItem key={t} value={t}>
-                        {t}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  required
+                  className="h-8"
+                />
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Subject ID</Label>
@@ -650,6 +673,18 @@ export default function PoliciesPage() {
             <Skeleton key={i} className="h-10 w-full rounded-lg" />
           ))}
         </div>
+      ) : error ? (
+        <ErrorState
+          title="Failed to load policies"
+          message={
+            error instanceof Error
+              ? error.message
+              : "The policies request did not succeed."
+          }
+          onAction={() => {
+            void refetch();
+          }}
+        />
       ) : policies.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-20 text-center">
           <Shield className="size-12 text-muted-foreground/40" />
@@ -657,13 +692,13 @@ export default function PoliciesPage() {
             No policies found
           </p>
           <p className="text-sm text-muted-foreground/80">
-            {filterSubjectId || filterResourceId || filterSubjectType !== "all"
+            {filterSubjectId || filterResourceId || filterSubjectType.trim()
               ? "Try adjusting your filters."
               : "Create a policy to define access control rules."}
           </p>
           {!filterSubjectId &&
             !filterResourceId &&
-            filterSubjectType === "all" && (
+            !filterSubjectType.trim() && (
               <Button className="mt-2" onClick={openCreate}>
                 <Plus data-icon="inline-start" />
                 Create Policy
@@ -763,6 +798,11 @@ export default function PoliciesPage() {
           </Table>
         </div>
       )}
+      <datalist id={SUBJECT_TYPE_SUGGESTIONS_ID}>
+        {SUBJECT_TYPE_SUGGESTIONS.map((subjectType) => (
+          <option key={subjectType} value={subjectType} />
+        ))}
+      </datalist>
     </div>
   );
 }

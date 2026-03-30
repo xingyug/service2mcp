@@ -48,6 +48,14 @@ def _compare_params(deployed_op: Any, live_op: Any) -> list[str]:
         l_param = live_params[name]
         if d_param.type != l_param.type:
             changes.append(f"param '{name}' type changed: {d_param.type} -> {l_param.type}")
+        if d_param.required != l_param.required:
+            changes.append(
+                f"param '{name}' required changed: {d_param.required} -> {l_param.required}"
+            )
+        if _jsonable(d_param.default) != _jsonable(l_param.default):
+            changes.append(
+                f"param '{name}' default changed: {d_param.default!r} -> {l_param.default!r}"
+            )
 
     return changes
 
@@ -70,6 +78,18 @@ def _compare_operation(deployed_op: Any, live_op: Any) -> list[str]:
     if deployed_op.method != live_op.method:
         changes.append(f"method changed: {deployed_op.method} -> {live_op.method}")
 
+    if deployed_op.enabled != live_op.enabled:
+        changes.append(f"enabled changed: {deployed_op.enabled} -> {live_op.enabled}")
+
+    if _jsonable(deployed_op.response_schema) != _jsonable(live_op.response_schema):
+        changes.append("response schema changed")
+
+    if _jsonable(deployed_op.error_schema) != _jsonable(live_op.error_schema):
+        changes.append("error schema changed")
+
+    if _jsonable(deployed_op.response_examples) != _jsonable(live_op.response_examples):
+        changes.append("response examples changed")
+
     return changes
 
 
@@ -84,13 +104,69 @@ def _compare_schema(deployed_ir: ServiceIR, live_ir: ServiceIR) -> list[str]:
         changes.append(
             f"auth type changed: {deployed_ir.auth.type.value} -> {live_ir.auth.type.value}"
         )
+    elif _jsonable(deployed_ir.auth) != _jsonable(live_ir.auth):
+        changes.append("auth config changed")
 
     if deployed_ir.service_name != live_ir.service_name:
         changes.append(
             f"service_name changed: {deployed_ir.service_name} -> {live_ir.service_name}"
         )
 
+    changes.extend(
+        _compare_named_components(
+            "resource",
+            deployed_ir.resource_definitions,
+            live_ir.resource_definitions,
+        )
+    )
+    changes.extend(
+        _compare_named_components(
+            "prompt",
+            deployed_ir.prompt_definitions,
+            live_ir.prompt_definitions,
+        )
+    )
+    changes.extend(
+        _compare_named_components(
+            "event descriptor",
+            deployed_ir.event_descriptors,
+            live_ir.event_descriptors,
+        )
+    )
+
     return changes
+
+
+def _compare_named_components(
+    label: str,
+    deployed_items: list[Any],
+    live_items: list[Any],
+) -> list[str]:
+    changes: list[str] = []
+    deployed_by_id = {str(item.id): item for item in deployed_items}
+    live_by_id = {str(item.id): item for item in live_items}
+
+    for item_id in sorted(live_by_id.keys() - deployed_by_id.keys()):
+        changes.append(f"{label} added: {item_id}")
+
+    for item_id in sorted(deployed_by_id.keys() - live_by_id.keys()):
+        changes.append(f"{label} removed: {item_id}")
+
+    for item_id in sorted(deployed_by_id.keys() & live_by_id.keys()):
+        if _jsonable(deployed_by_id[item_id]) != _jsonable(live_by_id[item_id]):
+            changes.append(f"{label} changed: {item_id}")
+
+    return changes
+
+
+def _jsonable(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _jsonable(nested) for key, nested in value.items()}
+    return value
 
 
 def check_drift_from_source(

@@ -49,6 +49,7 @@ def test_helm_chart_contains_core_metadata_and_hooked_migration_job() -> None:
     assert chart["type"] == "application"
     assert values["images"]["compilerApi"]["repository"] == "tool-compiler/compiler-api"
     assert values["images"]["migrations"]["repository"] == ""
+    assert values["images"]["gatewayAdminMock"]["repository"] == "tool-compiler/gateway-admin-mock"
     assert values["compilerWorker"]["extraEnv"] == []
     assert values["compilerWorker"]["secretEnv"] == []
     assert values["gatewayAdminMock"]["enabled"] is False
@@ -66,6 +67,9 @@ def test_helm_chart_contains_core_metadata_and_hooked_migration_job() -> None:
     assert "compiler-worker" in apps_template
     assert "mcp-runtime" in apps_template
     assert "gateway-admin-mock" in apps_template
+    assert "images.gatewayAdminMock.repository" in apps_template
+    assert "images.gatewayAdminMock.tag" in apps_template
+    assert "images.gatewayAdminMock.pullPolicy" in apps_template
     assert apps_template.count("startupProbe:") >= 4
     assert "failureThreshold: 30" in apps_template
     assert "postgres" in infra_template

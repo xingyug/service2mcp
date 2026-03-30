@@ -25,6 +25,10 @@ images:
     repository: tool-compiler/access-control
     tag: latest
     pullPolicy: IfNotPresent
+  gatewayAdminMock:
+    repository: tool-compiler/gateway-admin-mock
+    tag: latest
+    pullPolicy: IfNotPresent
   compilerWorker:
     repository: tool-compiler/compiler-worker
     tag: latest

@@ -18,7 +18,9 @@ import pytest
 from apps.access_control.authn.service import (
     AuthenticationError,
     AuthnService,
+    JWTConfigurationError,
     JWTSettings,
+    UserNotFoundError,
     _audience_matches,
     _b64decode_bytes,
     _b64decode_json,
@@ -138,8 +140,15 @@ class TestHashToken:
 
 class TestLoadJwtSettingsEnvBehavior:
     def test_defaults(self) -> None:
-        settings = load_jwt_settings()
-        assert isinstance(settings.secret, str)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.delenv("ACCESS_CONTROL_JWT_SECRET", raising=False)
+            mp.delenv("ACCESS_CONTROL_JWT_ISSUER", raising=False)
+            mp.delenv("ACCESS_CONTROL_JWT_AUDIENCE", raising=False)
+            with pytest.raises(
+                JWTConfigurationError,
+                match="ACCESS_CONTROL_JWT_SECRET must be configured",
+            ):
+                load_jwt_settings()
 
     def test_from_env(self) -> None:
         env = {
@@ -169,6 +178,7 @@ class TestValidateJwtSuccess:
         token = _make_jwt(_valid_claims())
         result = svc._validate_jwt(token)
         assert result.subject == "test-user"
+        assert result.username is None
         assert result.token_type == "jwt"
 
     def test_claims_included(self) -> None:
@@ -178,10 +188,29 @@ class TestValidateJwtSuccess:
         result = svc._validate_jwt(token)
         assert result.claims["custom_field"] == "hello"
 
+    def test_prefers_platform_username_claim_over_subject(self) -> None:
+        svc = _make_service()
+        claims = _valid_claims(
+            sub="alice@example.com",
+            preferred_username="alice",
+            username="ignored",
+        )
+        token = _make_jwt(claims)
+        result = svc._validate_jwt(token)
+        assert result.subject == "alice@example.com"
+        assert result.username == "alice"
+
     def test_with_nbf(self) -> None:
         svc = _make_service()
         now = int(datetime.now(UTC).timestamp())
         token = _make_jwt(_valid_claims(nbf=now - 60))
+        result = svc._validate_jwt(token)
+        assert result.subject == "test-user"
+
+    def test_exp_float_is_accepted(self) -> None:
+        svc = _make_service()
+        future = datetime.now(UTC).timestamp() + 3600.5
+        token = _make_jwt(_valid_claims(exp=future))
         result = svc._validate_jwt(token)
         assert result.subject == "test-user"
 
@@ -246,6 +275,13 @@ class TestValidateJwtErrors:
     def test_not_active_yet(self) -> None:
         svc = _make_service()
         future = int((datetime.now(UTC) + timedelta(hours=1)).timestamp())
+        token = _make_jwt(_valid_claims(nbf=future))
+        with pytest.raises(AuthenticationError, match="not active"):
+            svc._validate_jwt(token)
+
+    def test_future_float_nbf_is_rejected(self) -> None:
+        svc = _make_service()
+        future = datetime.now(UTC).timestamp() + 3600.5
         token = _make_jwt(_valid_claims(nbf=future))
         with pytest.raises(AuthenticationError, match="not active"):
             svc._validate_jwt(token)
@@ -356,7 +392,7 @@ class TestCreatePat:
         svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
 
         fake_user = SimpleNamespace(id=uuid4(), username="alice", email="alice@test.com")
-        svc._get_or_create_user = AsyncMock(return_value=fake_user)
+        svc._get_existing_user = AsyncMock(return_value=fake_user)
 
         pat_id = uuid4()
         created_at = datetime.now(UTC)
@@ -368,7 +404,7 @@ class TestCreatePat:
 
         session.refresh.side_effect = fake_refresh
 
-        result = await svc.create_pat(username="alice", name="my-token", email="alice@test.com")
+        result = await svc.create_pat(username="alice", name="my-token")
 
         assert result.username == "alice"
         assert result.name == "my-token"
@@ -389,7 +425,7 @@ class TestCreatePat:
         svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
 
         fake_user = SimpleNamespace(id=uuid4(), username="bob", email=None)
-        svc._get_or_create_user = AsyncMock(return_value=fake_user)
+        svc._get_existing_user = AsyncMock(return_value=fake_user)
 
         def fake_refresh(record):
             record.id = uuid4()
@@ -402,6 +438,18 @@ class TestCreatePat:
 
         assert result.username == "bob"
         session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_create_pat_requires_existing_user(self) -> None:
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+        svc._get_existing_user = AsyncMock(side_effect=UserNotFoundError("User 'ghost' not found."))
+
+        with pytest.raises(UserNotFoundError, match="ghost"):
+            await svc.create_pat(username="ghost", name="tok")
+
+        session.add.assert_not_called()
+        session.flush.assert_not_awaited()
 
 
 class TestListPats:
@@ -417,18 +465,23 @@ class TestListPats:
         now = datetime.now(UTC)
         pat1 = SimpleNamespace(id=uuid4(), name="tok1", created_at=now, revoked_at=None)
         pat2 = SimpleNamespace(id=uuid4(), name="tok2", created_at=now, revoked_at=now)
-        user = SimpleNamespace(username="alice")
+        user = SimpleNamespace(username="alice", is_active=True)
 
-        mock_result = MagicMock()
-        mock_result.all.return_value = [(pat1, user), (pat2, user)]
-        session.execute.return_value = mock_result
+        count_result = MagicMock()
+        count_result.scalar_one.return_value = 2
+        list_result = MagicMock()
+        list_result.all.return_value = [(pat1, user), (pat2, user)]
+        session.execute.side_effect = [count_result, list_result]
 
         result = await svc.list_pats(username="alice")
-        assert len(result) == 2
-        assert result[0].name == "tok1"
-        assert result[0].revoked_at is None
-        assert result[1].name == "tok2"
-        assert result[1].revoked_at == now
+        assert result.total == 2
+        assert result.page == 1
+        assert result.page_size == 100
+        assert len(result.items) == 2
+        assert result.items[0].name == "tok1"
+        assert result.items[0].revoked_at is None
+        assert result.items[1].name == "tok2"
+        assert result.items[1].revoked_at == now
 
     @pytest.mark.asyncio
     async def test_list_pats_empty(self) -> None:
@@ -437,12 +490,42 @@ class TestListPats:
         session = AsyncMock()
         svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
 
-        mock_result = MagicMock()
-        mock_result.all.return_value = []
-        session.execute.return_value = mock_result
+        count_result = MagicMock()
+        count_result.scalar_one.return_value = 0
+        list_result = MagicMock()
+        list_result.all.return_value = []
+        session.execute.side_effect = [count_result, list_result]
 
         result = await svc.list_pats(username="nobody")
-        assert result == []
+        assert result.items == []
+        assert result.total == 0
+        assert result.page == 1
+
+    @pytest.mark.asyncio
+    async def test_list_pats_clamps_page_to_last_page(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        from uuid import uuid4
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        now = datetime.now(UTC)
+        user = SimpleNamespace(username="alice", is_active=True)
+        pat = SimpleNamespace(id=uuid4(), name="tok-last", created_at=now, revoked_at=None)
+
+        count_result = MagicMock()
+        count_result.scalar_one.return_value = 101
+        list_result = MagicMock()
+        list_result.all.return_value = [(pat, user)]
+        session.execute.side_effect = [count_result, list_result]
+
+        result = await svc.list_pats(username="alice", page=9, page_size=100)
+
+        assert result.total == 101
+        assert result.page == 2
+        assert result.page_size == 100
+        assert [item.name for item in result.items] == ["tok-last"]
 
 
 class TestGetPat:
@@ -458,7 +541,7 @@ class TestGetPat:
         pat_id = uuid4()
         now = datetime.now(UTC)
         pat = SimpleNamespace(id=pat_id, name="tok", created_at=now, revoked_at=None)
-        user = SimpleNamespace(username="alice")
+        user = SimpleNamespace(username="alice", is_active=True)
 
         mock_result = MagicMock()
         mock_result.first.return_value = (pat, user)
@@ -600,7 +683,7 @@ class TestValidatePat:
             revoked_at=None,
             token_hash=_hash_token("pat_abc123"),
         )
-        user = SimpleNamespace(username="alice")
+        user = SimpleNamespace(username="alice", is_active=True, roles=[" Admin ", "viewer"])
 
         mock_result = MagicMock()
         mock_result.first.return_value = (pat, user)
@@ -608,10 +691,12 @@ class TestValidatePat:
 
         result = await svc._validate_pat("pat_abc123")
         assert result.subject == "alice"
+        assert result.username == "alice"
         assert result.token_type == "pat"
         assert result.claims["sub"] == "alice"
         assert result.claims["pat_id"] == str(pat_id)
         assert result.claims["name"] == "my-pat"
+        assert result.claims["roles"] == ["admin", "viewer"]
 
     @pytest.mark.asyncio
     async def test_validate_revoked_pat_raises(self) -> None:
@@ -634,6 +719,57 @@ class TestValidatePat:
 
 
 class TestValidateJwt:
+    def test_non_object_header_raises_authentication_error(self):
+        svc = _make_service()
+
+        invalid_header = _b64encode(b"[]")
+        payload = _b64encode(json.dumps(_valid_claims()).encode())
+        signing_input = f"{invalid_header}.{payload}".encode()
+        sig = hmac.new(_SECRET.encode(), signing_input, hashlib.sha256).digest()
+        token = f"{invalid_header}.{payload}.{_b64encode(sig)}"
+
+        with pytest.raises(AuthenticationError, match="Malformed JWT header"):
+            svc._validate_jwt(token)
+
+
+class TestSyncJwtUserRoles:
+    @pytest.mark.asyncio
+    async def test_updates_existing_user_roles(self) -> None:
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+        user = SimpleNamespace(username="alice", roles=["viewer"])
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = user
+        session.execute.return_value = mock_result
+
+        principal = svc._validate_jwt(_make_jwt(_valid_claims(sub="alice", roles=[" Admin ", "admin"])))
+        await svc.sync_jwt_user_roles(principal)
+
+        assert user.roles == ["admin"]
+        session.flush.assert_awaited_once()
+        session.commit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_missing_local_user(self) -> None:
+        from unittest.mock import MagicMock
+
+        session = AsyncMock()
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = None
+        session.execute.return_value = mock_result
+
+        principal = svc._validate_jwt(_make_jwt(_valid_claims(sub="ghost", roles=["admin"])))
+        await svc.sync_jwt_user_roles(principal)
+
+        session.flush.assert_not_awaited()
+        session.commit.assert_not_awaited()
+
     def test_malformed_header_json_decode_error(self):
         """Test line 157: malformed JWT header JSON."""
         svc = _make_service()
@@ -700,48 +836,82 @@ class TestValidateJwt:
         with pytest.raises(AuthenticationError, match="Malformed JWT payload"):
             svc._validate_jwt(token)
 
+    def test_non_object_payload_raises_authentication_error(self):
+        svc = _make_service()
 
-class TestGetOrCreateUser:
-    async def test_create_new_user(self):
-        """Test lines 217-221: _get_or_create_user creates new user."""
+        header = _b64encode(json.dumps({"alg": "HS256"}).encode())
+        invalid_payload = _b64encode(b"[]")
+        signing_input = f"{header}.{invalid_payload}".encode()
+        sig = hmac.new(_SECRET.encode(), signing_input, hashlib.sha256).digest()
+        token = f"{header}.{invalid_payload}.{_b64encode(sig)}"
+
+        with pytest.raises(AuthenticationError, match="Malformed JWT payload"):
+            svc._validate_jwt(token)
+
+
+class TestGetExistingUser:
+    async def test_returns_existing_user(self):
+        """Existing users should be returned without mutation."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        session = AsyncMock()
+        existing_user = SimpleNamespace(id="user-id", username="bob", email="bob@example.com")
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = existing_user
+        session.execute.return_value = mock_result
+
+        svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
+
+        result = await svc._get_existing_user(username="bob")
+
+        assert result is existing_user
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
+        session.refresh.assert_not_awaited()
+
+    async def test_raises_when_user_missing(self):
+        """Unknown PAT owners should fail explicitly."""
         from unittest.mock import MagicMock
 
         session = AsyncMock()
 
-        # Mock no existing user
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
         session.execute.return_value = mock_result
 
         svc = AuthnService(session, jwt_settings=JWTSettings(secret=_SECRET))
 
-        await svc._get_or_create_user(username="bob", email="bob@example.com")
-
-        # Should add new user and commit/refresh
-        session.add.assert_called_once()
-        session.commit.assert_called_once()
-        session.refresh.assert_called_once()
+        with pytest.raises(UserNotFoundError, match="ghost"):
+            await svc._get_existing_user(username="ghost")
 
 
 class TestLoadJwtSettings:
     def test_load_jwt_settings_non_dev_environment_no_secret(self):
-        """Test lines 231-233: load_jwt_settings raises error in non-dev env without secret."""
+        """Missing JWT secret always raises a configuration error."""
         import os
         from unittest.mock import patch
 
         from apps.access_control.authn.service import load_jwt_settings
 
         with patch.dict(os.environ, {"ENV": "production"}, clear=True):
-            with pytest.raises(RuntimeError, match="ACCESS_CONTROL_JWT_SECRET must be set"):
+            with pytest.raises(
+                JWTConfigurationError,
+                match="ACCESS_CONTROL_JWT_SECRET must be configured",
+            ):
                 load_jwt_settings()
 
-    def test_load_jwt_settings_dev_environment_uses_default(self):
-        """Test lines 229-234: load_jwt_settings uses dev secret in dev environment."""
+    def test_load_jwt_settings_dev_environment_still_requires_secret(self):
+        """Dev environments must no longer fall back to a known shared secret."""
         import os
         from unittest.mock import patch
 
         from apps.access_control.authn.service import load_jwt_settings
 
         with patch.dict(os.environ, {"ENV": "dev"}, clear=True):
-            settings = load_jwt_settings()
-            assert settings.secret == "dev-secret"
+            with pytest.raises(
+                JWTConfigurationError,
+                match="ACCESS_CONTROL_JWT_SECRET must be configured",
+            ):
+                load_jwt_settings()

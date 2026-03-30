@@ -13,17 +13,36 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.access_control.authn.models import PATCreateResponse, PATResponse, TokenPrincipalResponse
+from apps.access_control.authn.models import (
+    PATCreateResponse,
+    PATListResponse,
+    PATResponse,
+    TokenPrincipalResponse,
+)
 from libs.db_models import PersonalAccessToken, User
 
 _PAT_PREFIX = "pat_"
+_USERNAME_CLAIM_KEYS = (
+    "preferred_username",
+    "username",
+    "cognito:username",
+    "login",
+)
 
 
 class AuthenticationError(ValueError):
     """Raised when token validation fails."""
+
+
+class UserNotFoundError(LookupError):
+    """Raised when PAT management targets an unknown local user."""
+
+
+class JWTConfigurationError(RuntimeError):
+    """Raised when JWT settings are missing or invalid."""
 
 
 @dataclass(frozen=True)
@@ -57,10 +76,9 @@ class AuthnService:
         *,
         username: str,
         name: str,
-        email: str | None = None,
         commit: bool = True,
     ) -> PATCreateResponse:
-        user = await self._get_or_create_user(username=username, email=email, commit=commit)
+        user = await self._get_existing_user(username=username)
         plaintext_token = _generate_pat()
         record = PersonalAccessToken(
             user_id=user.id,
@@ -81,24 +99,49 @@ class AuthnService:
             revoked_at=record.revoked_at,
         )
 
-    async def list_pats(self, *, username: str) -> list[PATResponse]:
+    async def list_pats(
+        self,
+        *,
+        username: str,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> PATListResponse:
+        page = max(page, 1)
+        page_size = max(page_size, 1)
+
+        total_result = await self._session.execute(
+            select(func.count(PersonalAccessToken.id))
+            .join(User, PersonalAccessToken.user_id == User.id)
+            .where(User.username == username)
+        )
+        total = int(total_result.scalar_one() or 0)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        effective_page = min(page, total_pages)
+        offset = (effective_page - 1) * page_size
+
         result = await self._session.execute(
             select(PersonalAccessToken, User)
             .join(User, PersonalAccessToken.user_id == User.id)
             .where(User.username == username)
-            .order_by(PersonalAccessToken.created_at.desc())
-            .limit(1000)
+            .order_by(PersonalAccessToken.created_at.desc(), PersonalAccessToken.id.desc())
+            .limit(page_size)
+            .offset(offset)
         )
-        return [
-            PATResponse(
-                id=pat.id,
-                username=user.username,
-                name=pat.name,
-                created_at=pat.created_at,
-                revoked_at=pat.revoked_at,
-            )
-            for pat, user in result.all()
-        ]
+        return PATListResponse(
+            items=[
+                PATResponse(
+                    id=pat.id,
+                    username=user.username,
+                    name=pat.name,
+                    created_at=pat.created_at,
+                    revoked_at=pat.revoked_at,
+                )
+                for pat, user in result.all()
+            ],
+            total=total,
+            page=effective_page,
+            page_size=page_size,
+        )
 
     async def get_pat(self, pat_id: UUID) -> PATResponse | None:
         """Return PAT metadata by ID without mutating it."""
@@ -166,14 +209,18 @@ class AuthnService:
         pat, user = row
         if pat.revoked_at is not None:
             raise AuthenticationError("PAT has been revoked.")
+        if not user.is_active:
+            raise AuthenticationError("PAT owner is inactive.")
 
         return TokenPrincipalResponse(
             subject=user.username,
+            username=user.username,
             token_type="pat",
             claims={
                 "sub": user.username,
                 "pat_id": str(pat.id),
                 "name": pat.name,
+                "roles": _normalized_roles(getattr(user, "roles", [])),
             },
         )
 
@@ -185,7 +232,9 @@ class AuthnService:
         header_segment, payload_segment, signature_segment = parts
         try:
             header = json.loads(_b64decode_json(header_segment))
-        except (json.JSONDecodeError, UnicodeDecodeError, Exception):
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            raise AuthenticationError("Malformed JWT header.") from exc
+        if not isinstance(header, dict):
             raise AuthenticationError("Malformed JWT header.")
         if header.get("alg") != "HS256":
             raise AuthenticationError("Unsupported JWT algorithm.")
@@ -205,15 +254,17 @@ class AuthnService:
 
         try:
             claims = json.loads(_b64decode_json(payload_segment))
-        except (json.JSONDecodeError, UnicodeDecodeError, Exception):
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+            raise AuthenticationError("Malformed JWT payload.") from exc
+        if not isinstance(claims, dict):
             raise AuthenticationError("Malformed JWT payload.")
-        now_ts = int(datetime.now(UTC).timestamp())
-        exp = claims.get("exp")
-        if not isinstance(exp, int) or exp <= now_ts:
+        now_ts = datetime.now(UTC).timestamp()
+        exp = _numeric_date(claims.get("exp"))
+        if exp is None or exp <= now_ts:
             raise AuthenticationError("JWT is expired.")
 
-        nbf = claims.get("nbf")
-        if isinstance(nbf, int) and nbf > now_ts:
+        nbf = _numeric_date(claims.get("nbf"))
+        if nbf is not None and nbf > now_ts:
             raise AuthenticationError("JWT is not active yet.")
 
         if self._jwt_settings.issuer and claims.get("iss") != self._jwt_settings.issuer:
@@ -231,49 +282,95 @@ class AuthnService:
 
         return TokenPrincipalResponse(
             subject=subject,
+            username=_jwt_username(claims),
             token_type="jwt",
             claims=claims,
         )
 
-    async def _get_or_create_user(
+    async def sync_jwt_user_roles(
         self,
+        principal: TokenPrincipalResponse,
         *,
-        username: str,
-        email: str | None,
         commit: bool = True,
-    ) -> User:
+    ) -> None:
+        if principal.token_type != "jwt":
+            return
+
+        username = principal.username or principal.subject
         result = await self._session.execute(select(User).where(User.username == username))
         user = result.scalar_one_or_none()
-        if user is not None:
-            if email and user.email != email:
-                user.email = email
-                await self._session.flush()
-                if commit:
-                    await self._session.commit()
-                await self._session.refresh(user)
-            return user
+        if user is None:
+            return
 
-        user = User(username=username, email=email)
-        self._session.add(user)
+        roles = _normalized_roles(principal.claims.get("roles"))
+        if _normalized_roles(user.roles) == roles:
+            return
+
+        user.roles = roles
         await self._session.flush()
         if commit:
             await self._session.commit()
-        await self._session.refresh(user)
+
+    async def _get_existing_user(self, *, username: str) -> User:
+        result = await self._session.execute(select(User).where(User.username == username))
+        user = result.scalar_one_or_none()
+        if user is None:
+            raise UserNotFoundError(f"User '{username}' not found.")
         return user
 
 
 def load_jwt_settings() -> JWTSettings:
     """Load JWT settings from environment variables."""
 
-    secret = os.getenv("ACCESS_CONTROL_JWT_SECRET")
+    secret = (os.getenv("ACCESS_CONTROL_JWT_SECRET") or "").strip()
     if not secret:
-        env = os.getenv("ENV", "dev")
-        if env.lower() not in ("dev", "development", "test"):
-            raise RuntimeError("ACCESS_CONTROL_JWT_SECRET must be set in non-dev environments")
-        secret = "dev-secret"
-    issuer = os.getenv("ACCESS_CONTROL_JWT_ISSUER")
-    audience = os.getenv("ACCESS_CONTROL_JWT_AUDIENCE")
+        raise JWTConfigurationError("ACCESS_CONTROL_JWT_SECRET must be configured.")
+    issuer = (os.getenv("ACCESS_CONTROL_JWT_ISSUER") or "").strip() or None
+    audience = (os.getenv("ACCESS_CONTROL_JWT_AUDIENCE") or "").strip() or None
     return JWTSettings(secret=secret, issuer=issuer, audience=audience)
+
+
+def resolve_jwt_settings(app_state: Any) -> JWTSettings:
+    """Resolve JWT settings or raise a configuration error."""
+
+    config_error = getattr(app_state, "jwt_settings_error", None)
+    if isinstance(config_error, str) and config_error:
+        raise JWTConfigurationError(config_error)
+
+    settings = getattr(app_state, "jwt_settings", None)
+    if isinstance(settings, JWTSettings):
+        return settings
+
+    raise JWTConfigurationError("JWT settings are not configured.")
+
+
+def _jwt_username(claims: dict[str, Any]) -> str | None:
+    for key in _USERNAME_CLAIM_KEYS:
+        value = claims.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _normalized_roles(raw_roles: object) -> list[str]:
+    if isinstance(raw_roles, str):
+        values = [raw_roles]
+    elif isinstance(raw_roles, list):
+        values = raw_roles
+    else:
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        role = value.strip().lower()
+        if not role or role in seen:
+            continue
+        seen.add(role)
+        normalized.append(role)
+    return normalized
 
 
 def build_service_jwt(
@@ -348,3 +445,9 @@ def _audience_matches(value: Any, expected_audience: str) -> bool:
     if isinstance(value, list):
         return expected_audience in value
     return False
+
+
+def _numeric_date(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)

@@ -16,6 +16,7 @@ from apps.compiler_worker.models import (
     CompilationStatus,
     StageDefinition,
     StageExecutionResult,
+    compilation_resume_checkpoint,
 )
 from apps.compiler_worker.observability import CompilationObservability
 
@@ -80,6 +81,16 @@ class CompilationJobStore(Protocol):
         attempt: int | None = None,
         detail: dict[str, object] | None = None,
         error_detail: str | None = None,
+    ) -> None: ...
+
+    async def update_checkpoint(
+        self,
+        job_id: UUID,
+        *,
+        payload: dict[str, object],
+        protocol: str | None,
+        service_name: str | None,
+        completed_stage: CompilationStage,
     ) -> None: ...
 
 
@@ -147,13 +158,14 @@ class CompilationWorkflow:
                 "filename": request.filename,
                 "options": dict(request.options),
             },
-            service_name=request.service_name,
+            service_name=request.service_id or request.service_name,
         )
+        stage_definitions = self._resolve_stage_definitions(request, context)
 
         await self._store.append_event(job_id, event_type=CompilationEventType.JOB_CREATED)
         await self._store.append_event(job_id, event_type=CompilationEventType.JOB_STARTED)
 
-        for stage_definition in self._stage_definitions:
+        for stage_definition in stage_definitions:
             stage = stage_definition.stage
             await self._store.mark_job_running(
                 job_id,
@@ -244,6 +256,13 @@ class CompilationWorkflow:
                     context.protocol = result.protocol
                 if result.service_name is not None:
                     context.service_name = result.service_name
+                await self._store.update_checkpoint(
+                    job_id,
+                    payload=context.payload,
+                    protocol=context.protocol,
+                    service_name=context.service_name,
+                    completed_stage=stage,
+                )
                 self._record_stage_metric(
                     stage,
                     outcome="success",
@@ -272,7 +291,7 @@ class CompilationWorkflow:
                 )
                 break
 
-        final_stage = self._stage_definitions[-1].stage
+        final_stage = stage_definitions[-1].stage
         await self._store.mark_job_succeeded(
             job_id,
             final_stage,
@@ -295,6 +314,43 @@ class CompilationWorkflow:
             final_stage=final_stage,
             payload=context.payload,
         )
+
+    def _resolve_stage_definitions(
+        self,
+        request: CompilationRequest,
+        context: CompilationContext,
+    ) -> tuple[StageDefinition, ...]:
+        raw_from_stage = request.options.get("from_stage")
+        if not isinstance(raw_from_stage, str) or not raw_from_stage.strip():
+            return self._stage_definitions
+
+        from_stage = CompilationStage(raw_from_stage.strip())
+        stage_indices = {
+            stage_definition.stage: index
+            for index, stage_definition in enumerate(self._stage_definitions)
+        }
+        start_index = stage_indices[from_stage]
+        if start_index <= 1:
+            return self._stage_definitions[start_index:]
+
+        checkpoint = compilation_resume_checkpoint(request.options)
+        if checkpoint is None:
+            raise RuntimeError(
+                f"Retry from stage {from_stage.value} requires a persisted checkpoint."
+            )
+
+        expected_completed_stage = self._stage_definitions[start_index - 1].stage
+        completed_stage = CompilationStage(checkpoint["completed_stage"])
+        if completed_stage is not expected_completed_stage:
+            raise RuntimeError(
+                "Retry checkpoint does not match the requested stage boundary: "
+                f"expected {expected_completed_stage.value}, found {completed_stage.value}."
+            )
+
+        context.payload = checkpoint["payload"]
+        context.protocol = checkpoint["protocol"]
+        context.service_name = checkpoint["service_name"]
+        return self._stage_definitions[start_index:]
 
     async def _rollback(self, context: CompilationContext) -> tuple[bool, list[str]]:
         rollback_failures: list[str] = []

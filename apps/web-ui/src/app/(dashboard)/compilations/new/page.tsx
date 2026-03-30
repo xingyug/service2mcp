@@ -6,7 +6,9 @@ import { CompilationWizard } from "@/components/compilations/compilation-wizard"
 
 export default function NewCompilationPage() {
   const searchParams = useSearchParams();
-  const initialServiceName = searchParams.get("service_name") ?? "";
+  const initialServiceId = searchParams.get("service_id") ?? "";
+  const initialServiceName =
+    searchParams.get("service_name") ?? initialServiceId;
 
   return (
     <div className="space-y-6">
@@ -16,7 +18,10 @@ export default function NewCompilationPage() {
           Start a new tool compilation job.
         </p>
       </div>
-      <CompilationWizard initialServiceName={initialServiceName} />
+      <CompilationWizard
+        initialServiceName={initialServiceName}
+        initialServiceId={initialServiceId}
+      />
     </div>
   );
 }

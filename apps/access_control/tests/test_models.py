@@ -47,16 +47,22 @@ class TestTokenPrincipalResponse:
     def test_construction(self) -> None:
         resp = TokenPrincipalResponse(
             subject="user1",
+            username="alice",
             token_type="jwt",
             claims={"role": "admin"},
         )
         assert resp.subject == "user1"
+        assert resp.username == "alice"
 
 
 class TestPATCreateRequest:
     def test_valid(self) -> None:
         req = PATCreateRequest(username="alice", name="dev-token")
-        assert req.email is None
+        assert req.model_dump() == {"username": "alice", "name": "dev-token"}
+
+    def test_ignores_legacy_email_payload(self) -> None:
+        req = PATCreateRequest(username="alice", name="dev-token", email="legacy@example.com")
+        assert req.model_dump() == {"username": "alice", "name": "dev-token"}
 
     def test_empty_username_rejected(self) -> None:
         with pytest.raises(ValidationError, match="username"):
@@ -96,6 +102,8 @@ class TestPATListResponse:
     def test_empty_list(self) -> None:
         resp = PATListResponse(items=[])
         assert resp.items == []
+        assert resp.total == 0
+        assert resp.page == 1
 
 
 # --- authz models ---

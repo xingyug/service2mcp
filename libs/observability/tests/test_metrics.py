@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from prometheus_client import CollectorRegistry
 
 from libs.observability.metrics import (
@@ -36,6 +37,13 @@ class TestCreateCounter:
         counter.labels(method="GET", status="200").inc()
         text = get_metrics_text(registry)
         assert b"labeled_total" in text
+
+    def test_same_name_different_labels_raises(self) -> None:
+        registry = CollectorRegistry()
+        create_counter("contract_total", "Counter", ["method"], registry=registry)
+
+        with pytest.raises(ValueError, match="already registered on this registry"):
+            create_counter("contract_total", "Counter", ["status"], registry=registry)
 
 
 class TestCreateHistogram:
@@ -75,6 +83,13 @@ class TestCreateGauge:
         g2 = create_gauge("dedup_gauge", "Gauge", registry=registry)
         assert g1 is g2
 
+    def test_same_name_different_metric_type_raises(self) -> None:
+        registry = CollectorRegistry()
+        create_counter("shared_metric", "Counter", registry=registry)
+
+        with pytest.raises(ValueError, match="already registered on this registry"):
+            create_gauge("shared_metric", "Gauge", registry=registry)
+
 
 class TestDefaultBuckets:
     def test_starts_with_5ms(self) -> None:
@@ -96,13 +111,13 @@ class TestGetMetricsText:
 
 
 class TestResetMetrics:
-    def test_clears_cache(self) -> None:
+    def test_clears_cache_and_unregisters_collectors(self) -> None:
         registry = CollectorRegistry()
         c1 = create_counter("reset_test", "Test", registry=registry)
         reset_metrics()
-        # After reset, a new counter with the same name on a NEW registry should work
-        registry2 = CollectorRegistry()
-        c2 = create_counter("reset_test", "Test", registry=registry2)
+
+        # After reset, recreating the same metric on the same registry should work.
+        c2 = create_counter("reset_test", "Test", registry=registry)
         assert c1 is not c2
 
 

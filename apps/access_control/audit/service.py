@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,6 +49,7 @@ class AuditLogService:
         resource: str | None = None,
         start_at: datetime | None = None,
         end_at: datetime | None = None,
+        limit: int | None = 1000,
     ) -> list[AuditLogEntryResponse]:
         query: Select[tuple[AuditLog]] = select(AuditLog)
         if actor is not None:
@@ -61,8 +63,18 @@ class AuditLogService:
         if end_at is not None:
             query = query.where(AuditLog.timestamp <= end_at)
 
-        result = await self._session.scalars(query.order_by(AuditLog.timestamp.desc()).limit(1000))
+        query = query.order_by(AuditLog.timestamp.desc())
+        if limit is not None:
+            query = query.limit(limit)
+
+        result = await self._session.scalars(query)
         return [self._to_response(entry) for entry in result.all()]
+
+    async def get_entry(self, entry_id: UUID) -> AuditLogEntryResponse | None:
+        entry = await self._session.get(AuditLog, entry_id)
+        if entry is None:
+            return None
+        return self._to_response(entry)
 
     @staticmethod
     def _to_response(entry: AuditLog) -> AuditLogEntryResponse:

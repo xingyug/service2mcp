@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -22,6 +23,7 @@ from apps.compiler_worker.models import (
     CompilationStage,
     CompilationStatus,
     StageExecutionResult,
+    store_compilation_checkpoint,
 )
 from apps.compiler_worker.repository import SQLAlchemyCompilationJobStore
 from apps.compiler_worker.workflows.compile_workflow import (
@@ -169,6 +171,30 @@ class InMemoryCompilationJobStore:
                 error_detail=error_detail,
                 created_at=datetime.now(UTC),
             )
+        )
+
+    async def update_checkpoint(
+        self,
+        job_id: UUID,
+        *,
+        payload: dict[str, object],
+        protocol: str | None,
+        service_name: str | None,
+        completed_stage: CompilationStage,
+    ) -> None:
+        job = self.jobs[job_id]
+        self.jobs[job_id] = replace(
+            job,
+            protocol=protocol if protocol is not None else job.protocol,
+            service_name=service_name if service_name is not None else job.service_name,
+            options=store_compilation_checkpoint(
+                job.options,
+                payload=payload,
+                protocol=protocol,
+                service_name=service_name,
+                completed_stage=completed_stage.value,
+            ),
+            updated_at=datetime.now(UTC),
         )
 
     async def get_job(self, job_id: UUID) -> CompilationJobRecord | None:

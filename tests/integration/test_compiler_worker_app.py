@@ -68,3 +68,47 @@ async def test_compiler_worker_health_ready_and_metrics(http_client: httpx.Async
     assert "compiler_workflow_stage_duration_seconds" in metrics.text
     assert "compiler_extractor_runs_total" in metrics.text
     assert "compiler_llm_tokens_total" in metrics.text
+
+
+@pytest.mark.asyncio
+async def test_readyz_requires_explicit_route_publish_mode(
+    observability: CompilationObservability,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MCP_RUNTIME_IMAGE", "tool-compiler/mcp-runtime:test")
+    monkeypatch.setenv("COMPILER_TARGET_NAMESPACE", "tool-compiler-test")
+    monkeypatch.delenv("ROUTE_PUBLISH_MODE", raising=False)
+    monkeypatch.delenv("ACCESS_CONTROL_URL", raising=False)
+    app = create_app(observability=observability)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        ready = await client.get("/readyz")
+
+    assert ready.status_code == 200
+    payload = ready.json()
+    assert payload["status"] == "not_ready"
+    assert "route_publish_mode" in payload["missing"]
+    assert "access_control_url" not in payload["missing"]
+
+
+@pytest.mark.asyncio
+async def test_readyz_allows_explicit_deferred_without_access_control_url(
+    observability: CompilationObservability,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MCP_RUNTIME_IMAGE", "tool-compiler/mcp-runtime:test")
+    monkeypatch.setenv("COMPILER_TARGET_NAMESPACE", "tool-compiler-test")
+    monkeypatch.setenv("ROUTE_PUBLISH_MODE", "deferred")
+    monkeypatch.delenv("ACCESS_CONTROL_URL", raising=False)
+    app = create_app(observability=observability)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        ready = await client.get("/readyz")
+
+    assert ready.status_code == 200
+    payload = ready.json()
+    assert payload["status"] == "ok"
+    assert payload["route_publish_mode"] == "deferred"
+    assert "missing" not in payload

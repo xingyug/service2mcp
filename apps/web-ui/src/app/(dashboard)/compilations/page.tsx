@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Plus,
   RefreshCw,
@@ -23,6 +24,7 @@ import {
 import type { CompilationJobResponse, CompilationStatus } from "@/types/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { ErrorState } from "@/components/ui/error-state";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -77,6 +79,7 @@ const ITEMS_PER_PAGE = 20;
 // ── Component ───────────────────────────────────────────────────────────────
 
 export default function CompilationsPage() {
+  const router = useRouter();
   const [statusFilter, setStatusFilter] = useState<CompilationStatus | "ALL">("ALL");
   const [search, setSearch] = useState("");
   const [dateRange, setDateRange] = useState<DateRange>("all");
@@ -86,7 +89,7 @@ export default function CompilationsPage() {
   const hasRunningJobs = (data?: CompilationJobResponse[]) =>
     data?.some((j) => IN_PROGRESS_COMPILATION_STATUSES.has(j.status));
 
-  const { data: jobs, isLoading, refetch } = useCompilations({
+  const { data: jobs, isLoading, error, refetch } = useCompilations({
     refetchInterval: (query) =>
       hasRunningJobs(query.state.data) ? 10_000 : false,
   });
@@ -136,7 +139,10 @@ export default function CompilationsPage() {
     retryMutation.mutate(
       { jobId: job.job_id, fromStage: job.failed_stage },
       {
-        onSuccess: () => toast.success("Retry started"),
+        onSuccess: (newJob) => {
+          toast.success("Retry started");
+          router.push(`/compilations/${newJob.job_id}`);
+        },
         onError: () => toast.error("Failed to retry compilation"),
       },
     );
@@ -144,7 +150,10 @@ export default function CompilationsPage() {
 
   function handleRollback(job: CompilationJobResponse) {
     rollbackMutation.mutate(job.job_id, {
-      onSuccess: () => toast.success("Rollback initiated"),
+      onSuccess: (newJob) => {
+        toast.success("Rollback initiated");
+        router.push(`/compilations/${newJob.job_id}`);
+      },
       onError: () => toast.error("Failed to rollback compilation"),
     });
   }
@@ -168,7 +177,7 @@ export default function CompilationsPage() {
           >
             <RefreshCw className="size-3.5" />
           </Button>
-          <Button render={<Link href="/compilations/new" />}>
+          <Button nativeButton={false} render={<Link href="/compilations/new" />}>
             <Plus data-icon="inline-start" />
             New Compilation
           </Button>
@@ -238,6 +247,18 @@ export default function CompilationsPage() {
             <Skeleton key={i} className="h-10 w-full rounded-lg" />
           ))}
         </div>
+      ) : error ? (
+        <ErrorState
+          title="Failed to load compilation jobs"
+          message={
+            error instanceof Error
+              ? error.message
+              : "The compilation jobs request did not succeed."
+          }
+          onAction={() => {
+            void refetch();
+          }}
+        />
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-20 text-center">
           <PackageOpen className="size-12 text-muted-foreground/40" />
@@ -250,7 +271,7 @@ export default function CompilationsPage() {
               : "Start by creating a new compilation."}
           </p>
           {!search && statusFilter === "ALL" && dateRange === "all" && (
-            <Button className="mt-2" render={<Link href="/compilations/new" />}>
+            <Button className="mt-2" nativeButton={false} render={<Link href="/compilations/new" />}>
               <Plus data-icon="inline-start" />
               New Compilation
             </Button>

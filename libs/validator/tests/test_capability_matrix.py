@@ -176,6 +176,67 @@ def test_protocol_capability_key_distinguishes_grpc_runtime_slices() -> None:
     assert protocol_capability_for_service(generic_grpc_ir).runtime is False
 
 
+def test_protocol_capability_for_unknown_protocol_is_conservative() -> None:
+    custom_ir = _service_ir("custom-proto", operations=[_safe_operation("lookup")])
+
+    assert protocol_capability_key(custom_ir) == "custom-proto"
+    capability = protocol_capability_for_service(custom_ir)
+    assert capability.key == "custom-proto"
+    assert capability.runtime is False
+    assert capability.live_proof is False
+    assert capability.llm_e2e is False
+    assert "unknown protocol" in capability.notes.lower()
+
+
+def test_protocol_capability_key_does_not_upgrade_invalid_grpc_stream_modes() -> None:
+    for mode in (GrpcStreamMode.client, GrpcStreamMode.bidirectional):
+        ir = _service_ir(
+            "grpc",
+            operations=[_safe_operation("watchInventory", method="POST")],
+            event_descriptors=[
+                EventDescriptor(
+                    id=f"watchInventory:{mode.value}",
+                    name="watchInventory",
+                    transport=EventTransport.grpc_stream,
+                    support=EventSupportLevel.supported,
+                    operation_id="watchInventory",
+                    channel="/catalog.v1.InventoryService/WatchInventory",
+                    grpc_stream=GrpcStreamRuntimeConfig(
+                        rpc_path="/catalog.v1.InventoryService/WatchInventory",
+                        mode=mode,
+                    ),
+                )
+            ],
+        )
+
+        assert protocol_capability_key(ir) == "grpc"
+        assert protocol_capability_for_service(ir).runtime is False
+
+
+def test_protocol_capability_key_does_not_upgrade_grpc_stream_without_operation_id() -> None:
+    ir = _service_ir(
+        "grpc",
+        operations=[_safe_operation("watchInventory", method="POST")],
+        event_descriptors=[
+            EventDescriptor(
+                id="watchInventory:missing-op",
+                name="watchInventory",
+                transport=EventTransport.grpc_stream,
+                support=EventSupportLevel.supported,
+                operation_id=None,
+                channel="/catalog.v1.InventoryService/WatchInventory",
+                grpc_stream=GrpcStreamRuntimeConfig(
+                    rpc_path="/catalog.v1.InventoryService/WatchInventory",
+                    mode=GrpcStreamMode.server,
+                ),
+            )
+        ],
+    )
+
+    assert protocol_capability_key(ir) == "grpc"
+    assert protocol_capability_for_service(ir).runtime is False
+
+
 def test_all_protocols_mention_error_model() -> None:
     """Every main protocol capability note must reference 'error model'."""
     rows = protocol_capability_matrix()

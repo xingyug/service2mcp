@@ -65,6 +65,7 @@ class ReflectedColumn:
     autoincrement: bool
     primary_key: bool
     insertable: bool
+    updatable: bool
 
 
 @dataclass(frozen=True)
@@ -210,6 +211,7 @@ class SQLExtractor:
             autoincrement = bool(column.get("autoincrement")) and column_name in primary_key_columns
             primary_key = column_name in primary_key_columns
             insertable = kind == "table" and not (primary_key and (autoincrement or has_default))
+            updatable = kind == "table" and not primary_key and not autoincrement
             reflected_columns.append(
                 ReflectedColumn(
                     name=column_name,
@@ -220,6 +222,7 @@ class SQLExtractor:
                     autoincrement=autoincrement,
                     primary_key=primary_key,
                     insertable=insertable,
+                    updatable=updatable,
                 )
             )
 
@@ -259,6 +262,12 @@ class SQLExtractor:
             operations.append(self._build_query_operation(reflected.schema, relation))
             if relation.kind == "table":
                 operations.append(self._build_insert_operation(reflected.schema, relation))
+                update_operation = self._build_update_operation(reflected.schema, relation)
+                if update_operation is not None:
+                    operations.append(update_operation)
+                delete_operation = self._build_delete_operation(reflected.schema, relation)
+                if delete_operation is not None:
+                    operations.append(delete_operation)
         return operations
 
     def _build_query_operation(self, schema: str, relation: ReflectedRelation) -> Operation:
@@ -387,6 +396,141 @@ class SQLExtractor:
             ),
         )
 
+    def _build_update_operation(
+        self,
+        schema: str,
+        relation: ReflectedRelation,
+    ) -> Operation | None:
+        primary_key_columns = [column for column in relation.columns if column.primary_key]
+        updatable_columns = [column for column in relation.columns if column.updatable]
+        if not primary_key_columns or not updatable_columns:
+            return None
+
+        return Operation(
+            id=f"update_{relation.name}",
+            name=f"Update {relation.name}",
+            description=f"Update rows in table {relation.name} by primary key.",
+            method="POST",
+            path=f"/sql/{schema}/{relation.name}",
+            params=[
+                Param(
+                    name=column.name,
+                    type=column.ir_type,
+                    required=True,
+                    description=f"Primary key filter for {column.name}.",
+                    source=SourceType.extractor,
+                    confidence=0.95,
+                )
+                for column in primary_key_columns
+            ]
+            + [
+                Param(
+                    name=column.name,
+                    type=column.ir_type,
+                    required=False,
+                    description=column.description,
+                    source=SourceType.extractor,
+                    confidence=0.95,
+                )
+                for column in updatable_columns
+            ],
+            risk=RiskMetadata(
+                writes_state=True,
+                destructive=False,
+                external_side_effect=True,
+                idempotent=True,
+                risk_level=RiskLevel.cautious,
+                confidence=0.95,
+                source=SourceType.extractor,
+            ),
+            sql=SqlOperationConfig(
+                schema_name=schema,
+                relation_name=relation.name,
+                relation_kind=SqlRelationKind.table,
+                action=SqlOperationType.update,
+                filterable_columns=[column.name for column in relation.columns],
+                primary_key_columns=[column.name for column in primary_key_columns],
+                updatable_columns=[column.name for column in updatable_columns],
+            ),
+            tags=["sql", "table", "update"],
+            source=SourceType.extractor,
+            confidence=0.95,
+            enabled=True,
+            error_schema=ErrorSchema(
+                responses=[
+                    ErrorResponse(
+                        error_code="CONSTRAINT_VIOLATION",
+                        description="Update violates a database constraint.",
+                    ),
+                    ErrorResponse(
+                        error_code="TIMEOUT",
+                        description="Update execution exceeded timeout.",
+                    ),
+                ]
+            ),
+        )
+
+    def _build_delete_operation(
+        self,
+        schema: str,
+        relation: ReflectedRelation,
+    ) -> Operation | None:
+        primary_key_columns = [column for column in relation.columns if column.primary_key]
+        if not primary_key_columns:
+            return None
+
+        return Operation(
+            id=f"delete_{relation.name}",
+            name=f"Delete {relation.name}",
+            description=f"Delete rows from table {relation.name} by primary key.",
+            method="POST",
+            path=f"/sql/{schema}/{relation.name}",
+            params=[
+                Param(
+                    name=column.name,
+                    type=column.ir_type,
+                    required=True,
+                    description=f"Primary key filter for {column.name}.",
+                    source=SourceType.extractor,
+                    confidence=0.95,
+                )
+                for column in primary_key_columns
+            ],
+            risk=RiskMetadata(
+                writes_state=True,
+                destructive=True,
+                external_side_effect=True,
+                idempotent=True,
+                risk_level=RiskLevel.dangerous,
+                confidence=0.95,
+                source=SourceType.extractor,
+            ),
+            sql=SqlOperationConfig(
+                schema_name=schema,
+                relation_name=relation.name,
+                relation_kind=SqlRelationKind.table,
+                action=SqlOperationType.delete,
+                filterable_columns=[column.name for column in relation.columns],
+                primary_key_columns=[column.name for column in primary_key_columns],
+            ),
+            tags=["sql", "table", "delete"],
+            source=SourceType.extractor,
+            confidence=0.95,
+            enabled=True,
+            error_schema=ErrorSchema(
+                responses=[
+                    ErrorResponse(
+                        error_code="CONSTRAINT_VIOLATION",
+                        description="Delete violates a database constraint.",
+                    ),
+                    ErrorResponse(
+                        error_code="TIMEOUT",
+                        description="Delete execution exceeded timeout.",
+                    ),
+                ]
+            ),
+        )
+
     def _map_column_type(self, sql_type: Any) -> str:
         if isinstance(sql_type, ARRAY):
             return "array"
@@ -445,6 +589,8 @@ class SQLExtractor:
                             "type": column.ir_type,
                             "nullable": column.nullable,
                             "insertable": column.insertable,
+                            "updatable": column.updatable,
+                            "primary_key": column.primary_key,
                             "description": column.description,
                         }
                         for column in relation.columns

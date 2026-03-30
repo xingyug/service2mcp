@@ -152,11 +152,18 @@ class OAuth2ClientCredentialsConfig(BaseModel):
     """OAuth2 client credentials grant configuration."""
 
     token_url: str
-    client_id_ref: str
+    client_id_ref: str | None = None
+    client_id: str | None = None
     client_secret_ref: str
     scopes: list[str] = Field(default_factory=list)
     audience: str | None = None
     client_auth_method: Literal["client_secret_basic", "client_secret_post"] = "client_secret_basic"
+
+    @model_validator(mode="after")
+    def client_id_must_be_configured(self) -> OAuth2ClientCredentialsConfig:
+        if not self.client_id_ref and not self.client_id:
+            raise ValueError("oauth2 client credentials config requires client_id or client_id_ref.")
+        return self
 
 
 class MTLSConfig(BaseModel):
@@ -255,6 +262,8 @@ class SqlOperationType(StrEnum):
 
     query = "query"
     insert = "insert"
+    update = "update"
+    delete = "delete"
 
 
 class JsonRpcOperationConfig(BaseModel):
@@ -285,6 +294,8 @@ class SqlOperationConfig(BaseModel):
     action: SqlOperationType
     filterable_columns: list[str] = Field(default_factory=list)
     insertable_columns: list[str] = Field(default_factory=list)
+    updatable_columns: list[str] = Field(default_factory=list)
+    primary_key_columns: list[str] = Field(default_factory=list)
     default_limit: int = Field(default=50, gt=0)
     max_limit: int = Field(default=200, gt=0)
 
@@ -299,6 +310,18 @@ class SqlOperationConfig(BaseModel):
                 raise ValueError("sql insert operations require relation_kind='table'.")
             if not self.insertable_columns:
                 raise ValueError("sql insert operations require insertable_columns.")
+        if self.action is SqlOperationType.update:
+            if self.relation_kind is not SqlRelationKind.table:
+                raise ValueError("sql update operations require relation_kind='table'.")
+            if not self.primary_key_columns:
+                raise ValueError("sql update operations require primary_key_columns.")
+            if not self.updatable_columns:
+                raise ValueError("sql update operations require updatable_columns.")
+        if self.action is SqlOperationType.delete:
+            if self.relation_kind is not SqlRelationKind.table:
+                raise ValueError("sql delete operations require relation_kind='table'.")
+            if not self.primary_key_columns:
+                raise ValueError("sql delete operations require primary_key_columns.")
         return self
 
 
@@ -477,6 +500,8 @@ class AuthConfig(BaseModel):
     oauth2_scopes: list[str] | None = None
     compile_time_secret_ref: str | None = None
     runtime_secret_ref: str | None = None
+    basic_username: str | None = None
+    basic_password_ref: str | None = None
     oauth2: OAuth2ClientCredentialsConfig | None = None
     mtls: MTLSConfig | None = None
     request_signing: RequestSigningConfig | None = None
@@ -488,6 +513,12 @@ class AuthConfig(BaseModel):
 
         if self.oauth2 is not None and self.type != AuthType.oauth2:
             raise ValueError("oauth2 client credentials config requires auth.type=oauth2.")
+
+        if (self.basic_username is not None or self.basic_password_ref is not None) and self.type != AuthType.basic:
+            raise ValueError("basic auth username/password config requires auth.type=basic.")
+
+        if (self.basic_username is None) != (self.basic_password_ref is None):
+            raise ValueError("basic auth username/password config requires both basic_username and basic_password_ref.")
 
         return self
 
@@ -527,6 +558,23 @@ class ResourceDefinition(BaseModel):
     content: str | None = None
     operation_id: str | None = None
     tags: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_content_shape(self) -> ResourceDefinition:
+        if self.content_type == "static" and self.content is None:
+            raise ValueError(
+                f"Static ResourceDefinition '{self.id}' must define content."
+            )
+        if self.content_type == "dynamic":
+            if self.operation_id is None:
+                raise ValueError(
+                    f"Dynamic ResourceDefinition '{self.id}' must define operation_id."
+                )
+            if self.content is not None:
+                raise ValueError(
+                    f"Dynamic ResourceDefinition '{self.id}' must not define static content."
+                )
+        return self
 
 
 class PromptArgument(BaseModel):
@@ -650,6 +698,19 @@ class ServiceIR(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def resource_definition_uris_must_be_unique(self) -> ServiceIR:
+        uris = [resource.uri for resource in self.resource_definitions]
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for uri in uris:
+            if uri in seen:
+                duplicates.add(uri)
+            seen.add(uri)
+        if duplicates:
+            raise ValueError(f"Duplicate resource definition URIs: {duplicates}")
+        return self
+
+    @model_validator(mode="after")
     def prompt_definition_ids_must_be_unique(self) -> ServiceIR:
         ids = [p.id for p in self.prompt_definitions]
         seen: set[str] = set()
@@ -660,6 +721,19 @@ class ServiceIR(BaseModel):
             seen.add(x)
         if duplicates:
             raise ValueError(f"Duplicate prompt definition IDs: {duplicates}")
+        return self
+
+    @model_validator(mode="after")
+    def prompt_definition_names_must_be_unique(self) -> ServiceIR:
+        names = [prompt.name for prompt in self.prompt_definitions]
+        seen: set[str] = set()
+        duplicates: set[str] = set()
+        for name in names:
+            if name in seen:
+                duplicates.add(name)
+            seen.add(name)
+        if duplicates:
+            raise ValueError(f"Duplicate prompt definition names: {duplicates}")
         return self
 
     @model_validator(mode="after")

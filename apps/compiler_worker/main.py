@@ -27,7 +27,7 @@ def create_app(
     )
     app.state.runtime_image = os.getenv("MCP_RUNTIME_IMAGE")
     app.state.target_namespace = os.getenv("COMPILER_TARGET_NAMESPACE")
-    app.state.route_publish_mode = os.getenv("ROUTE_PUBLISH_MODE", "deferred")
+    app.state.route_publish_mode = (os.getenv("ROUTE_PUBLISH_MODE") or "").strip() or None
     app.state.access_control_url = os.getenv("ACCESS_CONTROL_URL")
 
     @app.get("/healthz")
@@ -45,7 +45,17 @@ def create_app(
             "route_publish_mode": app.state.route_publish_mode,
             "access_control_url": app.state.access_control_url,
         }
-        missing = [k for k, v in checks.items() if v is None]
+        required_keys = {
+            "workflow_engine",
+            "compilation_queue",
+            "task_name",
+            "runtime_image",
+            "target_namespace",
+            "route_publish_mode",
+        }
+        if app.state.route_publish_mode == "access-control":
+            required_keys.add("access_control_url")
+        missing = [k for k in required_keys if checks[k] is None]
         ready = not missing
         checks["status"] = "ok" if ready else "not_ready"
         if missing:

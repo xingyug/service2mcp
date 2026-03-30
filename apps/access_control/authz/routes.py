@@ -39,6 +39,17 @@ def get_authz_service(session: AsyncSession = Depends(get_db_session)) -> AuthzS
     return AuthzService(session)
 
 
+async def _rollback_and_reconcile_gateway(
+    session: AsyncSession,
+    gateway_binding: GatewayBindingService,
+) -> None:
+    await session.rollback()
+    try:
+        await gateway_binding.reconcile(session)
+    except Exception as exc:  # pragma: no cover - exercised via route failure tests
+        raise RuntimeError(f"Gateway compensation failed after transaction rollback: {exc}") from exc
+
+
 @router.post("/policies", response_model=PolicyResponse, status_code=status.HTTP_201_CREATED)
 async def create_policy(
     payload: PolicyCreateRequest,
@@ -50,9 +61,16 @@ async def create_policy(
 ) -> PolicyResponse:
     require_admin_principal(caller)
     request_payload = payload.model_copy(update={"created_by": caller.subject})
+    created = await service.create_policy(request_payload, commit=False)
     try:
-        created = await service.create_policy(request_payload, commit=False)
         await gateway_binding.sync_policy(created)
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gateway sync failed after policy creation: {exc}",
+        ) from exc
+    try:
         await audit_log.append_entry(
             actor=caller.subject,
             action="policy.created",
@@ -61,12 +79,9 @@ async def create_policy(
             commit=False,
         )
         await session.commit()
-    except Exception as exc:
-        await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gateway sync failed after policy creation: {exc}",
-        ) from exc
+    except Exception:
+        await _rollback_and_reconcile_gateway(session, gateway_binding)
+        raise
     return created
 
 
@@ -110,12 +125,18 @@ async def update_policy(
     caller: TokenPrincipalResponse = Depends(require_admin_caller),
 ) -> PolicyResponse:
     require_admin_principal(caller)
-    request_payload = payload.model_copy(update={"created_by": caller.subject})
-    updated = await service.update_policy(policy_id, request_payload, commit=False)
+    updated = await service.update_policy(policy_id, payload, commit=False)
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found.")
     try:
         await gateway_binding.sync_policy(updated)
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gateway sync failed after policy update: {exc}",
+        ) from exc
+    try:
         await audit_log.append_entry(
             actor=caller.subject,
             action="policy.updated",
@@ -124,12 +145,9 @@ async def update_policy(
             commit=False,
         )
         await session.commit()
-    except Exception as exc:
-        await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gateway sync failed after policy update: {exc}",
-        ) from exc
+    except Exception:
+        await _rollback_and_reconcile_gateway(session, gateway_binding)
+        raise
     return updated
 
 
@@ -148,6 +166,13 @@ async def delete_policy(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found.")
     try:
         await gateway_binding.delete_policy(policy_id)
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Gateway sync failed after policy deletion: {exc}",
+        ) from exc
+    try:
         await audit_log.append_entry(
             actor=caller.subject,
             action="policy.deleted",
@@ -156,34 +181,34 @@ async def delete_policy(
             commit=False,
         )
         await session.commit()
-    except Exception as exc:
-        await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Gateway sync failed after policy deletion: {exc}",
-        ) from exc
+    except Exception:
+        await _rollback_and_reconcile_gateway(session, gateway_binding)
+        raise
 
 
 @router.post("/evaluate", response_model=PolicyEvaluationResponse)
 async def evaluate_policy(
     payload: PolicyEvaluationRequest,
     service: AuthzService = Depends(get_authz_service),
-    _caller: TokenPrincipalResponse = Depends(require_authenticated_caller),
+    caller: TokenPrincipalResponse = Depends(require_authenticated_caller),
     audit_log: AuditLogService = Depends(get_audit_log_service),
 ) -> PolicyEvaluationResponse:
     result = await service.evaluate(payload)
-    if hasattr(audit_log, "append_entry"):
-        await audit_log.append_entry(
-            actor=payload.subject_id,
-            action="authz.evaluate",
-            resource=payload.action,
-            detail={
-                "resource_id": payload.resource_id,
-                "decision": result.decision,
-                "matched_policy_id": (
-                    str(result.matched_policy_id) if result.matched_policy_id else None
-                ),
-                "reason": result.reason,
-            },
-        )
+    await audit_log.append_entry(
+        actor=caller.subject,
+        action="authz.evaluate",
+        resource=payload.resource_id,
+        detail={
+            "subject_type": payload.subject_type,
+            "subject_id": payload.subject_id,
+            "action": payload.action,
+            "resource_id": payload.resource_id,
+            "risk_level": payload.risk_level.value,
+            "decision": result.decision,
+            "matched_policy_id": (
+                str(result.matched_policy_id) if result.matched_policy_id else None
+            ),
+            "reason": result.reason,
+        },
+    )
     return result

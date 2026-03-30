@@ -27,6 +27,7 @@ import type {
   Operation,
   ArtifactDiffChange,
   ArtifactDiffOperation,
+  ServiceScope,
 } from "@/types/api";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,7 @@ import type {
 
 interface VersionDiffProps {
   serviceId: string;
+  scope?: ServiceScope;
   fromVersion: number;
   toVersion: number;
 }
@@ -200,14 +202,24 @@ function DiffSkeleton() {
 // Main component
 // ---------------------------------------------------------------------------
 
-export function VersionDiff({ serviceId, fromVersion, toVersion }: VersionDiffProps) {
+export function VersionDiff({
+  serviceId,
+  scope,
+  fromVersion,
+  toVersion,
+}: VersionDiffProps) {
   const [from, setFrom] = React.useState(fromVersion);
   const [to, setTo] = React.useState(toVersion);
 
-  const { data: versionsData } = useArtifactVersions(serviceId);
+  const { data: versionsData } = useArtifactVersions(serviceId, scope);
   const versions = versionsData?.versions ?? [];
 
-  const { data: diff, isLoading, error } = useArtifactDiff(serviceId, from, to);
+  const { data: diff, isLoading, error } = useArtifactDiff(
+    serviceId,
+    from,
+    to,
+    scope,
+  );
 
   // Sync external prop changes
   React.useEffect(() => {

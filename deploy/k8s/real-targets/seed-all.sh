@@ -86,9 +86,9 @@ seed_directus() {
   # Create collections
   for coll in products customers orders; do
     local exists
-    exists=$(curl -sf -H "${AUTH}" "${DIRECTUS_URL}/collections/${coll}" 2>/dev/null | jq -r '.data.collection // empty')
+    exists=$(curl -sf -H "${AUTH}" "${DIRECTUS_URL}/collections/${coll}" 2>/dev/null | jq -r '.data.collection // empty' || true)
     if [[ -z "${exists}" ]]; then
-      curl_json -H "${AUTH}" -d "{\"collection\":\"${coll}\",\"meta\":{\"icon\":\"box\"},\"schema\":{},\"fields\":[{\"field\":\"id\",\"type\":\"integer\",\"schema\":{\"is_primary_key\":true,\"has_auto_increment\":true}}]}" \
+      curl_json -H "${AUTH}" -d "{\"collection\":\"${coll}\",\"meta\":{\"icon\":\"box\"},\"schema\":{}}" \
         "${DIRECTUS_URL}/collections" > /dev/null
       log_ok "Directus: created collection ${coll}"
     else
@@ -277,7 +277,7 @@ seed_gitea() {
   local token
   token=$(curl -sf -u "${BASIC}" -d '{"name":"tc-seed-token","scopes":["write:repository","write:user","write:organization"]}' \
     -H 'Content-Type: application/json' \
-    "${GITEA_URL}/api/v1/users/gitea_admin/tokens" | jq -r '.sha1 // empty')
+    "${GITEA_URL}/api/v1/users/gitea_admin/tokens" | jq -r '.sha1 // empty' || true)
   [[ -z "${token}" ]] && token="seed-token-not-available"
 
   local AUTH_HEADER="Authorization: token ${token}"
@@ -333,6 +333,14 @@ seed_gitea() {
 seed_pocketbase() {
   log "=== Seeding PocketBase ==="
 
+  if kubectl -n "${NAMESPACE}" exec deploy/pocketbase -- sh -lc \
+    '/pb/pocketbase superuser update admin@example.com Admin12345! >/dev/null 2>&1 || /pb/pocketbase superuser create admin@example.com Admin12345! >/dev/null 2>&1'
+  then
+    log_ok "PocketBase: ensured superuser credentials"
+  else
+    log "PocketBase: could not refresh superuser credentials, trying existing account"
+  fi
+
   # Authenticate as superuser (created by PocketBase entrypoint script)
   local token
   token=$(curl_json \
@@ -363,12 +371,13 @@ seed_pocketbase() {
   # Create customers collection
   curl_json -H "${AUTH}" -d '{
     "name": "customers",
-    "type": "auth",
+    "type": "base",
     "fields": [
       {"name":"full_name","type":"text","required":true},
-      {"name":"tier","type":"select","required":false,"options":{"values":["standard","gold","platinum","enterprise"]}},
+      {"name":"email","type":"text","required":true},
+      {"name":"tier","type":"text"},
       {"name":"phone","type":"text"},
-      {"name":"address","type":"json"}
+      {"name":"active","type":"bool"}
     ]
   }' "${POCKETBASE_URL}/api/collections" > /dev/null 2>&1 || log "PocketBase: customers collection may already exist"
 
@@ -378,8 +387,8 @@ seed_pocketbase() {
     "type": "base",
     "fields": [
       {"name":"order_number","type":"text","required":true},
-      {"name":"customer","type":"relation","options":{"collectionId":"customers","cascadeDelete":false}},
-      {"name":"status","type":"select","options":{"values":["pending","confirmed","processing","shipped","delivered","cancelled"]}},
+      {"name":"customer_email","type":"text"},
+      {"name":"status","type":"text"},
       {"name":"total_amount","type":"number"},
       {"name":"currency","type":"text"},
       {"name":"notes","type":"text"},
@@ -409,13 +418,22 @@ seed_pocketbase() {
 
   # Seed customers (auth collection)
   for customer_data in \
-    '{"email":"alice@example.com","password":"Test123!","passwordConfirm":"Test123!","full_name":"Alice Johnson","tier":"platinum"}' \
-    '{"email":"bob@example.com","password":"Test123!","passwordConfirm":"Test123!","full_name":"Bob Smith","tier":"gold"}' \
-    '{"email":"carol@example.com","password":"Test123!","passwordConfirm":"Test123!","full_name":"Carol Williams","tier":"standard"}'; do
+    '{"email":"alice@example.com","full_name":"Alice Johnson","tier":"platinum","phone":"+1-555-0101","active":true}' \
+    '{"email":"bob@example.com","full_name":"Bob Smith","tier":"gold","phone":"+1-555-0102","active":true}' \
+    '{"email":"carol@example.com","full_name":"Carol Williams","tier":"standard","phone":"+1-555-0103","active":true}'; do
     curl_json -H "${AUTH}" -d "${customer_data}" \
       "${POCKETBASE_URL}/api/collections/customers/records" > /dev/null 2>&1 || true
   done
   log_ok "PocketBase: 3 customers seeded"
+
+  for order_data in \
+    '{"order_number":"ORD-PB-001","customer_email":"alice@example.com","status":"delivered","total_amount":999.00,"currency":"USD","notes":"Priority customer","items":[{"sku":"PHONE-001","qty":1}]}' \
+    '{"order_number":"ORD-PB-002","customer_email":"bob@example.com","status":"processing","total_amount":1699.00,"currency":"USD","notes":"Awaiting shipment","items":[{"sku":"LAPTOP-001","qty":1}]}' \
+    '{"order_number":"ORD-PB-003","customer_email":"carol@example.com","status":"pending","total_amount":49.99,"currency":"USD","notes":"Gift wrap requested","items":[{"sku":"BOOK-001","qty":1}]}'; do
+    curl_json -H "${AUTH}" -d "${order_data}" \
+      "${POCKETBASE_URL}/api/collections/orders/records" > /dev/null 2>&1 || true
+  done
+  log_ok "PocketBase: 3 orders seeded"
 
   log_ok "=== PocketBase seeding complete ==="
 }

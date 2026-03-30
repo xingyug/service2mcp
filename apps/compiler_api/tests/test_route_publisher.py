@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from apps.compiler_api.route_publisher import (
     AccessControlArtifactRoutePublisher,
     NoopArtifactRoutePublisher,
+    UnconfiguredArtifactRoutePublisher,
     _resolve_default_route_publisher,
     dispose_route_publisher,
     get_route_publisher,
@@ -25,8 +26,40 @@ class TestNoopArtifactRoutePublisher:
         result = await publisher.delete({"service": "test"})
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_rollback_returns_none(self) -> None:
+        publisher = NoopArtifactRoutePublisher()
+        result = await publisher.rollback({"service": "test"}, {"route": {"id": "old"}})
+        assert result is None
+
+
+class TestUnconfiguredArtifactRoutePublisher:
+    @pytest.mark.asyncio
+    async def test_sync_raises_configuration_error(self) -> None:
+        publisher = UnconfiguredArtifactRoutePublisher()
+
+        with pytest.raises(RuntimeError, match="ACCESS_CONTROL_URL is not configured"):
+            await publisher.sync({"service": "test"})
+
 
 class TestAccessControlArtifactRoutePublisher:
+    @pytest.mark.asyncio
+    async def test_non_json_response_raises_runtime_error(self) -> None:
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.side_effect = ValueError("No JSON")
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        publisher = AccessControlArtifactRoutePublisher(
+            base_url="http://localhost:8000",
+            client=mock_client,
+            auth_token="test-token",
+        )
+        with pytest.raises(RuntimeError, match="non-JSON response"):
+            await publisher.sync({"service": "test"})
+
     @pytest.mark.asyncio
     async def test_non_dict_response_raises_runtime_error(self) -> None:
         mock_response = MagicMock()
@@ -65,6 +98,34 @@ class TestAccessControlArtifactRoutePublisher:
         mock_client.aclose.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_rollback_posts_previous_routes(self) -> None:
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"ok": True}
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        publisher = AccessControlArtifactRoutePublisher(
+            base_url="http://localhost:8000",
+            client=mock_client,
+            auth_token="test-token",
+        )
+
+        previous_routes = {"svc-v1": {"route_id": "svc-v1"}}
+        result = await publisher.rollback({"service": "test"}, previous_routes)
+
+        assert result == {"ok": True}
+        mock_client.post.assert_awaited_once_with(
+            "/api/v1/gateway-binding/service-routes/rollback",
+            json={
+                "route_config": {"service": "test"},
+                "previous_routes": previous_routes,
+            },
+            headers={"Authorization": "Bearer test-token"},
+        )
+
+    @pytest.mark.asyncio
     async def test_owns_client_cleanup_on_error(self) -> None:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
         mock_client.post = AsyncMock(side_effect=httpx.HTTPStatusError(
@@ -93,7 +154,7 @@ class TestGetRoutePublisher:
             os.environ.pop("ACCESS_CONTROL_URL", None)
             publisher = get_route_publisher(request)
 
-        assert isinstance(publisher, NoopArtifactRoutePublisher)
+        assert isinstance(publisher, UnconfiguredArtifactRoutePublisher)
         # Second call returns the cached instance
         publisher2 = get_route_publisher(request)
         assert publisher2 is publisher
@@ -117,16 +178,16 @@ class TestDisposeRoutePublisher:
 
 
 class TestResolveDefaultRoutePublisher:
-    def test_returns_noop_when_url_not_set(self) -> None:
+    def test_returns_unconfigured_when_url_not_set(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("ACCESS_CONTROL_URL", None)
             publisher = _resolve_default_route_publisher()
-        assert isinstance(publisher, NoopArtifactRoutePublisher)
+        assert isinstance(publisher, UnconfiguredArtifactRoutePublisher)
 
-    def test_returns_noop_when_url_empty(self) -> None:
+    def test_returns_unconfigured_when_url_empty(self) -> None:
         with patch.dict(os.environ, {"ACCESS_CONTROL_URL": "  "}):
             publisher = _resolve_default_route_publisher()
-        assert isinstance(publisher, NoopArtifactRoutePublisher)
+        assert isinstance(publisher, UnconfiguredArtifactRoutePublisher)
 
     def test_returns_access_control_publisher_when_url_set(self) -> None:
         with patch.dict(os.environ, {"ACCESS_CONTROL_URL": "http://ac.local"}):

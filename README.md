@@ -39,6 +39,7 @@ make dev-smoke
 
 Useful next references:
 
+- `specs/service2mcp-unified-spec.md`: current unified system specification
 - `docs/quickstart.md`: local and GKE-oriented walkthroughs
 - `agent.md`: current project status and handoff snapshot
 - `devlog.md`: chronological implementation and verification log

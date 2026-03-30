@@ -103,6 +103,31 @@ test.describe("Compilation status and dashboard flows", () => {
     await expect(page.getByText("rest")).toBeVisible();
   });
 
+  test("dashboard degrades overall health when audit loading fails", async ({
+    page,
+  }) => {
+    await setupAuth(page);
+
+    await mockJson(page, "http://localhost:8000/api/v1/services", {
+      services: [],
+    });
+    await mockJson(page, "http://localhost:8000/api/v1/compilations", []);
+    await page.route(/http:\/\/localhost:8001\/api\/v1\/audit\/logs.*/, async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "audit unavailable" }),
+      });
+    });
+
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText("Degraded")).toBeVisible();
+    await expect(page.getByText("Some APIs unreachable")).toBeVisible();
+    await expect(page.getByText("Failed to load audit logs.")).toBeVisible();
+  });
+
   test("failed compilation detail shows retry controls and error details", async ({
     page,
   }) => {
@@ -134,6 +159,65 @@ test.describe("Compilation status and dashboard flows", () => {
     ).toBeVisible();
   });
 
+  test("retry redirects to the new compilation job", async ({ page }) => {
+    await setupAuth(page);
+
+    let retryRequests = 0;
+
+    await mockJson(
+      page,
+      "http://localhost:8000/api/v1/compilations/job-failed",
+      {
+        id: "job-failed",
+        status: "failed",
+        current_stage: "deploy",
+        failed_stage: "deploy",
+        error_detail: "boom",
+        created_at: "2026-03-29T03:00:00Z",
+        updated_at: "2026-03-29T03:02:00Z",
+        service_name: "PocketBase REST",
+      },
+    );
+    await page.route(
+      "http://localhost:8000/api/v1/compilations/job-failed/retry?from_stage=deploy",
+      async (route) => {
+        retryRequests += 1;
+        await route.fulfill({
+          status: 202,
+          contentType: "application/json",
+          body: JSON.stringify({
+            id: "job-retry-2",
+            status: "pending",
+            current_stage: "queued",
+            created_at: "2026-03-29T03:03:00Z",
+            updated_at: "2026-03-29T03:03:00Z",
+            service_name: "PocketBase REST",
+          }),
+        });
+      },
+    );
+    await mockJson(
+      page,
+      "http://localhost:8000/api/v1/compilations/job-retry-2",
+      {
+        id: "job-retry-2",
+        status: "pending",
+        current_stage: "queued",
+        created_at: "2026-03-29T03:03:00Z",
+        updated_at: "2026-03-29T03:03:00Z",
+        service_name: "PocketBase REST",
+      },
+    );
+
+    await page.goto("/compilations/job-failed");
+    await page.waitForLoadState("networkidle");
+
+    await page.getByRole("button", { name: /Retry from deploy/i }).first().click();
+
+    await expect.poll(() => retryRequests).toBe(1);
+    await expect(page).toHaveURL(/\/compilations\/job-retry-2$/);
+  });
+
   test("succeeded compilation detail shows rollback and artifacts", async ({
     page,
   }) => {
@@ -160,6 +244,63 @@ test.describe("Compilation status and dashboard flows", () => {
     ).toBeVisible();
     await expect(page.getByText("Artifacts")).toBeVisible();
     await expect(page.getByText("IR ID")).toBeVisible();
+  });
+
+  test("rollback redirects to the new compilation job", async ({ page }) => {
+    await setupAuth(page);
+
+    let rollbackRequests = 0;
+
+    await mockJson(
+      page,
+      "http://localhost:8000/api/v1/compilations/job-succeeded",
+      {
+        id: "job-succeeded",
+        status: "succeeded",
+        current_stage: "register",
+        created_at: "2026-03-29T02:00:00Z",
+        updated_at: "2026-03-29T02:05:00Z",
+        service_name: "Directus OpenAPI",
+      },
+    );
+    await page.route(
+      "http://localhost:8000/api/v1/compilations/job-succeeded/rollback",
+      async (route) => {
+        rollbackRequests += 1;
+        await route.fulfill({
+          status: 202,
+          contentType: "application/json",
+          body: JSON.stringify({
+            id: "job-rollback-2",
+            status: "pending",
+            current_stage: "queued",
+            created_at: "2026-03-29T02:06:00Z",
+            updated_at: "2026-03-29T02:06:00Z",
+            service_name: "Directus OpenAPI",
+          }),
+        });
+      },
+    );
+    await mockJson(
+      page,
+      "http://localhost:8000/api/v1/compilations/job-rollback-2",
+      {
+        id: "job-rollback-2",
+        status: "pending",
+        current_stage: "queued",
+        created_at: "2026-03-29T02:06:00Z",
+        updated_at: "2026-03-29T02:06:00Z",
+        service_name: "Directus OpenAPI",
+      },
+    );
+
+    await page.goto("/compilations/job-succeeded");
+    await page.waitForLoadState("networkidle");
+
+    await page.getByRole("button", { name: /Rollback/i }).click();
+
+    await expect.poll(() => rollbackRequests).toBe(1);
+    await expect(page).toHaveURL(/\/compilations\/job-rollback-2$/);
   });
 
   test("running compilation detail opens the SSE stream", async ({ page }) => {

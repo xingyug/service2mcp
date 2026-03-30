@@ -34,6 +34,10 @@ import {
 import { ServiceCard } from "@/components/services/service-card";
 import { ProtocolBadge } from "@/components/services/protocol-badge";
 import { useServices } from "@/hooks/use-api";
+import {
+  buildScopedServiceKey,
+  buildServiceDetailHref,
+} from "@/lib/service-scope";
 
 const PROTOCOLS = [
   "all",
@@ -101,7 +105,11 @@ export default function ServicesPage() {
     }
     if (search.trim()) {
       const q = search.toLowerCase();
-      result = result.filter((s) => s.name.toLowerCase().includes(q));
+      result = result.filter(
+        (s) =>
+          s.name.toLowerCase().includes(q) ||
+          s.service_id.toLowerCase().includes(q),
+      );
     }
     return result;
   }, [services, protocol, tenant, environment, search]);
@@ -251,7 +259,7 @@ export default function ServicesPage() {
       {!isLoading && !error && filtered.length > 0 && view === "grid" && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((s) => (
-            <ServiceCard key={s.service_id} service={s} />
+            <ServiceCard key={buildScopedServiceKey(s)} service={s} />
           ))}
         </div>
       )}
@@ -272,15 +280,15 @@ export default function ServicesPage() {
           </TableHeader>
           <TableBody>
             {filtered.map((s) => (
-              <TableRow key={s.service_id} className="cursor-pointer">
+              <TableRow key={buildScopedServiceKey(s)} className="cursor-pointer">
                 <TableCell>
-                  <Link href={`/services/${s.service_id}`}>
+                  <Link href={buildServiceDetailHref(s)}>
                     <ProtocolBadge protocol={s.protocol} size="sm" />
                   </Link>
                 </TableCell>
                 <TableCell>
                   <Link
-                    href={`/services/${s.service_id}`}
+                    href={buildServiceDetailHref(s)}
                     className="font-medium hover:underline"
                   >
                     {s.name}

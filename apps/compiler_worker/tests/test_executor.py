@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
+from uuid import uuid4
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,11 +17,15 @@ from apps.compiler_worker.executor import (
     reset_compilation_executor,
     resolve_compilation_executor,
 )
-from apps.compiler_worker.models import CompilationRequest
+from apps.compiler_worker.models import (
+    CompilationEventType,
+    CompilationRequest,
+    store_compilation_rollback_request,
+)
 
 
-def _request(name: str = "test-svc") -> CompilationRequest:
-    return CompilationRequest(service_name=name)
+def _request(name: str = "test-svc", *, options: dict[str, object] | None = None) -> CompilationRequest:
+    return CompilationRequest(service_name=name, options=options or {})
 
 
 class TestCallbackCompilationExecutor:
@@ -152,3 +158,66 @@ class TestDatabaseWorkflowCompilationExecutor:
 
             mock_wf_cls.assert_called_once()
             mock_workflow_instance.run.assert_awaited_once_with(req)
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_rollback_workflow_for_rollback_jobs(self) -> None:
+        mock_engine = AsyncMock()
+        mock_rollback_workflow = AsyncMock()
+        req = _request(
+            options=store_compilation_rollback_request(
+                {},
+                source_job_id=uuid4(),
+                service_id="petstore",
+                target_version=2,
+            )
+        )
+        req.job_id = uuid4()
+
+        with (
+            patch(
+                "apps.compiler_worker.executor.create_async_engine",
+                return_value=mock_engine,
+            ),
+            patch(
+                "apps.compiler_worker.executor.async_sessionmaker",
+            ) as mock_session_factory_cls,
+            patch(
+                "apps.compiler_worker.executor.SQLAlchemyCompilationJobStore",
+            ) as mock_store_cls,
+            patch(
+                "apps.compiler_worker.executor.create_default_rollback_workflow",
+                return_value=mock_rollback_workflow,
+            ) as mock_rollback_factory,
+            patch(
+                "apps.compiler_worker.executor.CompilationWorkflow",
+            ) as mock_wf_cls,
+        ):
+            mock_store = AsyncMock()
+            mock_store.create_job.return_value = req.job_id
+            mock_store_cls.return_value = mock_store
+            mock_rollback_workflow.run.return_value = SimpleNamespace(
+                service_id="petstore",
+                target_version=2,
+                previous_active_version=1,
+                deployment_revision="rev-1",
+                validation_report={"overall_passed": True},
+                protocol="openapi",
+            )
+            executor = DatabaseWorkflowCompilationExecutor(
+                database_url="postgresql+asyncpg://u:p@h/db"
+            )
+            await executor.execute(req)
+
+            mock_wf_cls.assert_not_called()
+            mock_rollback_factory.assert_called_once()
+            assert mock_rollback_factory.call_args.kwargs["request_options"] == req.options
+            assert mock_rollback_factory.call_args.kwargs["session_factory"] is not None
+            mock_rollback_workflow.run.assert_awaited_once()
+            rollback_request = mock_rollback_workflow.run.await_args.args[0]
+            assert rollback_request.service_id == "petstore"
+            assert rollback_request.target_version == 2
+            event_types = [
+                call.kwargs["event_type"] for call in mock_store.append_event.await_args_list
+            ]
+            assert CompilationEventType.ROLLBACK_STARTED in event_types
+            assert CompilationEventType.ROLLBACK_SUCCEEDED in event_types

@@ -77,7 +77,10 @@ def make_resource(**overrides: Any) -> ResourceDefinition:
         "content_type": "static",
         "content": '{"info": "petstore schema"}',
     }
-    return ResourceDefinition(**(defaults | overrides))
+    values = defaults | overrides
+    if values.get("content_type") == "dynamic" and "content" not in overrides:
+        values["content"] = None
+    return ResourceDefinition(**values)
 
 
 def make_prompt_argument(**overrides: Any) -> PromptArgument:
@@ -138,6 +141,18 @@ class TestResourceDefinition:
         assert r.operation_id == "fetch_schema"
         assert r.content is None
 
+    def test_resource_dynamic_without_operation_id_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="must define operation_id"):
+            make_resource(content_type="dynamic", content=None, operation_id=None)
+
+    def test_resource_dynamic_with_content_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="must not define static content"):
+            make_resource(
+                content_type="dynamic",
+                content='{"schema":"inline"}',
+                operation_id="fetch_schema",
+            )
+
     def test_resource_with_tags(self) -> None:
         r = make_resource(tags=["metadata", "schema"])
         assert r.tags == ["metadata", "schema"]
@@ -155,13 +170,12 @@ class TestResourceDefinition:
             make_resource(uri="")
 
     def test_resource_defaults(self) -> None:
-        r = ResourceDefinition(id="r1", name="R1", uri="service:///test/r1")
-        assert r.description == ""
-        assert r.mime_type == "application/json"
-        assert r.content_type == "static"
-        assert r.content is None
-        assert r.operation_id is None
-        assert r.tags == []
+        with pytest.raises(ValidationError, match="must define content"):
+            ResourceDefinition(id="r1", name="R1", uri="service:///test/r1")
+
+    def test_resource_static_without_content_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="must define content"):
+            make_resource(content_type="static", content=None)
 
     def test_resource_mime_type_override(self) -> None:
         r = make_resource(mime_type="text/plain")
@@ -294,11 +308,20 @@ class TestServiceIRResourcePromptValidators:
                 ],
             )
 
+    def test_duplicate_resource_uris_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Duplicate resource definition URIs"):
+            make_service_ir(
+                resource_definitions=[
+                    make_resource(id="r1", uri="service:///test/dup"),
+                    make_resource(id="r2", uri="service:///test/dup"),
+                ],
+            )
+
     def test_unique_prompt_ids_accepted(self) -> None:
         ir = make_service_ir(
             prompt_definitions=[
-                make_prompt(id="p1"),
-                make_prompt(id="p2"),
+                make_prompt(id="p1", name="Prompt One"),
+                make_prompt(id="p2", name="Prompt Two"),
             ],
         )
         assert len(ir.prompt_definitions) == 2
@@ -309,6 +332,15 @@ class TestServiceIRResourcePromptValidators:
                 prompt_definitions=[
                     make_prompt(id="dup"),
                     make_prompt(id="dup"),
+                ],
+            )
+
+    def test_duplicate_prompt_names_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Duplicate prompt definition names"):
+            make_service_ir(
+                prompt_definitions=[
+                    make_prompt(id="p1", name="Same Prompt"),
+                    make_prompt(id="p2", name="Same Prompt"),
                 ],
             )
 
@@ -357,7 +389,7 @@ class TestServiceIRResourcePromptValidators:
                 ],
             )
 
-    def test_resource_no_operation_id_accepted(self) -> None:
+    def test_static_resource_no_operation_id_accepted(self) -> None:
         ir = make_service_ir(
             resource_definitions=[make_resource(operation_id=None)],
         )

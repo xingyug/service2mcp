@@ -6,6 +6,7 @@ import { Clock, Layers } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProtocolBadge } from "@/components/services/protocol-badge";
+import { buildServiceDetailHref } from "@/lib/service-scope";
 import type { ServiceSummary } from "@/types/api";
 
 function relativeTime(iso?: string): string {
@@ -26,7 +27,7 @@ interface ServiceCardProps {
 
 export function ServiceCard({ service }: ServiceCardProps) {
   return (
-    <Link href={`/services/${service.service_id}`}>
+    <Link href={buildServiceDetailHref(service)}>
       <Card className="transition-shadow hover:shadow-md">
         <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 pb-2">
           <div className="min-w-0 space-y-1">

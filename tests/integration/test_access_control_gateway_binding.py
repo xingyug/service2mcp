@@ -26,7 +26,7 @@ from apps.access_control.gateway_binding.client import (
 from apps.access_control.main import create_app
 from apps.compiler_api.repository import ArtifactRegistryRepository
 from apps.gateway_admin_mock.main import create_app as create_gateway_admin_mock_app
-from libs.db_models import Base
+from libs.db_models import Base, User
 from libs.ir import ServiceIR
 from libs.registry_client.models import ArtifactVersionCreate
 
@@ -117,18 +117,97 @@ async def http_client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
         yield client
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def seed_auth_users(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[None]:
+    async with session_factory() as session:
+        session.add_all(
+            [
+                User(username="alice", email="alice@example.com"),
+                User(username="bob", email="bob@example.com"),
+                User(username="carol", email="carol@example.com"),
+                User(username="disabled-user", email="disabled@example.com"),
+            ]
+        )
+        await session.commit()
+    yield
+
+
+@pytest.mark.asyncio
+async def test_gateway_binding_reports_configuration_errors_when_admin_url_missing(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GATEWAY_ADMIN_URL", raising=False)
+    app = create_app(
+        session_factory=session_factory,
+        jwt_settings=JWTSettings(secret="test-secret"),
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        ready = await client.get("/readyz")
+        created = await client.post(
+            "/api/v1/authn/pats",
+            json={"username": "alice", "name": "CLI token"},
+            headers=_auth_headers("alice"),
+        )
+
+    assert ready.status_code == 503
+    assert "GATEWAY_ADMIN_URL must be configured" in ready.text
+    assert created.status_code == 503
+    assert "GATEWAY_ADMIN_URL must be configured" in created.text
+
+
+@pytest.mark.asyncio
+async def test_missing_jwt_secret_rejects_forged_dev_secret_admin_token(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ACCESS_CONTROL_JWT_SECRET", raising=False)
+    monkeypatch.delenv("ACCESS_CONTROL_JWT_ISSUER", raising=False)
+    monkeypatch.delenv("ACCESS_CONTROL_JWT_AUDIENCE", raising=False)
+    app = create_app(
+        session_factory=session_factory,
+        gateway_admin_client=InMemoryAPISIXAdminClient(),
+    )
+    transport = httpx.ASGITransport(app=app)
+    forged_headers = {
+        "Authorization": f"Bearer {_make_test_jwt('admin', roles=['admin'], secret='dev-secret')}"
+    }
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        ready = await client.get("/readyz")
+        reconciled = await client.post(
+            "/api/v1/gateway-binding/reconcile",
+            headers=forged_headers,
+        )
+
+    assert ready.status_code == 503
+    assert "ACCESS_CONTROL_JWT_SECRET must be configured" in ready.text
+    assert reconciled.status_code == 503
+    assert "ACCESS_CONTROL_JWT_SECRET must be configured" in reconciled.text
+
+
 def _route_config(
     *,
     service_name: str = "billing-runtime-v2",
     version_number: int = 2,
+    tenant: str | None = None,
+    environment: str | None = None,
 ) -> dict[str, object]:
-    return {
+    route_id_base = "billing-api"
+    if tenant:
+        route_id_base = f"{route_id_base}-tenant-{tenant.lower().replace(' ', '-')}"
+    if environment:
+        route_id_base = f"{route_id_base}-env-{environment.lower().replace(' ', '-')}"
+    route_config: dict[str, object] = {
         "service_id": "billing-api",
         "service_name": service_name,
         "namespace": "runtime-system",
         "version_number": version_number,
         "default_route": {
-            "route_id": "billing-api-active",
+            "route_id": f"{route_id_base}-active",
             "target_service": {
                 "name": service_name,
                 "namespace": "runtime-system",
@@ -137,7 +216,7 @@ def _route_config(
             "switch_strategy": "atomic-upstream-swap",
         },
         "version_route": {
-            "route_id": f"billing-api-v{version_number}",
+            "route_id": f"{route_id_base}-v{version_number}",
             "match": {"headers": {"x-tool-compiler-version": str(version_number)}},
             "target_service": {
                 "name": service_name,
@@ -146,13 +225,29 @@ def _route_config(
             },
         },
     }
+    if tenant is not None:
+        route_config["tenant"] = tenant
+    if environment is not None:
+        route_config["environment"] = environment
+    return route_config
 
 
-def _service_ir_payload(service_name: str = "billing-runtime-v2") -> dict[str, object]:
+def _service_ir_payload(
+    service_name: str = "billing-runtime-v2",
+    *,
+    tenant: str | None = None,
+    environment: str | None = None,
+) -> dict[str, object]:
     service_ir = ServiceIR.model_validate_json(
         (IR_FIXTURES_DIR / "service_ir_valid.json").read_text(encoding="utf-8")
     )
-    return service_ir.model_copy(update={"service_name": service_name}).model_dump(mode="json")
+    return service_ir.model_copy(
+        update={
+            "service_name": service_name,
+            "tenant": tenant,
+            "environment": environment,
+        }
+    ).model_dump(mode="json")
 
 
 def _runtime_app(service_name: str) -> FastAPI:
@@ -223,6 +318,39 @@ async def test_revoke_pat_deletes_gateway_consumer(
 
 
 @pytest.mark.asyncio
+async def test_reconcile_removes_consumers_for_disabled_pat_owners(
+    http_client: httpx.AsyncClient,
+    gateway_client: InMemoryAPISIXAdminClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    created = await http_client.post(
+        "/api/v1/authn/pats",
+        json={"username": "disabled-user", "name": "CLI token"},
+        headers=_auth_headers("disabled-user"),
+    )
+    assert created.status_code == 201
+    pat_id = created.json()["id"]
+    consumer_id = f"pat-{pat_id}"
+    assert consumer_id in gateway_client.consumers
+
+    async with session_factory() as session:
+        await session.execute(
+            text("UPDATE auth.users SET is_active = false WHERE username = :username"),
+            {"username": "disabled-user"},
+        )
+        await session.commit()
+
+    reconciled = await http_client.post(
+        "/api/v1/gateway-binding/reconcile",
+        headers=_auth_headers("admin", roles=["admin"]),
+    )
+
+    assert reconciled.status_code == 200
+    assert reconciled.json()["consumers_deleted"] >= 1
+    assert consumer_id not in gateway_client.consumers
+
+
+@pytest.mark.asyncio
 async def test_reconcile_restores_drifted_consumer_and_policy_binding(
     http_client: httpx.AsyncClient,
     gateway_client: InMemoryAPISIXAdminClient,
@@ -265,6 +393,31 @@ async def test_reconcile_restores_drifted_consumer_and_policy_binding(
     assert reconciled.json()["policy_bindings_synced"] >= 1
     assert consumer_id in gateway_client.consumers
     assert binding_id in gateway_client.policy_bindings
+
+
+@pytest.mark.asyncio
+async def test_list_service_routes_ignores_unmanaged_gateway_documents(
+    http_client: httpx.AsyncClient,
+    gateway_client: InMemoryAPISIXAdminClient,
+) -> None:
+    synced = await http_client.post(
+        "/api/v1/gateway-binding/service-routes/sync",
+        json={"route_config": _route_config()},
+        headers=_auth_headers("admin", roles=["admin"]),
+    )
+    assert synced.status_code == 200
+    await gateway_client.upsert_route(route_id="manual-route", document={"uri": "/manual"})
+
+    listed = await http_client.get(
+        "/api/v1/gateway-binding/service-routes",
+        headers=_auth_headers("admin", roles=["admin"]),
+    )
+
+    assert listed.status_code == 200
+    assert {item["route_id"] for item in listed.json()["items"]} == {
+        "billing-api-active",
+        "billing-api-v2",
+    }
 
 
 @pytest.mark.asyncio
@@ -502,6 +655,81 @@ async def test_reconcile_updates_stable_route_target_across_rollout_and_rollback
             )
             assert pinned_v2_after_rollback.status_code == 200
             assert pinned_v2_after_rollback.json()["service_name"] == "billing-runtime-v2"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_scopes_route_ids_for_existing_scoped_artifacts(
+    http_client: httpx.AsyncClient,
+    gateway_client: InMemoryAPISIXAdminClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    route_prod = _route_config(
+        service_name="billing-runtime-prod",
+        version_number=2,
+    )
+    route_stage = _route_config(
+        service_name="billing-runtime-stage",
+        version_number=2,
+    )
+
+    async with session_factory() as session:
+        repository = ArtifactRegistryRepository(session)
+        await repository.create_version(
+            ArtifactVersionCreate(
+                service_id="billing-api",
+                version_number=2,
+                ir_json=_service_ir_payload(
+                    "billing-runtime-prod",
+                    tenant="Team A",
+                    environment="Prod",
+                ),
+                compiler_version="0.1.0",
+                route_config=route_prod,
+                tenant="Team A",
+                environment="Prod",
+                is_active=True,
+            )
+        )
+        await repository.create_version(
+            ArtifactVersionCreate(
+                service_id="billing-api",
+                version_number=2,
+                ir_json=_service_ir_payload(
+                    "billing-runtime-stage",
+                    tenant="Team B",
+                    environment="Stage",
+                ),
+                compiler_version="0.1.0",
+                route_config=route_stage,
+                tenant="Team B",
+                environment="Stage",
+                is_active=True,
+            )
+        )
+
+    reconciled = await http_client.post(
+        "/api/v1/gateway-binding/reconcile",
+        headers=_auth_headers("admin", roles=["admin"]),
+    )
+
+    assert reconciled.status_code == 200
+    assert reconciled.json()["service_routes_synced"] == 4
+    assert sorted(gateway_client.routes) == [
+        "billing-api-tenant-team-a-env-prod-active",
+        "billing-api-tenant-team-a-env-prod-v2",
+        "billing-api-tenant-team-b-env-stage-active",
+        "billing-api-tenant-team-b-env-stage-v2",
+    ]
+    assert (
+        gateway_client.routes["billing-api-tenant-team-a-env-prod-active"].document["tenant"]
+        == "Team A"
+    )
+    assert (
+        gateway_client.routes["billing-api-tenant-team-b-env-stage-active"].document[
+            "environment"
+        ]
+        == "Stage"
+    )
 
 
 @pytest.mark.asyncio

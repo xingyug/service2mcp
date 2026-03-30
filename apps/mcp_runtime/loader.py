@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import gzip
 import inspect
+import json
 import keyword
-import logging
 import os
 import re
 from collections.abc import Awaitable, Callable
@@ -61,12 +61,10 @@ def load_service_ir(path: str | Path) -> ServiceIR:
 def create_runtime_server(name: str = "generic-mcp-runtime") -> FastMCP:
     """Create the FastMCP server used by the runtime."""
 
-    # The runtime is exposed behind Kubernetes service DNS names, not localhost.
-    # FastMCP's localhost defaults reject those Host headers with 421 responses.
-    # Allow operators to re-enable rebinding protection via env var when the
-    # runtime is exposed directly to untrusted clients.
+    # Keep DNS rebinding protection enabled by default. Operators running the
+    # runtime behind non-localhost service DNS names can explicitly opt out.
     disable_rebinding_protection = os.getenv(
-        "MCP_DISABLE_DNS_REBINDING_PROTECTION", "true"
+        "MCP_DISABLE_DNS_REBINDING_PROTECTION", "false"
     ).lower() in ("true", "1", "yes")
     return FastMCP(
         name=name,
@@ -206,18 +204,42 @@ def _default_tool_handler(operation: Operation, arguments: dict[str, Any]) -> To
 def register_ir_resources(
     server: FastMCP,
     service_ir: ServiceIR,
+    *,
+    tool_handler: ToolHandler | None = None,
 ) -> list[ResourceDefinition]:
     """Register MCP resources from IR resource definitions."""
     from mcp.server.fastmcp.resources import FunctionResource
 
     registered: list[ResourceDefinition] = []
+    operations_by_id = {operation.id: operation for operation in service_ir.operations if operation.enabled}
     for resource_def in service_ir.resource_definitions:
-        if resource_def.content_type != "static":
-            logging.getLogger(__name__).info(
-                "Skipping non-static resource %r (content_type=%s)",
-                resource_def.name,
-                resource_def.content_type,
+        if resource_def.content_type == "dynamic":
+            operation_id = resource_def.operation_id
+            if operation_id is None:
+                raise RuntimeLoadError(
+                    f"Dynamic resource {resource_def.id!r} is missing operation_id."
+                )
+            operation = operations_by_id.get(operation_id)
+            if operation is None:
+                raise RuntimeLoadError(
+                    f"Dynamic resource {resource_def.id!r} references unavailable operation "
+                    f"{operation_id!r}."
+                )
+            arguments = _dynamic_resource_arguments(resource_def, operation)
+            fn_resource = FunctionResource(
+                uri=resource_def.uri,  # pyright: ignore[reportArgumentType]
+                name=resource_def.name,
+                description=resource_def.description or resource_def.name,
+                mime_type=resource_def.mime_type,
+                fn=_make_dynamic_resource_reader(
+                    resource_def,
+                    operation,
+                    arguments,
+                    tool_handler=tool_handler,
+                ),
             )
+            server.add_resource(fn_resource)
+            registered.append(resource_def)
             continue
 
         static_content = resource_def.content or ""
@@ -239,6 +261,62 @@ def register_ir_resources(
         registered.append(resource_def)
 
     return registered
+
+
+def _dynamic_resource_arguments(
+    resource_def: ResourceDefinition,
+    operation: Operation,
+) -> dict[str, Any]:
+    arguments: dict[str, Any] = {}
+    missing_required = [
+        param.name
+        for param in operation.params
+        if param.required and param.default is None
+    ]
+    if missing_required:
+        raise RuntimeLoadError(
+            f"Dynamic resource {resource_def.id!r} references operation {operation.id!r} "
+            f"with required params: {missing_required}."
+        )
+    for param in operation.params:
+        if param.default is not None:
+            arguments[param.name] = param.default
+    return arguments
+
+
+def _make_dynamic_resource_reader(
+    resource_def: ResourceDefinition,
+    operation: Operation,
+    arguments: dict[str, Any],
+    *,
+    tool_handler: ToolHandler | None = None,
+) -> Any:
+    async def read_resource() -> str:
+        result = (
+            tool_handler(operation, dict(arguments))
+            if tool_handler is not None
+            else _default_tool_handler(operation, dict(arguments))
+        )
+        if inspect.isawaitable(result):
+            result = await result
+        return _resource_payload_to_text(resource_def, result)
+
+    return read_resource
+
+
+def _resource_payload_to_text(resource_def: ResourceDefinition, payload: Any) -> str:
+    if isinstance(payload, dict) and "result" in payload:
+        payload = payload["result"]
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, bytes):
+        return payload.decode("utf-8", errors="replace")
+    try:
+        return json.dumps(payload, ensure_ascii=True)
+    except TypeError as exc:
+        raise RuntimeLoadError(
+            f"Dynamic resource {resource_def.id!r} returned a non-serializable payload."
+        ) from exc
 
 
 def register_ir_prompts(

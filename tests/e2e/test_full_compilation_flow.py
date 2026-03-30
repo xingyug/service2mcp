@@ -93,6 +93,15 @@ def _e2e_compiler_api_sse_token() -> str:
     return build_service_jwt(jwt_settings=_E2E_COMPILER_API_JWT_SETTINGS)
 
 
+def _e2e_compiler_api_auth_headers(subject: str = "e2e-user") -> dict[str, str]:
+    return {
+        "Authorization": (
+            f"Bearer "
+            f"{build_service_jwt(subject=subject, jwt_settings=_E2E_COMPILER_API_JWT_SETTINGS)}"
+        )
+    }
+
+
 def _initialize_sqlite_catalog(tmp_path: Path) -> str:
     database_path = tmp_path / "catalog.db"
     connection = sqlite3.connect(database_path)
@@ -631,6 +640,7 @@ async def test_openapi_spec_compiles_to_running_runtime_and_tool_invocation(
             async with httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
+                headers=_e2e_compiler_api_auth_headers(),
             ) as http_client:
                 submission = await http_client.post(
                     "/api/v1/compilations",
@@ -976,6 +986,7 @@ async def test_rest_discovery_compiles_to_running_runtime_and_tool_invocation(
             async with httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
+                headers=_e2e_compiler_api_auth_headers(),
             ) as http_client:
                 submission = await http_client.post(
                     "/api/v1/compilations",
@@ -1375,6 +1386,7 @@ async def test_grpc_proto_compiles_to_running_runtime_and_tool_invocation(
             async with httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
+                headers=_e2e_compiler_api_auth_headers(),
             ) as http_client:
                 submission = await http_client.post(
                     "/api/v1/compilations",
@@ -1770,6 +1782,7 @@ async def test_soap_wsdl_compiles_to_running_runtime_and_tool_invocation(
             async with httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
+                headers=_e2e_compiler_api_auth_headers(),
             ) as http_client:
                 submission = await http_client.post(
                     "/api/v1/compilations",
@@ -2105,6 +2118,7 @@ async def test_graphql_introspection_compiles_to_running_runtime_and_tool_invoca
             async with httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
+                headers=_e2e_compiler_api_auth_headers(),
             ) as http_client:
                 submission = await http_client.post(
                     "/api/v1/compilations",
@@ -2414,6 +2428,7 @@ async def test_sql_schema_compiles_to_running_runtime_and_tool_invocation(
             async with httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
+                headers=_e2e_compiler_api_auth_headers(),
             ) as http_client:
                 submission = await http_client.post(
                     "/api/v1/compilations",
@@ -2747,6 +2762,7 @@ async def test_jsonrpc_openrpc_compiles_to_running_runtime_and_tool_invocation(
             async with httpx.AsyncClient(
                 transport=transport,
                 base_url="http://testserver",
+                headers=_e2e_compiler_api_auth_headers(),
             ) as http_client:
                 submission = await http_client.post(
                     "/api/v1/compilations",

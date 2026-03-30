@@ -6,10 +6,19 @@ from libs.extractors.base import SourceConfig
 from libs.ir.models import (
     AuthConfig,
     AuthType,
+    ErrorResponse,
+    ErrorSchema,
+    EventDescriptor,
+    EventSupportLevel,
+    EventTransport,
     Operation,
     Param,
+    PromptArgument,
+    PromptDefinition,
+    ResourceDefinition,
     RiskLevel,
     RiskMetadata,
+    ResponseExample,
     ServiceIR,
 )
 from libs.validator.drift import DriftReport, check_drift_from_source, detect_drift
@@ -143,6 +152,31 @@ class TestModifiedOperations:
         detail = report.modified_operations[0]
         assert any("type changed" in c and "limit" in c for c in detail.changes)
 
+    def test_modified_operation_param_required_and_default_changed(self) -> None:
+        deployed = _make_ir(
+            [
+                _make_op(
+                    "list-users",
+                    params=[Param(name="limit", type="integer", required=False, default=10)],
+                )
+            ]
+        )
+        live = _make_ir(
+            [
+                _make_op(
+                    "list-users",
+                    params=[Param(name="limit", type="integer", required=True, default=None)],
+                )
+            ]
+        )
+
+        report = detect_drift(deployed, live)
+
+        assert report.has_drift is True
+        detail = report.modified_operations[0]
+        assert any("required changed" in change for change in detail.changes)
+        assert any("default changed" in change for change in detail.changes)
+
     def test_modified_operation_risk_level_changed(self) -> None:
         deployed = _make_ir(
             [_make_op("delete-user", risk=RiskMetadata(risk_level=RiskLevel.cautious))]
@@ -167,6 +201,54 @@ class TestModifiedOperations:
         detail = report.modified_operations[0]
         assert any("path changed" in c for c in detail.changes)
 
+    def test_modified_operation_enabled_changed(self) -> None:
+        deployed = _make_ir([_make_op("list-users", enabled=True)])
+        live = _make_ir([_make_op("list-users", enabled=False)])
+
+        report = detect_drift(deployed, live)
+
+        assert report.has_drift is True
+        detail = report.modified_operations[0]
+        assert any("enabled changed" in c for c in detail.changes)
+
+    def test_modified_operation_response_contract_changed(self) -> None:
+        deployed = _make_ir(
+            [
+                _make_op(
+                    "list-users",
+                    response_schema={"type": "object", "properties": {"name": {"type": "string"}}},
+                    error_schema=ErrorSchema(
+                        responses=[ErrorResponse(status_code=400, description="bad request")]
+                    ),
+                    response_examples=[
+                        ResponseExample(name="example", body={"name": "alice"}),
+                    ],
+                )
+            ]
+        )
+        live = _make_ir(
+            [
+                _make_op(
+                    "list-users",
+                    response_schema={"type": "object", "properties": {"email": {"type": "string"}}},
+                    error_schema=ErrorSchema(
+                        responses=[ErrorResponse(status_code=404, description="not found")]
+                    ),
+                    response_examples=[
+                        ResponseExample(name="example", body={"email": "alice@example.com"}),
+                    ],
+                )
+            ]
+        )
+
+        report = detect_drift(deployed, live)
+
+        assert report.has_drift is True
+        detail = report.modified_operations[0]
+        assert "response schema changed" in detail.changes
+        assert "error schema changed" in detail.changes
+        assert "response examples changed" in detail.changes
+
 
 class TestSchemaChanges:
     def test_schema_change_base_url(self) -> None:
@@ -186,6 +268,116 @@ class TestSchemaChanges:
 
         assert report.has_drift is True
         assert any("auth type changed" in c for c in report.schema_changes)
+
+    def test_schema_change_auth_config(self) -> None:
+        deployed = _make_ir(
+            auth=AuthConfig(
+                type=AuthType.bearer,
+                header_name="Authorization",
+                runtime_secret_ref="secret://token-a",
+            )
+        )
+        live = _make_ir(
+            auth=AuthConfig(
+                type=AuthType.bearer,
+                header_name="X-Auth",
+                runtime_secret_ref="secret://token-b",
+            )
+        )
+
+        report = detect_drift(deployed, live)
+
+        assert report.has_drift is True
+        assert "auth config changed" in report.schema_changes
+
+    def test_schema_change_resource_definitions(self) -> None:
+        deployed = _make_ir(
+            resource_definitions=[
+                ResourceDefinition(
+                    id="schema",
+                    name="Schema",
+                    uri="service://test/schema",
+                    content_type="static",
+                    content="v1",
+                )
+            ]
+        )
+        live = _make_ir(
+            resource_definitions=[
+                ResourceDefinition(
+                    id="schema",
+                    name="Schema",
+                    uri="service://test/schema",
+                    content_type="static",
+                    content="v2",
+                )
+            ]
+        )
+
+        report = detect_drift(deployed, live)
+
+        assert report.has_drift is True
+        assert "resource changed: schema" in report.schema_changes
+
+    def test_schema_change_prompt_definitions(self) -> None:
+        deployed = _make_ir(
+            prompt_definitions=[
+                PromptDefinition(
+                    id="summarize",
+                    name="Summarize",
+                    template="v1",
+                    arguments=[PromptArgument(name="topic", required=True)],
+                )
+            ]
+        )
+        live = _make_ir(
+            prompt_definitions=[
+                PromptDefinition(
+                    id="summarize",
+                    name="Summarize",
+                    template="v2",
+                    arguments=[PromptArgument(name="topic", required=True)],
+                )
+            ]
+        )
+
+        report = detect_drift(deployed, live)
+
+        assert report.has_drift is True
+        assert "prompt changed: summarize" in report.schema_changes
+
+    def test_schema_change_event_descriptors(self) -> None:
+        deployed = _make_ir(
+            operations=[_make_op("list-users")],
+            event_descriptors=[
+                EventDescriptor(
+                    id="user-events",
+                    name="user-events",
+                    transport=EventTransport.sse,
+                    support=EventSupportLevel.supported,
+                    operation_id="list-users",
+                    channel="/events/users",
+                )
+            ],
+        )
+        live = _make_ir(
+            operations=[_make_op("list-users")],
+            event_descriptors=[
+                EventDescriptor(
+                    id="user-events",
+                    name="user-events",
+                    transport=EventTransport.sse,
+                    support=EventSupportLevel.unsupported,
+                    operation_id="list-users",
+                    channel="/events/users",
+                )
+            ],
+        )
+
+        report = detect_drift(deployed, live)
+
+        assert report.has_drift is True
+        assert "event descriptor changed: user-events" in report.schema_changes
 
 
 class TestCombinedDrift:

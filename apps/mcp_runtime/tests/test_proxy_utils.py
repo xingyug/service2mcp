@@ -121,6 +121,17 @@ class TestBuildSigningPayload:
         assert lines[3] == ""  # empty body
         assert lines[4] == "1234567890"
 
+    def test_origin_only_url_uses_root_path(self) -> None:
+        result = _build_signing_payload(
+            method="GET",
+            url="https://example.com",
+            query_params={},
+            body_for_signing=None,
+            timestamp="1234567890",
+        )
+        lines = result.split("\n")
+        assert lines[1] == "/"
+
     def test_with_query_params_sorted(self) -> None:
         result = _build_signing_payload(
             method="POST",
@@ -312,6 +323,14 @@ class TestParseResponsePayload:
             200,
             json={"key": "value"},
             headers={"content-type": "application/json"},
+        )
+        assert _parse_response_payload(response) == {"key": "value"}
+
+    def test_mixed_case_json_content_type_response(self) -> None:
+        response = httpx.Response(
+            200,
+            json={"key": "value"},
+            headers={"content-type": "Application/JSON; Charset=UTF-8"},
         )
         assert _parse_response_payload(response) == {"key": "value"}
 

@@ -48,9 +48,11 @@ from apps.compiler_worker.models import (
 )
 from apps.compiler_worker.repository import SQLAlchemyCompilationJobStore
 from apps.compiler_worker.workflows import CompilationWorkflow, CompilationWorkflowError
+from libs.sample_placeholders import PATH_PLACEHOLDER_ID_SAMPLE
 from apps.gateway_admin_mock.main import create_app as create_gateway_admin_mock_app
 from apps.mcp_runtime.main import create_app as create_runtime_app
 from libs.db_models import Base
+from libs.extractors.base import SourceConfig
 from libs.generator import GeneratedManifestSet, GenericManifestConfig, generate_generic_manifests
 from libs.ir import ServiceIR, serialize_ir
 from libs.ir.models import (
@@ -597,7 +599,7 @@ def test_build_sample_invocations_uses_discovery_defaults_for_rest_protocol() ->
 
     assert sample_invocations == {
         "get_products_product_id": {
-            "product_id": "1",
+            "product_id": PATH_PLACEHOLDER_ID_SAMPLE,
             "view": "detail",
         }
     }
@@ -928,6 +930,57 @@ async def test_default_activity_registry_extract_stage_uses_force_protocol_hint(
     assert result.protocol == "openapi"
     assert result.context_updates["service_ir"]["protocol"] == "openapi"
     assert result.context_updates["service_id"] == "forced-protocol-service"
+
+
+@pytest.mark.asyncio
+async def test_default_activity_registry_extract_stage_applies_frontend_auth_and_scope_overrides(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    registry = create_default_activity_registry(session_factory=session_factory)
+
+    class _DummyExtractor:
+        protocol_name = "openapi"
+
+        def extract(self, source: SourceConfig) -> ServiceIR:
+            return _build_minimal_http_ir(protocol="openapi", service_name="inventory-api")
+
+        def close(self) -> None:
+            return None
+
+    request = CompilationRequest(
+        source_url="https://example.com/spec.yaml",
+        service_name="inventory-api",
+        options={
+            "force_protocol": "openapi",
+            "tenant": "team-a",
+            "environment": "prod",
+            "auth_config": {
+                "type": "oauth2",
+                "token_url": "https://auth.example.com/token",
+                "client_id": "client-id",
+                "client_secret_ref": "secret://oauth2-secret",
+            },
+        },
+    )
+    context = CompilationContext(
+        job_id=request.job_id or uuid4(),
+        request=request,
+        payload={},
+    )
+
+    with patch(
+        "apps.compiler_worker.activities.production._build_extractors",
+        return_value=[_DummyExtractor()],
+    ):
+        result = await registry.run_stage(CompilationStage.EXTRACT, context)
+
+    service_ir = result.context_updates["service_ir"]
+    assert service_ir["tenant"] == "team-a"
+    assert service_ir["environment"] == "prod"
+    assert service_ir["auth"]["type"] == "oauth2"
+    assert service_ir["auth"]["oauth2"]["token_url"] == "https://auth.example.com/token"
+    assert service_ir["auth"]["oauth2"]["client_id"] == "client-id"
+    assert service_ir["auth"]["oauth2"]["client_secret_ref"] == "secret://oauth2-secret"
 
 
 @pytest.mark.asyncio

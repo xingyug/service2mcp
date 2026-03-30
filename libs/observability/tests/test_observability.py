@@ -21,6 +21,17 @@ from libs.observability.tracing import _NoOpSpan, _NoOpTracer, get_tracer, trace
 # ── Metrics Tests ──────────────────────────────────────────────────────────
 
 
+def _restore_root_logger(
+    root: logging.Logger,
+    original_handlers: list[logging.Handler],
+    original_level: int,
+) -> None:
+    root.handlers.clear()
+    for handler in original_handlers:
+        root.addHandler(handler)
+    root.setLevel(original_level)
+
+
 class TestMetrics:
     def test_create_counter(self):
         registry = CollectorRegistry()
@@ -128,10 +139,16 @@ class TestSetupTracer:
         # Reset module-level globals before each test.
         tracing_mod._is_configured = False
         tracing_mod._tracer_provider = None
+        tracing_mod._configured_service_name = None
+        tracing_mod._configured_endpoint = None
+        tracing_mod._configured_enable_local = False
 
     def teardown_method(self) -> None:
         tracing_mod._is_configured = False
         tracing_mod._tracer_provider = None
+        tracing_mod._configured_service_name = None
+        tracing_mod._configured_endpoint = None
+        tracing_mod._configured_enable_local = False
 
     def test_noop_when_no_endpoint_and_not_local(self) -> None:
         import os
@@ -236,15 +253,22 @@ class TestStructuredLogging:
         assert "test error" in parsed["exception"]["message"]
 
     def test_setup_logging(self):
-        setup_logging("test-component", level="DEBUG")
         root = logging.getLogger()
-        assert root.level == logging.DEBUG
-        assert len(root.handlers) >= 1
-        handler = root.handlers[0]
-        assert isinstance(handler.formatter, StructuredFormatter)
-        # Clean up
-        root.handlers.clear()
-        root.setLevel(logging.WARNING)
+        original_handlers = list(root.handlers)
+        original_level = root.level
+
+        try:
+            setup_logging("test-component", level="DEBUG")
+            assert root.level == logging.DEBUG
+            handlers = [
+                handler
+                for handler in root.handlers
+                if isinstance(handler.formatter, StructuredFormatter)
+            ]
+            assert handlers
+            assert isinstance(handlers[0].formatter, StructuredFormatter)
+        finally:
+            _restore_root_logger(root, original_handlers, original_level)
 
     def test_formatter_without_trace_id(self):
         formatter = StructuredFormatter(component="api")

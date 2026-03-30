@@ -53,6 +53,7 @@ from libs.ir.models import (
     GrpcStreamMode,
     GrpcStreamRuntimeConfig,
     GrpcUnaryRuntimeConfig,
+    JsonRpcOperationConfig,
     OAuth2ClientCredentialsConfig,
     Operation,
     Param,
@@ -243,6 +244,54 @@ class TestPerformRequest:
             await p._perform_request(op, {})
 
 
+class TestPrepareJsonRpcPayload:
+    def test_positional_payload_flattens_generic_payload_list(self) -> None:
+        payload = RuntimeProxy._prepare_jsonrpc_payload(
+            JsonRpcOperationConfig(
+                method_name="aria2.addUri",
+                params_type="positional",
+                params_names=["token", "payload"],
+            ),
+            {"token": "token:test-secret", "payload": ["https://example.com/file.iso"]},
+        )
+
+        assert payload == PreparedRequestPayload(
+            query_params={},
+            json_body={
+                "jsonrpc": "2.0",
+                "method": "aria2.addUri",
+                "params": ["token:test-secret", "https://example.com/file.iso"],
+                "id": 1,
+            },
+            signable_body={
+                "jsonrpc": "2.0",
+                "method": "aria2.addUri",
+                "params": ["token:test-secret", "https://example.com/file.iso"],
+                "id": 1,
+            },
+        )
+
+    def test_named_payload_merges_generic_payload_object(self) -> None:
+        payload = RuntimeProxy._prepare_jsonrpc_payload(
+            JsonRpcOperationConfig(
+                method_name="service.lookup",
+                params_type="named",
+                params_names=["token", "payload"],
+            ),
+            {
+                "token": "secret",
+                "payload": {"query": "widgets", "limit": 5},
+            },
+        )
+
+        assert payload.json_body == {
+            "jsonrpc": "2.0",
+            "method": "service.lookup",
+            "params": {"token": "secret", "query": "widgets", "limit": 5},
+            "id": 1,
+        }
+
+
 # ===================================================================
 # _stream_descriptor_for_operation
 # ===================================================================
@@ -271,6 +320,29 @@ class TestStreamDescriptorForOperation:
         p = _proxy(ir=ir)
         with pytest.raises(ToolError, match="multiple streaming descriptors"):
             p._stream_descriptor_for_operation(op)
+
+    def test_single_supported_descriptor_is_selected_among_planned_ones(self) -> None:
+        op = _op(id="stream_op")
+        planned = EventDescriptor(
+            id="planned",
+            name="Planned",
+            transport=EventTransport.websocket,
+            support=EventSupportLevel.planned,
+            operation_id="stream_op",
+        )
+        supported = EventDescriptor(
+            id="supported",
+            name="Supported",
+            transport=EventTransport.sse,
+            support=EventSupportLevel.supported,
+            operation_id="stream_op",
+        )
+        ir = _minimal_ir(event_descriptors=[planned, supported])
+        p = _proxy(ir=ir)
+
+        descriptor = p._stream_descriptor_for_operation(op)
+
+        assert descriptor is supported
 
     def test_unsupported_descriptor_raises(self) -> None:
         op = _op(id="unsup_op")
@@ -560,6 +632,21 @@ class TestBuildPrimaryAuth:
         assert headers["Authorization"] == f"Basic {encoded}"
         assert query == {}
 
+    async def test_basic_auth_with_username_and_password_ref(self) -> None:
+        ir = _minimal_ir(
+            auth=AuthConfig(
+                type=AuthType.basic,
+                basic_username="svc-user",
+                basic_password_ref="BASIC_PASSWORD",
+            ),
+        )
+        p = _proxy(ir=ir)
+        with patch.dict("os.environ", {"BASIC_PASSWORD": "s3cr3t"}):
+            headers, query = await p._build_primary_auth("op1")
+        encoded = base64.b64encode(b"svc-user:s3cr3t").decode("ascii")
+        assert headers["Authorization"] == f"Basic {encoded}"
+        assert query == {}
+
     async def test_api_key_in_query(self) -> None:
         ir = _minimal_ir(
             auth=AuthConfig(
@@ -712,6 +799,33 @@ class TestFetchOAuth2AccessToken:
         assert "client_id=cid" in content
         assert "client_secret=csec" in content
 
+    async def test_literal_client_id_does_not_require_secret_lookup(self) -> None:
+        oauth2 = OAuth2ClientCredentialsConfig(
+            token_url="https://auth.example.com/token",
+            client_id="literal-client-id",
+            client_secret_ref="CSEC",
+        )
+        p = _proxy()
+
+        mock_response = httpx.Response(
+            200,
+            json={"access_token": "tok_lit", "expires_in": 600},
+            headers={"content-type": "application/json"},
+            request=_make_request("POST", oauth2.token_url),
+        )
+        mock_client = AsyncMock()
+        mock_client.post.return_value = mock_response
+        p._client = mock_client
+
+        with patch.dict("os.environ", {"CSEC": "csec"}):
+            token = await p._fetch_oauth2_access_token("op1", oauth2)
+
+        assert token == "tok_lit"
+        call_kwargs = mock_client.post.call_args
+        headers = call_kwargs.kwargs.get("headers") or call_kwargs[1]["headers"]
+        encoded = base64.b64encode(b"literal-client-id:csec").decode("ascii")
+        assert headers["Authorization"] == f"Basic {encoded}"
+
     async def test_non_json_response_raises(self) -> None:
         oauth2 = OAuth2ClientCredentialsConfig(
             token_url="https://auth.example.com/token",
@@ -825,6 +939,22 @@ class TestPollAsyncJob:
         with pytest.raises(ToolError, match="pollable status URL"):
             await p._poll_async_job("op1", response, config)
 
+    async def test_invalid_json_kickoff_response_body_raises_tool_error(self) -> None:
+        config = AsyncJobConfig(
+            initial_status_codes=[202],
+            status_url_source="response_body",
+            status_url_field="job.status_url",
+        )
+        response = httpx.Response(
+            202,
+            text="not valid json",
+            headers={"content-type": "application/json"},
+            request=_make_request(),
+        )
+        p = _proxy()
+        with pytest.raises(ToolError, match="Async kickoff for operation op1 received invalid JSON"):
+            await p._poll_async_job("op1", response, config)
+
     async def test_timeout_raises(self) -> None:
         config = AsyncJobConfig(
             initial_status_codes=[202],
@@ -897,6 +1027,75 @@ class TestPollAsyncJob:
         )
         with patch.object(p, "_send_request", return_value=bad_json_resp):
             with pytest.raises(ToolError, match="invalid JSON"):
+                await p._poll_async_job("op1", response, config)
+
+    async def test_status_redirect_is_followed_to_final_response(self) -> None:
+        config = AsyncJobConfig(
+            initial_status_codes=[202],
+            status_url_source="location_header",
+            timeout_seconds=5.0,
+        )
+        response = httpx.Response(
+            202,
+            text="",
+            headers={"Location": "https://api.example.com/status/1"},
+            request=_make_request(),
+        )
+        seen_urls: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen_urls.append(str(request.url))
+            if request.url.path == "/status/1":
+                return httpx.Response(
+                    303,
+                    headers={"Location": "https://api.example.com/status/1/result"},
+                    request=request,
+                )
+            if request.url.path == "/status/1/result":
+                return httpx.Response(
+                    200,
+                    json={"status": "completed", "result": {"ok": True}},
+                    headers={"content-type": "application/json"},
+                    request=request,
+                )
+            raise AssertionError(f"Unexpected request URL: {request.url}")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        p = _proxy(client=client)
+        try:
+            result = await p._poll_async_job("op1", response, config)
+        finally:
+            await client.aclose()
+
+        assert result.status_code == 200
+        assert result.json() == {"status": "completed", "result": {"ok": True}}
+        assert seen_urls == [
+            "https://api.example.com/status/1",
+            "https://api.example.com/status/1/result",
+        ]
+
+    async def test_terminal_failure_status_raises_tool_error(self) -> None:
+        config = AsyncJobConfig(
+            initial_status_codes=[202],
+            status_url_source="location_header",
+            failure_status_values=["failed"],
+            timeout_seconds=5.0,
+        )
+        response = httpx.Response(
+            202,
+            text="",
+            headers={"Location": "https://api.example.com/status/1"},
+            request=_make_request(),
+        )
+        p = _proxy()
+        failed_resp = httpx.Response(
+            200,
+            json={"status": "failed", "error": "boom"},
+            headers={"content-type": "application/json"},
+            request=_make_request(),
+        )
+        with patch.object(p, "_send_request", return_value=failed_resp):
+            with pytest.raises(ToolError, match="terminal status 'failed'"):
                 await p._poll_async_job("op1", response, config)
 
 
@@ -2083,6 +2282,20 @@ class TestExtractAsyncStatusUrl:
         result = _extract_async_status_url(config, response)
         assert result == "https://api.example.com/status/1"
 
+    def test_response_body_extracts_url_with_mixed_case_json_content_type(self) -> None:
+        config = AsyncJobConfig(
+            status_url_source="response_body",
+            status_url_field="links.status",
+        )
+        response = httpx.Response(
+            202,
+            json={"links": {"status": "https://api.example.com/status/1"}},
+            headers={"content-type": "Application/JSON; Charset=UTF-8"},
+            request=_make_request(),
+        )
+        result = _extract_async_status_url(config, response)
+        assert result == "https://api.example.com/status/1"
+
     def test_response_body_no_field(self) -> None:
         config = AsyncJobConfig.model_construct(
             status_url_source="response_body",
@@ -2201,6 +2414,16 @@ class TestMaybeParseJsonPayload:
         result = _maybe_parse_json_payload(response)
         assert result == {"key": "val"}
 
+    def test_valid_json_with_mixed_case_content_type(self) -> None:
+        response = httpx.Response(
+            200,
+            json={"key": "val"},
+            headers={"content-type": "Application/JSON; Charset=UTF-8"},
+            request=_make_request(),
+        )
+        result = _maybe_parse_json_payload(response)
+        assert result == {"key": "val"}
+
 
 # ===================================================================
 # Full invoke() integration-like tests
@@ -2312,6 +2535,52 @@ class TestInvokeIntegration:
         )
         with patch.object(p, "_perform_request", return_value=response):
             with pytest.raises(ToolError, match="Upstream request failed"):
+                await p.invoke(op, {})
+
+    async def test_invoke_malformed_jsonrpc_error_envelope_raises(self) -> None:
+        op = _op(
+            method="POST",
+            path="/rpc",
+            jsonrpc=JsonRpcOperationConfig(method_name="demo.call"),
+        )
+        p = _proxy()
+        response = httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "error": "boom", "id": 1},
+            headers={"content-type": "application/json"},
+            request=_make_request("POST", "https://api.example.com/rpc"),
+        )
+        with patch.object(p, "_perform_request", return_value=response):
+            with pytest.raises(ToolError, match="malformed error envelope"):
+                await p.invoke(op, {})
+
+    async def test_invoke_malformed_odata_error_envelope_raises(self) -> None:
+        op = _op(method="GET", path="/odata/Users")
+        p = _proxy(ir=_minimal_ir(protocol="odata", operations=[op]))
+        response = httpx.Response(
+            200,
+            json={"error": "boom"},
+            headers={"content-type": "application/json"},
+            request=_make_request("GET", "https://api.example.com/odata/Users"),
+        )
+        with patch.object(p, "_perform_request", return_value=response):
+            with pytest.raises(ToolError, match="malformed error envelope"):
+                await p.invoke(op, {})
+
+    async def test_invoke_malformed_scim_error_envelope_raises(self) -> None:
+        op = _op(method="GET", path="/Users")
+        p = _proxy(ir=_minimal_ir(protocol="scim", operations=[op]))
+        response = httpx.Response(
+            200,
+            json={
+                "schemas": "urn:ietf:params:scim:api:messages:2.0:Error",
+                "detail": "boom",
+            },
+            headers={"content-type": "application/json"},
+            request=_make_request("GET", "https://api.example.com/Users"),
+        )
+        with patch.object(p, "_perform_request", return_value=response):
+            with pytest.raises(ToolError, match="malformed error envelope"):
                 await p.invoke(op, {})
 
     async def test_invoke_timeout(self) -> None:
