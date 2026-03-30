@@ -318,7 +318,9 @@ class TestProxyGateway:
         resp = await client.post("/gateway/catalog/items", json={"name": "test"})
         assert resp.status_code == 201
 
-    async def test_proxy_respects_prefix_match(self, gateway_app, client: httpx.AsyncClient) -> None:
+    async def test_proxy_respects_prefix_match(
+        self, gateway_app, client: httpx.AsyncClient
+    ) -> None:
         await client.put(
             "/admin/routes/catalog-active",
             json={
@@ -341,7 +343,9 @@ class TestProxyGateway:
         assert resp.status_code == 404
         assert "did not match" in resp.json()["detail"]
 
-    async def test_proxy_respects_header_match(self, gateway_app, client: httpx.AsyncClient) -> None:
+    async def test_proxy_respects_header_match(
+        self, gateway_app, client: httpx.AsyncClient
+    ) -> None:
         await client.put(
             "/admin/routes/catalog-v2",
             json={

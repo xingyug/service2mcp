@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from typing import TypeAlias, cast
+from typing import cast
 
 from prometheus_client import (
     REGISTRY,
@@ -21,7 +21,7 @@ from prometheus_client import (
 )
 
 logger = logging.getLogger(__name__)
-Metric: TypeAlias = Counter | Histogram | Gauge
+type Metric = Counter | Histogram | Gauge
 
 # Default histogram buckets (seconds) — covers 5ms to 30s
 DEFAULT_BUCKETS: tuple[float, ...] = (
@@ -40,7 +40,9 @@ DEFAULT_BUCKETS: tuple[float, ...] = (
 )
 
 # Track registered metric names to avoid duplicate registration
-_registered_metrics: dict[tuple[int, str], tuple[CollectorRegistry, Metric, tuple[str, tuple[str, ...]]]] = {}
+_registered_metrics: dict[
+    tuple[int, str], tuple[CollectorRegistry, Metric, tuple[str, tuple[str, ...]]]
+] = {}
 
 
 def _metric_key(name: str, registry: CollectorRegistry) -> tuple[int, str]:
@@ -173,7 +175,7 @@ def create_gauge(
 
 def get_metrics_text(registry: CollectorRegistry = REGISTRY) -> bytes:
     """Generate Prometheus metrics text output."""
-    return cast(bytes, generate_latest(registry))
+    return generate_latest(registry)
 
 
 def reset_metrics() -> None:

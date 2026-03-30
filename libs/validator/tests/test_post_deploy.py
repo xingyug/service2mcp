@@ -34,8 +34,8 @@ from libs.ir.models import (
     SqlOperationType,
     SqlRelationKind,
 )
-from libs.sample_placeholders import PATH_PLACEHOLDER_ID_SAMPLE, PATH_PLACEHOLDER_INT_SAMPLE
 from libs.ir.schema import serialize_ir
+from libs.sample_placeholders import PATH_PLACEHOLDER_ID_SAMPLE, PATH_PLACEHOLDER_INT_SAMPLE
 from libs.validator.audit import AuditThresholds, check_thresholds
 from libs.validator.post_deploy import PostDeployValidator, _select_smoke_operation
 
@@ -476,9 +476,10 @@ async def test_post_deploy_invalid_expected_ir_returns_schema_failure_report() -
     assert report.overall_passed is False
     assert report.get_result("schema").passed is False
     assert "schema validation failed" in report.get_result("schema").details.lower()
-    assert "skipped because expected ir schema validation failed" in report.get_result(
-        "tool_listing"
-    ).details.lower()
+    assert (
+        "skipped because expected ir schema validation failed"
+        in report.get_result("tool_listing").details.lower()
+    )
     assert called_paths == []
 
 
@@ -1119,7 +1120,9 @@ async def test_post_deploy_invocation_smoke_rejects_ambiguous_supported_descript
         if "/healthz" in path or "/readyz" in path:
             return httpx.Response(200, request=request)
         if "/tools" in path:
-            return httpx.Response(200, json={"tools": [{"name": "streamInventory"}]}, request=request)
+            return httpx.Response(
+                200, json={"tools": [{"name": "streamInventory"}]}, request=request
+            )
         return httpx.Response(200, request=request)
 
     transport = httpx.MockTransport(handler)
@@ -2046,9 +2049,7 @@ async def test_audit_non_streaming_missing_result_payload(
         )
 
     assert any(
-        "result payload" in r.reason.lower()
-        for r in audit_summary.results
-        if r.outcome == "failed"
+        "result payload" in r.reason.lower() for r in audit_summary.results if r.outcome == "failed"
     )
 
 

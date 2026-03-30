@@ -193,7 +193,9 @@ async def delete_artifact_version(
     replacement = None
     if deleted_version.is_active:
         replacement = await repository.get_active_version(
-            service_id, tenant=tenant, environment=environment,
+            service_id,
+            tenant=tenant,
+            environment=environment,
         )
     rollback_route_config: dict[str, object] | None = None
     rollback_previous_routes: dict[str, dict[str, object]] = {}
@@ -224,8 +226,7 @@ async def delete_artifact_version(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
-                "Route synchronization failed after deleting "
-                f"{service_id}:{version_number}: {exc}"
+                f"Route synchronization failed after deleting {service_id}:{version_number}: {exc}"
             ),
         ) from exc
     try:
@@ -254,8 +255,7 @@ async def delete_artifact_version(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
-                "Route synchronization failed after deleting "
-                f"{service_id}:{version_number}: {exc}"
+                f"Route synchronization failed after deleting {service_id}:{version_number}: {exc}"
             ),
         ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -311,7 +311,9 @@ async def activate_artifact_version(
         await session.rollback()
         try:
             if isinstance(version.route_config, dict):
-                await route_publisher.rollback(version.route_config, _previous_routes(route_sync_result))
+                await route_publisher.rollback(
+                    version.route_config, _previous_routes(route_sync_result)
+                )
         except Exception as compensation_exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,

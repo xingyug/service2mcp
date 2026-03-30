@@ -140,7 +140,9 @@ class TestResourceRegistration:
         )
         seen_calls: list[tuple[str, dict[str, Any]]] = []
 
-        async def resource_handler(operation: Operation, arguments: dict[str, Any]) -> dict[str, Any]:
+        async def resource_handler(
+            operation: Operation, arguments: dict[str, Any]
+        ) -> dict[str, Any]:
             seen_calls.append((operation.id, arguments))
             return {"status": "ok", "result": {"resource": "dynamic-payload"}}
 

@@ -28,7 +28,9 @@ def _make_record(
 
 
 def _structured_handlers(root: logging.Logger) -> list[logging.Handler]:
-    return [handler for handler in root.handlers if isinstance(handler.formatter, StructuredFormatter)]
+    return [
+        handler for handler in root.handlers if isinstance(handler.formatter, StructuredFormatter)
+    ]
 
 
 def _restore_root_logger(

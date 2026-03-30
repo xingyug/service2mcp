@@ -65,13 +65,16 @@ class TestGetWorkflow:
         record = _make_record(state="in_review", tenant="team-a", environment="prod")
         session = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ) as require_existing, patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
-        ) as get_or_create:
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ) as require_existing,
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ) as get_or_create,
+        ):
             result = await get_workflow(
                 "svc-1",
                 1,
@@ -104,12 +107,15 @@ class TestGetWorkflow:
         new_record = _make_record(state="draft")
         session = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ), patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=new_record,
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ),
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=new_record,
+            ),
         ):
             result = await get_workflow("svc-1", 1, session=session, _caller=_caller())
 
@@ -128,12 +134,15 @@ class TestTransitionWorkflow:
         session = AsyncMock()
         session.refresh = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ), patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ),
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ),
         ):
             payload = TransitionRequest(to="submitted", actor="alice")
             result = await transition_workflow(
@@ -151,12 +160,15 @@ class TestTransitionWorkflow:
         record = _make_record(state="draft")
         session = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ), patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ),
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ),
         ):
             payload = TransitionRequest(to="approved", actor="alice")
 
@@ -177,12 +189,15 @@ class TestTransitionWorkflow:
         session = AsyncMock()
         session.refresh = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ), patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ),
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ),
         ):
             payload = TransitionRequest(to="approved", actor="bob", comment="LGTM")
             result = await transition_workflow(
@@ -214,12 +229,15 @@ class TestTransitionWorkflow:
             session = AsyncMock()
             session.refresh = AsyncMock()
 
-            with patch(
-                "apps.compiler_api.routes.workflows._require_existing_service_version",
-                return_value=None,
-            ), patch(
-                "apps.compiler_api.routes.workflows._get_or_create",
-                return_value=record,
+            with (
+                patch(
+                    "apps.compiler_api.routes.workflows._require_existing_service_version",
+                    return_value=None,
+                ),
+                patch(
+                    "apps.compiler_api.routes.workflows._get_or_create",
+                    return_value=record,
+                ),
             ):
                 payload = TransitionRequest(to=to_state, actor="ci")
                 result = await transition_workflow(
@@ -235,12 +253,15 @@ class TestTransitionWorkflow:
         session = AsyncMock()
         payload = TransitionRequest(to="submitted", actor="alice")
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            side_effect=HTTPException(status_code=404, detail="missing"),
-        ), patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-        ) as get_or_create:
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                side_effect=HTTPException(status_code=404, detail="missing"),
+            ),
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+            ) as get_or_create,
+        ):
             with pytest.raises(HTTPException) as exc_info:
                 await transition_workflow(
                     "svc-1",
@@ -258,13 +279,16 @@ class TestTransitionWorkflow:
         session = AsyncMock()
         session.refresh = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ) as require_existing, patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
-        ) as get_or_create:
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ) as require_existing,
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ) as get_or_create,
+        ):
             payload = TransitionRequest(to="submitted", actor="alice")
             result = await transition_workflow(
                 "svc-1",
@@ -305,25 +329,28 @@ class TestSaveReviewNotes:
         session = AsyncMock()
         session.refresh = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ), patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ),
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ),
         ):
             payload = ReviewNotesUpdate(
                 notes={"op-1": "looks good", "op-2": "needs fix"},
                 overall_note="Ship it",
                 reviewed_operations=["op-1", "op-2"],
             )
-            result = await save_review_notes(
+            await save_review_notes(
                 "svc-1",
                 1,
                 payload,
                 session=session,
                 _caller=_caller(),
-            )  # noqa: F841
+            )
 
         assert record.review_notes == {
             "operation_notes": {"op-1": "looks good", "op-2": "needs fix"},
@@ -337,12 +364,15 @@ class TestSaveReviewNotes:
         session = AsyncMock()
         session.refresh = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ), patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ),
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ),
         ):
             payload = ReviewNotesUpdate(notes={"op-1": "ok"})
             await save_review_notes("svc-1", 1, payload, session=session, _caller=_caller())
@@ -355,13 +385,16 @@ class TestSaveReviewNotes:
         session = AsyncMock()
         session.refresh = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ) as require_existing, patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
-        ) as get_or_create:
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ) as require_existing,
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ) as get_or_create,
+        ):
             payload = ReviewNotesUpdate(notes={"op-1": "ok"})
             result = await save_review_notes(
                 "svc-1",
@@ -410,12 +443,15 @@ class TestGetWorkflowHistory:
         record = _make_record(history=history)
         session = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ), patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ),
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ),
         ):
             result = await get_workflow_history("svc-1", 1, session=session, _caller=_caller())
 
@@ -426,12 +462,15 @@ class TestGetWorkflowHistory:
         record = _make_record(history=[])
         session = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ), patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ),
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ),
         ):
             result = await get_workflow_history("svc-1", 1, session=session, _caller=_caller())
         assert result == []
@@ -440,13 +479,16 @@ class TestGetWorkflowHistory:
         record = _make_record(history=[], tenant="team-a", environment="prod")
         session = AsyncMock()
 
-        with patch(
-            "apps.compiler_api.routes.workflows._require_existing_service_version",
-            return_value=None,
-        ) as require_existing, patch(
-            "apps.compiler_api.routes.workflows._get_or_create",
-            return_value=record,
-        ) as get_or_create:
+        with (
+            patch(
+                "apps.compiler_api.routes.workflows._require_existing_service_version",
+                return_value=None,
+            ) as require_existing,
+            patch(
+                "apps.compiler_api.routes.workflows._get_or_create",
+                return_value=record,
+            ) as get_or_create,
+        ):
             result = await get_workflow_history(
                 "svc-1",
                 1,

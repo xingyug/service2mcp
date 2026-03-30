@@ -396,7 +396,8 @@ class GeneratedManifestRollbackDeployer(RollbackDeployer):
             or self._latest_result.deployment_revision != deployment_revision
         ):
             raise RuntimeError(
-                f"Rollback deployment revision {deployment_revision} is not available for validation."
+                "Rollback deployment revision "
+                f"{deployment_revision} is not available for validation."
             )
 
     @property
@@ -416,7 +417,8 @@ class VersionRouteRollbackPublisher(RollbackPublisher):
         route_config = version.route_config
         if not isinstance(route_config, dict):
             raise RuntimeError(
-                f"Rollback target {version.service_id} v{version.version_number} is missing route_config."
+                "Rollback target "
+                f"{version.service_id} v{version.version_number} is missing route_config."
             )
         return await self.route_publisher.publish(route_config)
 
@@ -435,7 +437,8 @@ class RuntimeRollbackValidator(RollbackValidator):
         runtime_base_url = self.deployer.runtime_base_url
         if runtime_base_url is None:
             raise RuntimeError(
-                f"Rollback target {version.service_id} v{version.version_number} has no deployed runtime URL."
+                "Rollback target "
+                f"{version.service_id} v{version.version_number} has no deployed runtime URL."
             )
 
         service_ir = ServiceIR.model_validate(version.ir_json)
@@ -688,7 +691,9 @@ class KubernetesManifestDeployer:
                 ("deployments", "apps/v1", str(manifest_set.deployment["metadata"]["name"]))
             )
             await self._apply_manifest("services", "v1", manifest_set.service)
-            created_manifests.append(("services", "v1", str(manifest_set.service["metadata"]["name"])))
+            created_manifests.append(
+                ("services", "v1", str(manifest_set.service["metadata"]["name"]))
+            )
             await self._apply_manifest(
                 "networkpolicies",
                 "networking.k8s.io/v1",
@@ -769,8 +774,7 @@ class KubernetesManifestDeployer:
             )
             if cleanup_errors:
                 raise RuntimeError(
-                    "Kubernetes rollback left undeleted resources: "
-                    + "; ".join(cleanup_errors)
+                    "Kubernetes rollback left undeleted resources: " + "; ".join(cleanup_errors)
                 )
         finally:
             if self.owns_api_client:
@@ -843,10 +847,7 @@ class KubernetesManifestDeployer:
             if (
                 observed_generation >= generation
                 and available_replicas >= expected_replicas
-                and (
-                    updated_replicas is None
-                    or updated_replicas >= expected_replicas
-                )
+                and (updated_replicas is None or updated_replicas >= expected_replicas)
             ):
                 return observed_generation
             remaining = deadline - asyncio.get_running_loop().time()
@@ -1246,7 +1247,7 @@ def create_default_activity_registry(
             )
             return
         publication = cast(dict[str, Any] | None, publication)
-        await resolved_route_publisher.rollback(route_config, publication)
+        await _resolved_route_publisher().rollback(route_config, publication)
         del context
 
     return ActivityRegistry(

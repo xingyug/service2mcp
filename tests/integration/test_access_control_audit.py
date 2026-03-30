@@ -6,8 +6,10 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import time
 from collections.abc import AsyncIterator, Iterator
+from typing import Any
 
 import httpx
 import pytest
@@ -21,10 +23,17 @@ from apps.access_control.authn.service import JWTSettings
 from apps.access_control.gateway_binding.client import InMemoryAPISIXAdminClient
 from apps.access_control.main import create_app as create_access_control_app
 from apps.compiler_api.dispatcher import InMemoryCompilationDispatcher
-from apps.compiler_api.main import create_app as create_compiler_api_app
 from libs.db_models import Base
 
 _TEST_JWT_SECRET = "test-secret"
+
+os.environ.setdefault("ACCESS_CONTROL_JWT_SECRET", _TEST_JWT_SECRET)
+
+
+def _create_compiler_api_app(**kwargs: Any) -> FastAPI:
+    from apps.compiler_api.main import create_app
+
+    return create_app(**kwargs)
 
 
 def _make_test_jwt(
@@ -95,7 +104,7 @@ def access_control_app(session_factory: async_sessionmaker[AsyncSession]) -> Fas
 
 @pytest.fixture
 def compiler_api_app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
-    return create_compiler_api_app(
+    return _create_compiler_api_app(
         session_factory=session_factory,
         compilation_dispatcher=InMemoryCompilationDispatcher(),
         jwt_settings=JWTSettings(secret="test-secret"),

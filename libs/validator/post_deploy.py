@@ -68,7 +68,9 @@ class PostDeployValidator:
         if service_ir is None:
             results = [
                 schema_result,
-                self._skipped_result("health", "Skipped because expected IR schema validation failed."),
+                self._skipped_result(
+                    "health", "Skipped because expected IR schema validation failed."
+                ),
                 self._skipped_result(
                     "tool_listing",
                     "Skipped because expected IR schema validation failed.",
@@ -121,7 +123,9 @@ class PostDeployValidator:
         if service_ir is None:
             results = [
                 schema_result,
-                self._skipped_result("health", "Skipped because expected IR schema validation failed."),
+                self._skipped_result(
+                    "health", "Skipped because expected IR schema validation failed."
+                ),
                 self._skipped_result(
                     "tool_listing",
                     "Skipped because expected IR schema validation failed.",
@@ -370,7 +374,9 @@ class PostDeployValidator:
         passed = health_failure is None and ready_failure is None
         details = "Runtime health endpoints are ready."
         if not passed:
-            failure_details = [detail for detail in (health_failure, ready_failure) if detail is not None]
+            failure_details = [
+                detail for detail in (health_failure, ready_failure) if detail is not None
+            ]
             details = "Runtime health endpoints returned unexpected readiness state: " + "; ".join(
                 failure_details
             )
@@ -566,7 +572,9 @@ class PostDeployValidator:
                 sample_invocations=sample_invocations,
             )
             if rejection_details is None:
-                rejection_details = "No safe runtime tool is available for invocation smoke validation."
+                rejection_details = (
+                    "No safe runtime tool is available for invocation smoke validation."
+                )
             return ValidationResult(
                 stage="invocation_smoke",
                 passed=False,
@@ -711,9 +719,9 @@ def _uses_default_placeholder_path_samples(
 ) -> bool:
     return bool(
         _has_synthetic_path_placeholder_samples(
-        operation,
-        sample_invocations[operation.id],
-        include_numeric_fallbacks=True,
+            operation,
+            sample_invocations[operation.id],
+            include_numeric_fallbacks=True,
         )
     )
 
@@ -755,7 +763,9 @@ def _default_smoke_rejection_details(
         reason_text = reasons[0]
     else:
         reason_text = f"{reasons[0]} and {reasons[1]}"
-    return f"No safe runtime tool is available for invocation smoke validation because {reason_text}."
+    return (
+        f"No safe runtime tool is available for invocation smoke validation because {reason_text}."
+    )
 
 
 def _smoke_operation_priority(

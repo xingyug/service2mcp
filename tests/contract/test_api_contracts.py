@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Hashable, Mapping
 from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
 from openapi_spec_validator import validate_spec
+
+os.environ.setdefault("ACCESS_CONTROL_JWT_SECRET", "contract-test-jwt-secret")
 
 from apps.access_control.main import create_app as create_access_control_app
 from apps.compiler_api.main import create_app as create_compiler_api_app

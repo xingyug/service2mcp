@@ -11,6 +11,8 @@ from pydantic import ValidationError
 from sqlalchemy import Select, and_, delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql.selectable import Subquery
 
 from apps.compiler_api.models import (
     CompilationEventResponse,
@@ -39,7 +41,6 @@ from libs.registry_client.models import (
     ArtifactVersionUpdate,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +49,8 @@ class MalformedServiceVersionError(RuntimeError):
 
     def __init__(self, *, service_id: str, version_number: int) -> None:
         super().__init__(
-            f"Active service record for {service_id} v{version_number} is malformed and cannot be served."
+            "Active service record for "
+            f"{service_id} v{version_number} is malformed and cannot be served."
         )
         self.service_id = service_id
         self.version_number = version_number
@@ -59,7 +61,8 @@ class MalformedArtifactDiffError(RuntimeError):
 
     def __init__(self, *, service_id: str, version_number: int) -> None:
         super().__init__(
-            f"Stored artifact version {service_id}:{version_number} is malformed and cannot be diffed."
+            "Stored artifact version "
+            f"{service_id}:{version_number} is malformed and cannot be diffed."
         )
         self.service_id = service_id
         self.version_number = version_number
@@ -178,7 +181,9 @@ class CompilationRepository:
             status=job.status,
             current_stage=job.current_stage,
             error_detail=job.error_detail,
-            options=job.options if include_internal_options else public_compilation_options(job.options),
+            options=job.options
+            if include_internal_options
+            else public_compilation_options(job.options),
             created_by=job.created_by,
             service_id=job.service_name,
             service_name=job.service_name,
@@ -242,9 +247,7 @@ class ServiceCatalogRepository:
                     version.version_number,
                     exc_info=True,
                 )
-        return ServiceListResponse(
-            services=services
-        )
+        return ServiceListResponse(services=services)
 
     async def get_service(
         self,
@@ -309,7 +312,7 @@ class ServiceCatalogRepository:
         )
 
     @staticmethod
-    def _service_stats_subquery():
+    def _service_stats_subquery() -> Subquery:
         return (
             select(
                 ServiceVersion.service_id.label("service_id"),
@@ -327,7 +330,7 @@ class ServiceCatalogRepository:
         )
 
     @staticmethod
-    def _service_stats_join_condition(stats: Any):
+    def _service_stats_join_condition(stats: Subquery) -> ColumnElement[bool]:
         return and_(
             ServiceVersion.service_id == stats.c.service_id,
             ServiceVersion.tenant.is_not_distinct_from(stats.c.tenant),
@@ -418,9 +421,8 @@ class ArtifactRegistryRepository:
         tenant: str | None = None,
         environment: str | None = None,
     ) -> ArtifactVersionListResponse:
-        query = (
-            self._version_query(service_id, tenant=tenant, environment=environment)
-            .order_by(desc(ServiceVersion.version_number))
+        query = self._version_query(service_id, tenant=tenant, environment=environment).order_by(
+            desc(ServiceVersion.version_number)
         )
         result = await self._session.scalars(query)
         versions = [self._to_response(record) for record in result.all()]
@@ -551,9 +553,8 @@ class ArtifactRegistryRepository:
         await self._session.flush()
 
         if was_active:
-            replacement_query = (
-                select(ServiceVersion)
-                .where(ServiceVersion.service_id == service_id)
+            replacement_query = select(ServiceVersion).where(
+                ServiceVersion.service_id == service_id
             )
             if record_tenant is not None:
                 replacement_query = replacement_query.where(
@@ -572,9 +573,7 @@ class ArtifactRegistryRepository:
                     ServiceVersion.environment.is_(None),
                 )
             replacement = await self._session.scalar(
-                replacement_query
-                .order_by(desc(ServiceVersion.version_number))
-                .limit(1)
+                replacement_query.order_by(desc(ServiceVersion.version_number)).limit(1)
             )
             if replacement is not None:
                 replacement.is_active = True
@@ -656,10 +655,7 @@ class ArtifactRegistryRepository:
             .where(ServiceVersion.service_id == service_id)
             .where(ServiceVersion.is_active.is_(True))
         )
-        deactivate_query = (
-            update(ServiceVersion)
-            .where(ServiceVersion.service_id == service_id)
-        )
+        deactivate_query = update(ServiceVersion).where(ServiceVersion.service_id == service_id)
         if tenant is not None:
             lock_query = lock_query.where(ServiceVersion.tenant == tenant)
             deactivate_query = deactivate_query.where(ServiceVersion.tenant == tenant)
@@ -717,7 +713,7 @@ class ArtifactRegistryRepository:
                 tenant=tenant,
                 environment=environment,
             )
-        return cast(ServiceVersion, records[0])
+        return records[0]
 
     def _version_query(
         self,

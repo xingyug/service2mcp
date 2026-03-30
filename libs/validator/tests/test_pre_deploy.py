@@ -653,9 +653,7 @@ async def test_token_endpoint_returning_404_fails(
         ),
     )
     ir = _build_ir(auth=auth)
-    respx.post("https://auth.example.com/token").mock(
-        return_value=httpx.Response(404)
-    )
+    respx.post("https://auth.example.com/token").mock(return_value=httpx.Response(404))
     validator = PreDeployValidator()
     try:
         report = await validator.validate(ir)
@@ -683,9 +681,7 @@ async def test_token_endpoint_returning_500_fails(
         ),
     )
     ir = _build_ir(auth=auth)
-    respx.post("https://auth.example.com/token").mock(
-        return_value=httpx.Response(500)
-    )
+    respx.post("https://auth.example.com/token").mock(return_value=httpx.Response(500))
     validator = PreDeployValidator()
     try:
         report = await validator.validate(ir)
@@ -715,7 +711,9 @@ async def test_token_endpoint_non_success_statuses_fail(
         ),
     )
     ir = _build_ir(auth=auth)
-    response_headers = {"location": "https://auth.example.com/redirected"} if status_code == 302 else {}
+    response_headers = (
+        {"location": "https://auth.example.com/redirected"} if status_code == 302 else {}
+    )
     respx.post("https://auth.example.com/token").mock(
         return_value=httpx.Response(status_code, headers=response_headers)
     )

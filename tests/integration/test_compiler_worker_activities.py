@@ -48,7 +48,6 @@ from apps.compiler_worker.models import (
 )
 from apps.compiler_worker.repository import SQLAlchemyCompilationJobStore
 from apps.compiler_worker.workflows import CompilationWorkflow, CompilationWorkflowError
-from libs.sample_placeholders import PATH_PLACEHOLDER_ID_SAMPLE
 from apps.gateway_admin_mock.main import create_app as create_gateway_admin_mock_app
 from apps.mcp_runtime.main import create_app as create_runtime_app
 from libs.db_models import Base
@@ -76,6 +75,7 @@ from libs.ir.models import (
     SqlRelationKind,
     ToolIntent,
 )
+from libs.sample_placeholders import PATH_PLACEHOLDER_ID_SAMPLE
 
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 OPENAPI_FIXTURES_DIR = FIXTURES_DIR / "openapi_specs"

@@ -379,23 +379,44 @@ class TestDiffExtendedSurfaces:
         diff = compute_diff(a, b)
 
         service_diff = next(
-            operation for operation in diff.changed_operations if operation.operation_id == "__service__"
+            operation
+            for operation in diff.changed_operations
+            if operation.operation_id == "__service__"
         )
-        assert ("base_url", "https://old.example.com", "https://new.example.com") in service_diff.changes
+        assert (
+            "base_url",
+            "https://old.example.com",
+            "https://new.example.com",
+        ) in service_diff.changes
 
     def test_response_contract_changes_are_reported(self) -> None:
         a = _base_ir(
-            operations=[_op("get_user", response_schema={"type": "object", "properties": {"name": {"type": "string"}}})]
+            operations=[
+                _op(
+                    "get_user",
+                    response_schema={"type": "object", "properties": {"name": {"type": "string"}}},
+                )
+            ]
         )
         b = _base_ir(
-            operations=[_op("get_user", response_schema={"type": "object", "properties": {"email": {"type": "string"}}})]
+            operations=[
+                _op(
+                    "get_user",
+                    response_schema={"type": "object", "properties": {"email": {"type": "string"}}},
+                )
+            ]
         )
 
         diff = compute_diff(a, b)
 
-        op_diff = next(operation for operation in diff.changed_operations if operation.operation_id == "get_user")
+        op_diff = next(
+            operation
+            for operation in diff.changed_operations
+            if operation.operation_id == "get_user"
+        )
         assert any(
-            isinstance(change, tuple) and change[0] == "response_schema" for change in op_diff.changes
+            isinstance(change, tuple) and change[0] == "response_schema"
+            for change in op_diff.changes
         )
 
     def test_request_execution_contract_changes_are_reported(self) -> None:
@@ -422,12 +443,10 @@ class TestDiffExtendedSurfaces:
 
         diff = compute_diff(a, b)
 
-        op_diff = next(operation for operation in diff.changed_operations if operation.operation_id == "submit")
-        fields = {
-            change[0]
-            for change in op_diff.changes
-            if isinstance(change, tuple)
-        }
+        op_diff = next(
+            operation for operation in diff.changed_operations if operation.operation_id == "submit"
+        )
+        fields = {change[0] for change in op_diff.changes if isinstance(change, tuple)}
         assert {"request_body_mode", "body_param_name"} <= fields
 
     def test_resource_prompt_and_event_changes_are_reported(self) -> None:
