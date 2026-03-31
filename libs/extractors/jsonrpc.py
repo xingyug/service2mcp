@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
-import httpx
-
 from libs.extractors.base import SourceConfig
+from libs.extractors.utils import (
+    compute_content_hash,
+    get_auth_headers,
+    get_content,
+)
 from libs.ir.models import (
     AuthConfig,
     AuthType,
@@ -139,7 +140,7 @@ class JsonRpcExtractor:
         if content is None:
             raise ValueError("Could not read source content")
 
-        source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        source_hash = compute_content_hash(content)
         data = json.loads(content)
 
         is_openrpc = "openrpc" in data
@@ -286,36 +287,11 @@ class JsonRpcExtractor:
         return source_url
 
     def _get_content(self, source: SourceConfig) -> str | None:
-        if source.file_content:
-            return source.file_content
-        if source.file_path:
-            return Path(source.file_path).read_text(encoding="utf-8")
-        if source.url:
-            try:
-                response = httpx.get(
-                    source.url,
-                    timeout=30,
-                    headers=self._auth_headers(source),
-                )
-                response.raise_for_status()
-                return response.text
-            except (httpx.HTTPError, OSError):
-                logger.warning(
-                    "Failed to fetch JSON-RPC spec from %s",
-                    source.url,
-                    exc_info=True,
-                )
-                return None
-        return None
+        return get_content(source)
 
     @staticmethod
     def _auth_headers(source: SourceConfig) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        if source.auth_header:
-            headers["Authorization"] = source.auth_header
-        elif source.auth_token:
-            headers["Authorization"] = f"Bearer {source.auth_token}"
-        return headers
+        return get_auth_headers(source)
 
 
 def _resolve_params_type(method: dict[str, Any]) -> Literal["named", "positional"]:

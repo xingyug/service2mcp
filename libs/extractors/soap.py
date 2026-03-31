@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
-import httpx
-
 from libs.extractors.base import SourceConfig
+from libs.extractors.utils import (
+    compute_content_hash,
+    get_auth_headers,
+    get_content,
+    slugify,
+)
 from libs.ir.models import (
     AuthConfig,
     AuthType,
@@ -89,7 +91,7 @@ class SOAPWSDLExtractor:
         if _local_name(root.tag) != "definitions":
             raise ValueError("SOAP extractor requires a WSDL definitions document.")
 
-        source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        source_hash = compute_content_hash(content)
         target_namespace = root.attrib.get("targetNamespace", "")
         messages = _parse_messages(root)
         elements, complex_types, child_element_forms = _parse_schema_types(root)
@@ -106,7 +108,7 @@ class SOAPWSDLExtractor:
         base_url = (
             (address.attrib.get("location") if address is not None else None)
             or source.url
-            or f"https://{_slugify(service_name)}"
+            or f"https://{slugify(service_name, camel_case=True)}"
         )
 
         port_type_map = {
@@ -162,7 +164,7 @@ class SOAPWSDLExtractor:
             source_url=source.url,
             source_hash=source_hash,
             protocol="soap",
-            service_name=_slugify(service_name),
+            service_name=slugify(service_name, camel_case=True),
             service_description=f"SOAP service extracted from WSDL service {service_name}.",
             base_url=base_url,
             auth=AuthConfig(type=AuthType.none),
@@ -178,27 +180,10 @@ class SOAPWSDLExtractor:
         )
 
     def _get_content(self, source: SourceConfig) -> str | None:
-        if source.file_content:
-            return source.file_content
-        if source.file_path:
-            return Path(source.file_path).read_text(encoding="utf-8")
-        if source.url:
-            try:
-                response = httpx.get(source.url, timeout=30, headers=self._auth_headers(source))
-                response.raise_for_status()
-                return response.text
-            except (httpx.HTTPError, OSError):
-                logger.warning("Failed to fetch WSDL from %s", source.url, exc_info=True)
-                return None
-        return None
+        return get_content(source)
 
     def _auth_headers(self, source: SourceConfig) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        if source.auth_header:
-            headers["Authorization"] = source.auth_header
-        elif source.auth_token:
-            headers["Authorization"] = f"Bearer {source.auth_token}"
-        return headers
+        return get_auth_headers(source)
 
     def _looks_like_wsdl(self, content: str) -> bool:
         try:
@@ -518,11 +503,6 @@ def _local_name(tag: str) -> str:
 
 def _humanize_identifier(value: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", " ", value).strip()
-
-
-def _slugify(text: str) -> str:
-    normalized = re.sub(r"(?<!^)(?=[A-Z])", "-", text).lower().strip()
-    return re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
 
 
 __all__ = ["SOAPWSDLExtractor"]

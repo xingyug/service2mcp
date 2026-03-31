@@ -303,7 +303,7 @@ message Resp { string ok = 1; }
         resp = httpx.Response(200, text=proto_text, request=request)
         return resp
 
-    with patch("libs.extractors.grpc.httpx.get", side_effect=mock_get):
+    with patch("libs.extractors.utils.httpx.get", side_effect=mock_get):
         result = extractor._get_content(SourceConfig(url="https://example.com/test.proto"))
 
     assert result == proto_text
@@ -313,7 +313,7 @@ def test_get_content_returns_none_on_url_failure() -> None:
     """_get_content returns None when URL fetch fails (lines 241-243)."""
     extractor = GrpcProtoExtractor()
 
-    with patch("libs.extractors.grpc.httpx.get", side_effect=httpx.ConnectError("fail")):
+    with patch("libs.extractors.utils.httpx.get", side_effect=httpx.ConnectError("fail")):
         result = extractor._get_content(SourceConfig(url="https://bad.example.com/test.proto"))
 
     assert result is None

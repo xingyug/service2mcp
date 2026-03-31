@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-import httpx
-
 from libs.extractors.base import SourceConfig
+from libs.extractors.utils import (
+    compute_content_hash,
+    get_auth_headers,
+    get_content,
+    slugify,
+)
 from libs.ir.models import (
     AuthConfig,
     AuthType,
@@ -142,7 +144,7 @@ class GrpcProtoExtractor:
         if content is None:
             raise ValueError("Could not read source content")
 
-        source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        source_hash = compute_content_hash(content)
         proto_syntax = _extract_pattern_value(_SYNTAX_PATTERN, content, default="proto3")
         proto_package = _extract_pattern_value(_PACKAGE_PATTERN, content, default="")
         messages = _parse_messages(content)
@@ -216,7 +218,7 @@ class GrpcProtoExtractor:
 
         primary_service_name = services[0].name
         display_name = " ".join(part for part in (proto_package, primary_service_name) if part)
-        slug_name = _slugify(display_name or primary_service_name)
+        slug_name = slugify(display_name or primary_service_name, camel_case=True)
         base_url = source.url or f"grpc://{slug_name}"
 
         return ServiceIR(
@@ -239,27 +241,10 @@ class GrpcProtoExtractor:
         )
 
     def _get_content(self, source: SourceConfig) -> str | None:
-        if source.file_content:
-            return source.file_content
-        if source.file_path:
-            return Path(source.file_path).read_text(encoding="utf-8")
-        if source.url:
-            try:
-                response = httpx.get(source.url, timeout=30, headers=self._auth_headers(source))
-                response.raise_for_status()
-                return response.text
-            except (httpx.HTTPError, OSError):
-                logger.warning("Failed to fetch proto source from %s", source.url, exc_info=True)
-                return None
-        return None
+        return get_content(source)
 
     def _auth_headers(self, source: SourceConfig) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        if source.auth_header:
-            headers["Authorization"] = source.auth_header
-        elif source.auth_token:
-            headers["Authorization"] = f"Bearer {source.auth_token}"
-        return headers
+        return get_auth_headers(source)
 
 
 def _parse_services(content: str) -> list[ProtoService]:
@@ -568,11 +553,6 @@ def _hint_enabled(source: SourceConfig, name: str) -> bool:
     if not isinstance(value, str):
         return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _slugify(text: str) -> str:
-    normalized = re.sub(r"(?<!^)(?=[A-Z])", "-", text).lower().strip()
-    return re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
 
 
 __all__ = ["GrpcProtoExtractor"]
