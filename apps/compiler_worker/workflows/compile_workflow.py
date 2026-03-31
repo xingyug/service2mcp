@@ -184,7 +184,7 @@ class CompilationWorkflow:
                 )
                 try:
                     result = await self._activities.run_stage(stage, context)
-                except Exception as exc:
+                except Exception as exc:  # broad-except: retry/rollback safety
                     error_detail = str(exc)
                     self._record_stage_metric(
                         stage,
@@ -372,7 +372,7 @@ class CompilationWorkflow:
             )
             try:
                 await self._activities.rollback_stage(stage, context, result)
-            except Exception as exc:
+            except Exception as exc:  # broad-except: best-effort rollback
                 failure_message = f"{stage.value}: {exc}"
                 rollback_failures.append(failure_message)
                 await self._store.append_event(

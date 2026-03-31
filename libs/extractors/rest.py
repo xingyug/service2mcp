@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
 from collections.abc import Iterable
@@ -31,6 +32,8 @@ from libs.ir.models import (
     ServiceIR,
     SourceType,
 )
+
+logger = logging.getLogger(__name__)
 
 _HTML_LINK_PATTERN = re.compile(r"""href=["']([^"'#]+)["']""", re.IGNORECASE)
 _HTML_FORM_PATTERN = re.compile(
@@ -390,7 +393,8 @@ class RESTExtractor:
 
         try:
             payload = response.json()
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
+            logger.debug("JSON parse failed for %s", current_url)
             return
 
         collection_items = _extract_collection_items(payload)
@@ -491,7 +495,8 @@ class RESTExtractor:
 
         try:
             payload = db_response.json()
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
+            logger.debug("JSON parse failed for json-server db endpoint %s", db_url)
             return {}
         if not _looks_like_json_server_db_payload(payload):
             return {}
@@ -746,7 +751,8 @@ class RESTExtractor:
         if "json" in content_type:
             try:
                 return self._extract_from_json(base_url, response.json())
-            except Exception:
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+                logger.debug("JSON candidate extraction failed for %s", base_url)
                 return self._extract_from_html(base_url, response.text)
         return self._extract_from_html(base_url, response.text)
 

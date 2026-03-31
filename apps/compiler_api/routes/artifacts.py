@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +21,8 @@ from libs.registry_client.models import (
     ArtifactVersionResponse,
     ArtifactVersionUpdate,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/artifacts", tags=["artifact-registry"])
 
@@ -80,7 +84,8 @@ async def create_artifact_version(
             commit=False,
         )
         await session.commit()
-    except Exception:
+    except Exception:  # broad-except: route error boundary
+        logger.exception("Audit log or commit failed during artifact creation")
         await session.rollback()
         raise
     return created
@@ -156,7 +161,8 @@ async def update_artifact_version(
             commit=False,
         )
         await session.commit()
-    except Exception:
+    except Exception:  # broad-except: route error boundary
+        logger.exception("Audit log or commit failed during artifact update")
         await session.rollback()
         raise
     return version
@@ -221,7 +227,8 @@ async def delete_artifact_version(
                 _previous_routes(await route_publisher.delete(version_only_route))
             )
             rollback_route_config = version_only_route
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Route synchronization failed during artifact deletion")
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -239,12 +246,14 @@ async def delete_artifact_version(
             commit=False,
         )
         await session.commit()
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Audit log or commit failed during artifact deletion")
         await session.rollback()
         try:
             if rollback_route_config is not None:
                 await route_publisher.rollback(rollback_route_config, rollback_previous_routes)
-        except Exception as compensation_exc:
+        except Exception as compensation_exc:  # broad-except: route error boundary
+            logger.exception("Route rollback compensation failed during artifact deletion")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=(
@@ -288,7 +297,8 @@ async def activate_artifact_version(
     try:
         if isinstance(version.route_config, dict):
             route_sync_result = await route_publisher.sync(version.route_config)
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Route synchronization failed during artifact activation")
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -307,14 +317,16 @@ async def activate_artifact_version(
             commit=False,
         )
         await session.commit()
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Audit log or commit failed during artifact activation")
         await session.rollback()
         try:
             if isinstance(version.route_config, dict):
                 await route_publisher.rollback(
                     version.route_config, _previous_routes(route_sync_result)
                 )
-        except Exception as compensation_exc:
+        except Exception as compensation_exc:  # broad-except: route error boundary
+            logger.exception("Route rollback compensation failed during artifact activation")
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=(

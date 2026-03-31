@@ -91,7 +91,7 @@ def create_app(
         try:
             await session.execute(sa_text("SELECT 1"))
             return {"status": "ok"}
-        except Exception:
+        except Exception:  # broad-except: route error boundary
             _logger.warning("Readiness check failed: database unreachable", exc_info=True)
             return JSONResponse(status_code=503, content={"status": "not_ready"})
 

@@ -112,7 +112,7 @@ def generate_seed_candidates(
     try:
         response = llm_client.complete(prompt, max_tokens=4096)
         content = response.content if hasattr(response, "content") else str(response)
-    except Exception:
+    except Exception:  # broad-except: LLM client protocol — unpredictable upstream failures
         logger.warning("LLM seed mutation call failed", exc_info=True)
         return []
 

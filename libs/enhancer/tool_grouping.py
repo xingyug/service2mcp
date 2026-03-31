@@ -14,6 +14,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+import httpx
+
 from libs.enhancer.enhancer import _sanitize_for_prompt
 from libs.ir.models import Operation, ServiceIR, SourceType, ToolGroup
 
@@ -108,7 +110,14 @@ class ToolGrouper:
         try:
             response = self._client.complete(prompt, max_tokens=4096)
             content = response.content if hasattr(response, "content") else str(response)
-        except Exception:
+        except (
+            json.JSONDecodeError,
+            httpx.HTTPError,
+            ValueError,
+            KeyError,
+            TypeError,
+            RuntimeError,
+        ):
             logger.warning("LLM tool grouping call failed", exc_info=True)
             return GroupingResult(groups=[], llm_calls=1)
 

@@ -165,7 +165,7 @@ class RegistryClient:
         cls._ensure_success(response)
         try:
             data = response.json()
-        except Exception as exc:
+        except (ValueError, UnicodeDecodeError) as exc:
             raise RegistryClientError(
                 f"Non-JSON response from registry: {response.status_code}"
             ) from exc

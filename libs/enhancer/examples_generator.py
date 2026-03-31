@@ -6,6 +6,8 @@ import json
 import logging
 from typing import Any
 
+import httpx
+
 from libs.enhancer.enhancer import LLMClient, LLMResponse
 from libs.ir.models import Operation, ResponseExample, ServiceIR, SourceType
 
@@ -137,7 +139,14 @@ class ExamplesGenerator:
         try:
             response: LLMResponse = self._client.complete(prompt)
             return _parse_examples(response.content)
-        except Exception:
+        except (
+            json.JSONDecodeError,
+            httpx.HTTPError,
+            ValueError,
+            KeyError,
+            TypeError,
+            RuntimeError,
+        ):
             logger.warning("Failed to generate examples for operation '%s'", op.id, exc_info=True)
             return []
 
@@ -167,6 +176,6 @@ def _parse_examples(raw: str) -> list[ResponseExample]:
                     source=SourceType.llm,
                 )
             )
-        except Exception:
+        except (TypeError, ValueError, KeyError):
             logger.warning("Skipping malformed example item: %s", item, exc_info=True)
     return examples

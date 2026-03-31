@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -247,7 +248,7 @@ class AuthnService:
         ).digest()
         try:
             provided_signature = _b64decode_bytes(signature_segment)
-        except Exception:
+        except (ValueError, binascii.Error):
             raise AuthenticationError("Malformed JWT signature encoding.")
         if not hmac.compare_digest(expected_signature, provided_signature):
             raise AuthenticationError("JWT signature is invalid.")

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import base64
+import logging
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Self
 from urllib.parse import urlencode
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from libs.ir.models import (
     AuthConfig,
@@ -21,6 +22,8 @@ from libs.ir.models import (
 )
 from libs.secret_refs import MissingSecretReferenceError, resolve_secret_ref
 from libs.validator.audit import ToolAuditSummary
+
+logger = logging.getLogger(__name__)
 
 _APPROVED_STREAM_TRANSPORTS = {EventTransport.sse, EventTransport.websocket}
 
@@ -134,7 +137,7 @@ class PreDeployValidator:
                 if isinstance(ir_payload, ServiceIR)
                 else ServiceIR.model_validate(ir_payload)
             )
-        except Exception as exc:
+        except (ValidationError, TypeError, ValueError) as exc:
             return (
                 ValidationResult(
                     stage="schema",
@@ -345,7 +348,7 @@ class PreDeployValidator:
         if auth.oauth2 is not None:
             try:
                 payload = response.json()
-            except Exception:
+            except (ValueError, UnicodeDecodeError):
                 return ValidationResult(
                     stage="auth_smoke",
                     passed=False,

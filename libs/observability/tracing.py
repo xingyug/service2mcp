@@ -102,7 +102,7 @@ def setup_tracer(
         _configured_service_name = None
         _configured_endpoint = None
         _configured_enable_local = False
-    except Exception:
+    except Exception:  # broad-except: OTel setup can fail in many ways; must not crash the app
         logger.warning("Failed to configure OTel tracing", exc_info=True)
         _is_configured = False
         _tracer_provider = existing_provider

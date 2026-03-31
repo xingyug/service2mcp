@@ -68,7 +68,7 @@ def create_celery_app(
         request = CompilationRequest.from_payload(payload)
         try:
             _run_coro(_execute_compilation(request))
-        except Exception as exc:
+        except Exception as exc:  # broad-except: Celery task boundary — structured error result
             _logger.error("Compilation task failed: %s", exc, exc_info=True)
             return {
                 "job_id": str(request.job_id) if request.job_id is not None else None,

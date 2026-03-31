@@ -14,6 +14,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+import httpx
+
 from libs.ir.models import Operation, ServiceIR
 
 logger = logging.getLogger(__name__)
@@ -119,7 +121,14 @@ class LLMJudge:
         for batch in self._batch_operations(enabled_ops):
             try:
                 batch_scores = self._evaluate_batch(ir, batch)
-            except Exception as exc:
+            except (
+                json.JSONDecodeError,
+                httpx.HTTPError,
+                ValueError,
+                KeyError,
+                TypeError,
+                RuntimeError,
+            ) as exc:
                 logger.warning("LLM judge evaluation failed for batch", exc_info=True)
                 batch_scores = self._failed_batch_scores(
                     batch,

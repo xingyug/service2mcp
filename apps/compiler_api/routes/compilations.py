@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any, Final, cast
 from uuid import UUID
@@ -28,6 +29,8 @@ from apps.compiler_worker.models import (
     compilation_resume_checkpoint,
     store_compilation_rollback_request,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/compilations", tags=["compilations"])
 
@@ -290,7 +293,8 @@ async def create_compilation(
             },
             commit=False,
         )
-    except Exception:
+    except Exception:  # broad-except: route error boundary
+        logger.exception("Audit log failed during compilation creation")
         await session.rollback()
         await repository.delete_job(job.id)
         raise
@@ -298,7 +302,8 @@ async def create_compilation(
     try:
         await dispatcher.enqueue(workflow_request)
         await session.commit()
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Compilation dispatch failed")
         await session.rollback()
         await repository.delete_job(job.id)
         error_message = str(exc).strip() or exc.__class__.__name__
@@ -382,7 +387,8 @@ async def retry_compilation(
             },
             commit=False,
         )
-    except Exception:
+    except Exception:  # broad-except: route error boundary
+        logger.exception("Audit log failed during compilation retry")
         await session.rollback()
         await repository.delete_job(new_job.id)
         raise
@@ -390,7 +396,8 @@ async def retry_compilation(
     try:
         await dispatcher.enqueue(retry_request)
         await session.commit()
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Compilation dispatch failed during retry")
         await session.rollback()
         await repository.delete_job(new_job.id)
         error_message = str(exc).strip() or exc.__class__.__name__
@@ -454,7 +461,8 @@ async def rollback_compilation(
             },
             commit=False,
         )
-    except Exception:
+    except Exception:  # broad-except: route error boundary
+        logger.exception("Audit log failed during compilation rollback")
         await session.rollback()
         await repository.delete_job(new_job.id)
         raise
@@ -462,7 +470,8 @@ async def rollback_compilation(
     try:
         await dispatcher.enqueue(rollback_request)
         await session.commit()
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Compilation dispatch failed during rollback")
         await session.rollback()
         await repository.delete_job(new_job.id)
         error_message = str(exc).strip() or exc.__class__.__name__

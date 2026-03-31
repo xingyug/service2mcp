@@ -127,7 +127,7 @@ async def _execute_rollback_request(
                 environment=rollback_metadata.get("environment"),
             )
         )
-    except Exception as exc:
+    except Exception as exc:  # broad-except: workflow error boundary — record rollback failure
         error_detail = str(exc).strip() or exc.__class__.__name__
         await store.mark_job_failed(
             job_id,

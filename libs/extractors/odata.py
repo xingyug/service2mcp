@@ -198,7 +198,7 @@ class ODataExtractor:
                 response = httpx.get(source.url, timeout=30, headers=self._auth_headers(source))
                 response.raise_for_status()
                 return response.text
-            except Exception:
+            except (httpx.HTTPError, OSError):
                 logger.warning("Failed to fetch OData $metadata from %s", source.url, exc_info=True)
                 return None
         return None

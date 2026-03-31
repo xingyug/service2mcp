@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from time import perf_counter
 from typing import Any, Self
@@ -26,6 +27,8 @@ from libs.validator.audit import (
     _has_synthetic_path_placeholder_samples,
 )
 from libs.validator.pre_deploy import ValidationReport, ValidationResult
+
+logger = logging.getLogger(__name__)
 
 ToolInvoker = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -281,7 +284,7 @@ class PostDeployValidator:
             arguments = sample_invocations[operation.id]
             try:
                 result = await self._tool_invoker(operation.id, arguments)
-            except Exception as exc:
+            except Exception as exc:  # broad-except: tool invoker wraps arbitrary runtime backends
                 failure_skip_reason = audit_policy.failure_skip_reason(operation, arguments)
                 if failure_skip_reason is not None:
                     audit_results.append(
@@ -437,7 +440,7 @@ class PostDeployValidator:
 
         try:
             payload = response.json()
-        except Exception:
+        except (ValueError, UnicodeDecodeError):
             return (
                 ValidationResult(
                     stage="tool_listing",
@@ -586,7 +589,7 @@ class PostDeployValidator:
 
         try:
             result = await self._tool_invoker(operation.id, arguments)
-        except Exception as exc:
+        except Exception as exc:  # broad-except: tool invoker wraps arbitrary runtime backends
             return ValidationResult(
                 stage="invocation_smoke",
                 passed=False,

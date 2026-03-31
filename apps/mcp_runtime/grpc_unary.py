@@ -84,7 +84,7 @@ class ReflectionGrpcUnaryExecutor:
             ) from exc
         except ToolError:
             raise
-        except Exception as exc:
+        except Exception as exc:  # broad-except: gRPC error boundary
             raise ToolError(
                 f"Native grpc unary invocation failed for {operation.id}: {exc}"
             ) from exc

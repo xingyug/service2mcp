@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -30,6 +31,8 @@ from apps.access_control.security import (
     require_authenticated_caller,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/authz", tags=["authz"])
 
 
@@ -46,7 +49,8 @@ async def _rollback_and_reconcile_gateway(
     await session.rollback()
     try:
         await gateway_binding.reconcile(session)
-    except Exception as exc:  # pragma: no cover - exercised via route failure tests
+    except Exception as exc:  # broad-except: route error boundary  # pragma: no cover
+        logger.exception("Gateway compensation failed after transaction rollback")
         raise RuntimeError(
             f"Gateway compensation failed after transaction rollback: {exc}"
         ) from exc
@@ -66,7 +70,8 @@ async def create_policy(
     created = await service.create_policy(request_payload, commit=False)
     try:
         await gateway_binding.sync_policy(created)
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Gateway sync failed after policy creation")
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -81,7 +86,8 @@ async def create_policy(
             commit=False,
         )
         await session.commit()
-    except Exception:
+    except Exception:  # broad-except: route error boundary
+        logger.exception("Audit log or commit failed during policy creation")
         await _rollback_and_reconcile_gateway(session, gateway_binding)
         raise
     return created
@@ -132,7 +138,8 @@ async def update_policy(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found.")
     try:
         await gateway_binding.sync_policy(updated)
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Gateway sync failed after policy update")
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -147,7 +154,8 @@ async def update_policy(
             commit=False,
         )
         await session.commit()
-    except Exception:
+    except Exception:  # broad-except: route error boundary
+        logger.exception("Audit log or commit failed during policy update")
         await _rollback_and_reconcile_gateway(session, gateway_binding)
         raise
     return updated
@@ -168,7 +176,8 @@ async def delete_policy(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Policy not found.")
     try:
         await gateway_binding.delete_policy(policy_id)
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Gateway sync failed after policy deletion")
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -183,7 +192,8 @@ async def delete_policy(
             commit=False,
         )
         await session.commit()
-    except Exception:
+    except Exception:  # broad-except: route error boundary
+        logger.exception("Audit log or commit failed during policy deletion")
         await _rollback_and_reconcile_gateway(session, gateway_binding)
         raise
 

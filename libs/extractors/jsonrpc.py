@@ -414,7 +414,7 @@ class JsonRpcExtractor:
                 )
                 response.raise_for_status()
                 return response.text
-            except Exception:
+            except (httpx.HTTPError, OSError):
                 logger.warning(
                     "Failed to fetch JSON-RPC spec from %s",
                     source.url,

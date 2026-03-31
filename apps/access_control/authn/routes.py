@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +33,8 @@ from apps.access_control.security import (
     require_authenticated_caller,
     require_self_or_admin,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/authn", tags=["authn"])
 
@@ -63,7 +67,8 @@ async def _rollback_and_reconcile_gateway(
     await session.rollback()
     try:
         await gateway_binding.reconcile(session)
-    except Exception as exc:  # pragma: no cover - exercised via route failure tests
+    except Exception as exc:  # broad-except: route error boundary  # pragma: no cover
+        logger.exception("Gateway compensation failed after transaction rollback")
         raise RuntimeError(
             f"Gateway compensation failed after transaction rollback: {exc}"
         ) from exc
@@ -106,7 +111,8 @@ async def create_pat(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     try:
         await gateway_binding.sync_pat_creation(created, created.token)
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Gateway sync failed after PAT creation")
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -122,7 +128,8 @@ async def create_pat(
             commit=False,
         )
         await session.commit()
-    except Exception:
+    except Exception:  # broad-except: route error boundary
+        logger.exception("Audit log or commit failed during PAT creation")
         await _rollback_and_reconcile_gateway(session, gateway_binding)
         raise
     return created
@@ -168,7 +175,8 @@ async def revoke_pat(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PAT not found.")
     try:
         await gateway_binding.sync_pat_revocation(revoked.id)
-    except Exception as exc:
+    except Exception as exc:  # broad-except: route error boundary
+        logger.exception("Gateway sync failed after PAT revocation")
         await session.rollback()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -184,7 +192,8 @@ async def revoke_pat(
             commit=False,
         )
         await session.commit()
-    except Exception:
+    except Exception:  # broad-except: route error boundary
+        logger.exception("Audit log or commit failed during PAT revocation")
         await _rollback_and_reconcile_gateway(session, gateway_binding)
         raise
     return revoked

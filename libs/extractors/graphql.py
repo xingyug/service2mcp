@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse, urlunparse
@@ -28,6 +29,8 @@ from libs.ir.models import (
     ServiceIR,
     SourceType,
 )
+
+logger = logging.getLogger(__name__)
 
 JSONDict = dict[str, Any]
 _INTROSPECTION_QUERY = """
@@ -84,7 +87,8 @@ class GraphQLExtractor:
                 return 0.0
             try:
                 schema = self._parse_schema(content)
-            except Exception:
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError):
+                logger.debug("GraphQL schema parse failed during detection", exc_info=True)
                 return 0.0
             return 0.95 if schema else 0.0
 
