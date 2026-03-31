@@ -1247,7 +1247,7 @@ def create_default_activity_registry(
             )
             return
         publication = cast(dict[str, Any] | None, publication)
-        await resolved_route_publisher.rollback(route_config, publication)
+        await _resolved_route_publisher().rollback(route_config, publication)
         del context
 
     return ActivityRegistry(

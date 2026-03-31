@@ -175,7 +175,7 @@ def create_gauge(
 
 def get_metrics_text(registry: CollectorRegistry = REGISTRY) -> bytes:
     """Generate Prometheus metrics text output."""
-    return cast(bytes, generate_latest(registry))
+    return generate_latest(registry)
 
 
 def reset_metrics() -> None:

@@ -8,9 +8,10 @@ from typing import Any, cast
 from uuid import UUID
 
 from pydantic import ValidationError
-from sqlalchemy import Select, and_, delete, desc, func, select, update
+from sqlalchemy import Select, Subquery, and_, delete, desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from apps.compiler_api.models import (
     CompilationEventResponse,
@@ -310,7 +311,7 @@ class ServiceCatalogRepository:
         )
 
     @staticmethod
-    def _service_stats_subquery():
+    def _service_stats_subquery() -> Subquery:
         return (
             select(
                 ServiceVersion.service_id.label("service_id"),
@@ -328,7 +329,7 @@ class ServiceCatalogRepository:
         )
 
     @staticmethod
-    def _service_stats_join_condition(stats: Any):
+    def _service_stats_join_condition(stats: Any) -> ColumnElement[bool]:
         return and_(
             ServiceVersion.service_id == stats.c.service_id,
             ServiceVersion.tenant.is_not_distinct_from(stats.c.tenant),
@@ -711,7 +712,7 @@ class ArtifactRegistryRepository:
                 tenant=tenant,
                 environment=environment,
             )
-        return cast(ServiceVersion, records[0])
+        return records[0]
 
     def _version_query(
         self,

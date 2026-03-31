@@ -385,7 +385,7 @@ def _is_managed_policy_binding_id(binding_id: str) -> bool:
 def _consumer_requires_sync(existing_consumer: Any, expected: dict[str, Any]) -> bool:
     if existing_consumer is None:
         return True
-    return (
+    return bool(
         existing_consumer.username != expected["username"]
         or existing_consumer.credential != expected["credential"]
         or existing_consumer.metadata != expected["metadata"]
