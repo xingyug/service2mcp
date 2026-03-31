@@ -3060,3 +3060,104 @@ However, it is no longer sufficient as the single system spec because the reposi
 - real-target coverage planning
 
 This unified spec should therefore be treated as the authoritative current system baseline.
+
+## 29. Quality Improvement Track (Q-series)
+
+### 29.1 Purpose
+
+Code quality audit on `2026-03-31` identified six systemic weaknesses below enterprise baseline. This track defines targeted, low-risk improvements that raise engineering discipline without altering architecture or feature scope.
+
+Baseline metrics (2026-03-31):
+
+| Metric | Value |
+| --- | --- |
+| Ruff lint errors | 85 (62 E501, 18 I001, 2 F841, misc) |
+| Unformatted files | 65 / 279 total |
+| Test coverage | 54.1% (15,428 / 28,493 lines) |
+| Broad `except Exception` | 33 production files, 74 occurrences |
+| Functions missing return type annotation | 394 / 4,154 (~9.5%) |
+| `Any` type usage | 145 instances across libs/ and apps/ |
+| Test runnability issues | 4 collection errors (JWT config), 4 unit test failures |
+| REST extractor size | 1,555 lines |
+
+Target metrics:
+
+| Metric | Target |
+| --- | --- |
+| Ruff lint errors | 0 |
+| Unformatted files | 0 |
+| Test coverage | ≥ 70% |
+| Broad `except Exception` in production | < 10 justified, all logged and documented |
+| Functions missing return type | < 50 (test helpers excluded) |
+| Test runnability | 0 collection errors, 0 unit test failures |
+| REST extractor size | < 800 lines |
+
+### 29.2 Working rules
+
+- Every Q-task must leave `ruff check .` and `pytest` green after completion.
+- Q-tasks must not change feature behavior; only improve code hygiene, type safety, and test robustness.
+- Exception handling changes must preserve existing semantics.
+- Refactoring tasks must have full test coverage before extracting modules.
+
+### 29.3 Task definitions
+
+#### Q-001: Lint and format cleanup
+
+Status: complete (2026-03-31)
+
+Scope: Fix all ruff lint errors (85 → 0), format all files (65 unformatted → 0).
+
+#### Q-002: Fix test runnability
+
+Status: pending
+
+Scope: Add `ACCESS_CONTROL_JWT_SECRET` default in `tests/conftest.py` for test collection. Fix 4 failing tests in `apps/compiler_api/tests/test_init_main_uncovered.py`. Exit: `pytest -q` = all pass, 0 errors, 0 collection errors.
+
+#### Q-003: Exception handling hardening
+
+Status: pending
+
+Scope: Replace 74 broad `except Exception` with specific exceptions across 33 production files. Add logging and `# broad-except: <reason>` comment for justified catches. Target: < 10 justified broad catches remaining.
+
+#### Q-004: Type annotation completion
+
+Status: pending
+
+Scope: Add return type annotations to public functions in libs/ and apps/. Replace `dict[str, Any]` with specific `TypedDict` or narrower types where schema is known. Fix gRPC files excluded from pyright. Target: < 50 missing returns, < 80 `Any` usages.
+
+#### Q-005: Unit test coverage boost to 70%
+
+Status: pending
+
+Scope: Add unit tests for extractor helpers, validator logic, enhancer pipeline. Add negative tests. Target: overall coverage ≥ 70%.
+
+#### Q-006: Extractor complexity reduction
+
+Status: pending
+
+Scope: Split REST extractor into `rest.py` + `rest_probing.py` + `rest_classification.py` + `rest_schema.py`. Consolidate duplicated `_get_content()` and content hash utilities into `libs/extractors/base.py`. Target: `rest.py` < 800 lines.
+
+### 29.4 Dependency graph
+
+```
+Q-001 (lint/format) ✅
+  ├── Q-002 (test runnability)
+  │     ├── Q-003 (exception handling)
+  │     ├── Q-005 (test coverage boost)
+  │     │     └── Q-006 (extractor refactor)
+  │     └── Q-004 (type annotations)
+  └── Q-004 (type annotations)
+```
+
+### 29.5 Exit criteria
+
+The Q-series is complete when:
+
+- `ruff check .` = 0 errors
+- `ruff format --check .` = 0 reformats
+- `pytest -q` = all pass, 0 errors
+- coverage ≥ 70%
+- broad `except Exception` < 10 (all documented)
+- missing return types < 50
+- REST extractor < 800 lines
+- `agent.md` and `devlog.md` updated with Q-series completion status
