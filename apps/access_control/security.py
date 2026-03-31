@@ -46,7 +46,11 @@ async def require_sse_caller(
 ) -> TokenPrincipalResponse:
     """Validate a token from the query string or Authorization header."""
 
+<<<<<<< HEAD
     token: str | None = request.query_params.get("token", "").strip()
+=======
+    token: str | None = request.query_params.get("token", "").strip() or None
+>>>>>>> 3d38424 (Q-004: type annotation completion — mypy 7 errors → 0, all return types added)
     if not token:
         token = _extract_bearer_token(request.headers.get("Authorization", ""))
     if not token:
