@@ -221,8 +221,8 @@ class RollbackWorkflow:
         )
         if restored is None:
             raise RuntimeError(
-                "Rollback restore failed for "
-                f"{request.service_id} v{current_active.version_number}."
+                f"Rollback restore failed for {request.service_id}"
+                f" v{current_active.version_number}."
             )
 
 

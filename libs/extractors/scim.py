@@ -40,6 +40,7 @@ def _pluralize(name: str) -> str:
         return f"{name[:-1]}ies"
     return f"{name}s"
 
+
 SCIM_TYPE_MAP: dict[str, str] = {
     "string": "string",
     "boolean": "boolean",

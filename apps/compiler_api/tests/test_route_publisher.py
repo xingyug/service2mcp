@@ -128,9 +128,13 @@ class TestAccessControlArtifactRoutePublisher:
     @pytest.mark.asyncio
     async def test_owns_client_cleanup_on_error(self) -> None:
         mock_client = AsyncMock(spec=httpx.AsyncClient)
-        mock_client.post = AsyncMock(side_effect=httpx.HTTPStatusError(
-            "Server Error", request=MagicMock(), response=MagicMock(),
-        ))
+        mock_client.post = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "Server Error",
+                request=MagicMock(),
+                response=MagicMock(),
+            )
+        )
 
         with patch("apps.compiler_api.route_publisher.httpx.AsyncClient", return_value=mock_client):
             publisher = AccessControlArtifactRoutePublisher(

@@ -146,9 +146,7 @@ class TestCreatePat:
         )
         session.rollback.assert_awaited_once()
 
-    async def test_audit_failure_rolls_back_pat_creation_without_gateway_502(
-        self, _mock_audit_log
-    ):
+    async def test_audit_failure_rolls_back_pat_creation_without_gateway_502(self, _mock_audit_log):
         session = AsyncMock()
         service_mock = AsyncMock()
         gateway_binding_mock = AsyncMock()
@@ -346,7 +344,8 @@ class TestCreatePatHappyPath:
             commit=False,
         )
         gateway_binding_mock.sync_pat_creation.assert_awaited_once_with(
-            created, created.token,
+            created,
+            created.token,
         )
         session.commit.assert_awaited_once()
         session.rollback.assert_not_awaited()
@@ -369,7 +368,11 @@ class TestRevokePatHappyPath:
         service_mock.revoke_pat.return_value = revoked
 
         result = await revoke_pat(
-            str(pat_id), session, service_mock, gateway_binding_mock, caller,
+            str(pat_id),
+            session,
+            service_mock,
+            gateway_binding_mock,
+            caller,
         )
 
         assert result is revoked
@@ -392,7 +395,11 @@ class TestRevokePatHappyPath:
 
         with pytest.raises(HTTPException) as exc_info:
             await revoke_pat(
-                str(pat_id), session, service_mock, gateway_binding_mock, caller,
+                str(pat_id),
+                session,
+                service_mock,
+                gateway_binding_mock,
+                caller,
             )
 
         assert exc_info.value.status_code == 404

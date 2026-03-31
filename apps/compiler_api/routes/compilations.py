@@ -175,9 +175,7 @@ async def _resolve_rollback_metadata(
     if rollback_target is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Compilation {original.id} has no previous version available for rollback."
-            ),
+            detail=(f"Compilation {original.id} has no previous version available for rollback."),
         )
 
     return {
@@ -507,8 +505,7 @@ async def stream_compilation_events(
                         "stream.error",
                         {
                             "message": (
-                                f"Failed to serialize compilation event "
-                                f"{event.event_type}: {exc}"
+                                f"Failed to serialize compilation event {event.event_type}: {exc}"
                             )
                         },
                     )

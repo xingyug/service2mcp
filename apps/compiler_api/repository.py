@@ -49,8 +49,8 @@ class MalformedServiceVersionError(RuntimeError):
 
     def __init__(self, *, service_id: str, version_number: int) -> None:
         super().__init__(
-            "Active service record for "
-            f"{service_id} v{version_number} is malformed and cannot be served."
+            f"Active service record for {service_id} v{version_number}"
+            " is malformed and cannot be served."
         )
         self.service_id = service_id
         self.version_number = version_number
@@ -61,8 +61,8 @@ class MalformedArtifactDiffError(RuntimeError):
 
     def __init__(self, *, service_id: str, version_number: int) -> None:
         super().__init__(
-            "Stored artifact version "
-            f"{service_id}:{version_number} is malformed and cannot be diffed."
+            f"Stored artifact version {service_id}:{version_number}"
+            " is malformed and cannot be diffed."
         )
         self.service_id = service_id
         self.version_number = version_number

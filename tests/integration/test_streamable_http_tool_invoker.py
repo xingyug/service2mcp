@@ -425,13 +425,15 @@ async def test_streamable_http_tool_invoker_supports_native_grpc_unary_validatio
 async def test_post_deploy_validator_rejects_default_placeholder_path_samples() -> None:
     service_ir = _build_placeholder_path_openapi_ir()
     transport = httpx.MockTransport(
-        lambda request: httpx.Response(
-            200,
-            json={"tools": [{"name": "getUser"}]} if request.url.path == "/tools" else {},
-            request=request,
+        lambda request: (
+            httpx.Response(
+                200,
+                json={"tools": [{"name": "getUser"}]} if request.url.path == "/tools" else {},
+                request=request,
+            )
+            if request.url.path in {"/healthz", "/readyz", "/tools"}
+            else httpx.Response(200, json={}, request=request)
         )
-        if request.url.path in {"/healthz", "/readyz", "/tools"}
-        else httpx.Response(200, json={}, request=request)
     )
     invoked: list[tuple[str, dict[str, object]]] = []
 

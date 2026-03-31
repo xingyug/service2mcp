@@ -18,10 +18,17 @@ from libs.db_models import ReviewWorkflow, ServiceVersion
 
 router = APIRouter(prefix="/api/v1/workflows", tags=["review-workflows"])
 
-VALID_STATES = frozenset({
-    "draft", "submitted", "in_review",
-    "approved", "rejected", "published", "deployed",
-})
+VALID_STATES = frozenset(
+    {
+        "draft",
+        "submitted",
+        "in_review",
+        "approved",
+        "rejected",
+        "published",
+        "deployed",
+    }
+)
 
 VALID_TRANSITIONS: dict[str, list[str]] = {
     "draft": ["submitted"],
@@ -310,6 +317,4 @@ async def get_workflow_history(
         environment=environment,
     )
     await session.commit()
-    return [
-        WorkflowHistoryEntry.model_validate(entry) for entry in (record.history or [])
-    ]
+    return [WorkflowHistoryEntry.model_validate(entry) for entry in (record.history or [])]

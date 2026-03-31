@@ -725,9 +725,7 @@ async def test_reconcile_scopes_route_ids_for_existing_scoped_artifacts(
         == "Team A"
     )
     assert (
-        gateway_client.routes["billing-api-tenant-team-b-env-stage-active"].document[
-            "environment"
-        ]
+        gateway_client.routes["billing-api-tenant-team-b-env-stage-active"].document["environment"]
         == "Stage"
     )
 

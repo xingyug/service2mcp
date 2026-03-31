@@ -211,9 +211,7 @@ def check_thresholds(
     violations: list[str] = []
 
     actual_ratio = (
-        summary.audited_tools / summary.generated_tools
-        if summary.generated_tools > 0
-        else 0.0
+        summary.audited_tools / summary.generated_tools if summary.generated_tools > 0 else 0.0
     )
     if actual_ratio < thresholds.min_audited_ratio:
         ratio_detail = (

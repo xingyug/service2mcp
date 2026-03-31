@@ -293,7 +293,11 @@ class ReviewWorkflow(Base):
     __tablename__ = "review_workflows"
     __table_args__ = (
         UniqueConstraint(
-            "service_id", "version_number", "tenant", "environment", name="uq_review_workflow",
+            "service_id",
+            "version_number",
+            "tenant",
+            "environment",
+            name="uq_review_workflow",
         ),
         Index("ix_review_workflows_service", "service_id", "tenant", "environment"),
         {"schema": "compiler"},
@@ -309,5 +313,7 @@ class ReviewWorkflow(Base):
     history: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow,
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
     )

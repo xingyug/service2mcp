@@ -105,9 +105,7 @@ async def delete_service_routes(
 ) -> ServiceRouteResponse:
     require_admin_principal(_caller)
     route_config = request.route_config.model_dump(mode="python", exclude_none=True)
-    return ServiceRouteResponse(
-        **(await gateway_binding.delete_service_routes(route_config))
-    )
+    return ServiceRouteResponse(**(await gateway_binding.delete_service_routes(route_config)))
 
 
 @router.post("/service-routes/rollback", response_model=ServiceRouteResponse)

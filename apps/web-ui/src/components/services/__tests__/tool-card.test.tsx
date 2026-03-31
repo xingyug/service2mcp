@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { ToolCard } from "../tool-card";
@@ -130,6 +131,15 @@ describe("ToolCard", () => {
     expect(screen.getByText("action")).toBeInTheDocument();
   });
 
+  it("does not render an intent badge when tool_intent is absent", () => {
+    render(
+      <ToolCard operation={makeOperation({ tool_intent: undefined })} />,
+    );
+
+    expect(screen.queryByText("action")).not.toBeInTheDocument();
+    expect(screen.queryByText("discovery")).not.toBeInTheDocument();
+  });
+
   it("renders risk metadata when expanded", async () => {
     const user = userEvent.setup();
     render(<ToolCard operation={makeOperation()} />);
@@ -138,5 +148,75 @@ describe("ToolCard", () => {
 
     expect(screen.getByText(/Writes state:/)).toBeInTheDocument();
     expect(screen.getByText(/Destructive:/)).toBeInTheDocument();
+  });
+
+  it("renders the response schema and all risk metadata details when expanded", async () => {
+    const user = userEvent.setup();
+    render(
+      <ToolCard
+        operation={makeOperation({
+          response_schema: {
+            type: "object",
+            properties: { id: { type: "string" } },
+          },
+          risk: {
+            risk_level: "dangerous",
+            writes_state: true,
+            destructive: true,
+            external_side_effect: true,
+            idempotent: false,
+            confidence: 0.73,
+            source: "llm",
+          },
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button"));
+
+    expect(screen.getByText("Response Schema")).toBeInTheDocument();
+    expect(screen.getByText(/"type": "object"/)).toBeInTheDocument();
+    expect(screen.getByText(/Side effects: Yes/)).toBeInTheDocument();
+    expect(screen.getByText(/Idempotent: No/)).toBeInTheDocument();
+    expect(screen.getByText(/Confidence: 73%/)).toBeInTheDocument();
+    expect(screen.getByText(/Source: llm/)).toBeInTheDocument();
+  });
+
+  it("renders prefixed discovery descriptions without the raw marker", () => {
+    render(
+      <ToolCard
+        operation={makeOperation({
+          description: "[DISCOVERY] Find users by organization",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("DISCOVERY")).toBeInTheDocument();
+    expect(screen.getByText("Find users by organization")).toBeInTheDocument();
+    expect(
+      screen.queryByText("[DISCOVERY] Find users by organization"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders prefixed action descriptions and swallows keydown events on the switch wrapper", async () => {
+    const user = userEvent.setup();
+    render(
+      <ToolCard
+        operation={makeOperation({
+          description: "[ACTION] Delete all users",
+          tool_intent: "action",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("ACTION")).toBeInTheDocument();
+    expect(screen.getByText("Delete all users")).toBeInTheDocument();
+
+    const switchEl = screen.getByRole("switch");
+    fireEvent.keyDown(switchEl.parentElement as HTMLElement, { key: "Enter" });
+    expect(screen.queryByText(/Writes state:/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button"));
+    expect(screen.getByText(/Writes state:/)).toBeInTheDocument();
   });
 });

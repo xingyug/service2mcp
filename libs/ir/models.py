@@ -523,8 +523,8 @@ class AuthConfig(BaseModel):
 
         if (self.basic_username is None) != (self.basic_password_ref is None):
             raise ValueError(
-                "basic auth username/password config requires both "
-                "basic_username and basic_password_ref."
+                "basic auth username/password config requires both"
+                " basic_username and basic_password_ref."
             )
 
         return self

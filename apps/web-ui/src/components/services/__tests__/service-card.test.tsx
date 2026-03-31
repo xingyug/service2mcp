@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ServiceCard } from "../service-card";
 import type { ServiceSummary } from "@/types/api";
 
@@ -14,6 +14,15 @@ function makeService(overrides: Partial<ServiceSummary> = {}): ServiceSummary {
 }
 
 describe("ServiceCard", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-30T15:00:00Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("renders the service name", () => {
     render(<ServiceCard service={makeService()} />);
     expect(screen.getByText("My Test Service")).toBeInTheDocument();
@@ -99,5 +108,49 @@ describe("ServiceCard", () => {
   it("shows 'Never' when last_compiled is absent", () => {
     render(<ServiceCard service={makeService()} />);
     expect(screen.getByText("Never")).toBeInTheDocument();
+  });
+
+  it("shows 'Just now' for sub-minute compile times", () => {
+    render(
+      <ServiceCard
+        service={makeService({
+          last_compiled: "2026-03-30T14:59:45Z",
+        })}
+      />,
+    );
+    expect(screen.getByText("Just now")).toBeInTheDocument();
+  });
+
+  it("shows minute and hour relative times", () => {
+    render(
+      <>
+        <ServiceCard
+          service={makeService({
+            service_id: "minute-svc",
+            last_compiled: "2026-03-30T14:45:00Z",
+          })}
+        />
+        <ServiceCard
+          service={makeService({
+            service_id: "hour-svc",
+            last_compiled: "2026-03-30T11:00:00Z",
+          })}
+        />
+      </>,
+    );
+
+    expect(screen.getByText("15m ago")).toBeInTheDocument();
+    expect(screen.getByText("4h ago")).toBeInTheDocument();
+  });
+
+  it("shows day relative times", () => {
+    render(
+      <ServiceCard
+        service={makeService({
+          last_compiled: "2026-03-27T15:00:00Z",
+        })}
+      />,
+    );
+    expect(screen.getByText("3d ago")).toBeInTheDocument();
   });
 });

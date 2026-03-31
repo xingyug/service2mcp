@@ -188,7 +188,10 @@ class TestArtifactRegistryRepositoryUncoveredLines:
 
             assert result is None
             mock_get.assert_called_once_with(
-                "nonexistent-service", 1, tenant=None, environment=None,
+                "nonexistent-service",
+                1,
+                tenant=None,
+                environment=None,
             )
 
     async def test_activate_version_nonexistent_returns_none(self) -> None:
@@ -204,7 +207,10 @@ class TestArtifactRegistryRepositoryUncoveredLines:
 
             assert result is None
             mock_get.assert_called_once_with(
-                "nonexistent-service", 1, tenant=None, environment=None,
+                "nonexistent-service",
+                1,
+                tenant=None,
+                environment=None,
             )
 
     async def test_delete_version_nonexistent_returns_false(self) -> None:
@@ -220,7 +226,10 @@ class TestArtifactRegistryRepositoryUncoveredLines:
 
             assert result is False
             mock_get.assert_called_once_with(
-                "nonexistent-service", 1, tenant=None, environment=None,
+                "nonexistent-service",
+                1,
+                tenant=None,
+                environment=None,
             )
 
     async def test_delete_version_inactive_no_replacement_needed(self) -> None:

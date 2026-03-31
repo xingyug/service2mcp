@@ -396,8 +396,8 @@ class GeneratedManifestRollbackDeployer(RollbackDeployer):
             or self._latest_result.deployment_revision != deployment_revision
         ):
             raise RuntimeError(
-                "Rollback deployment revision "
-                f"{deployment_revision} is not available for validation."
+                f"Rollback deployment revision {deployment_revision}"
+                " is not available for validation."
             )
 
     @property
@@ -417,8 +417,8 @@ class VersionRouteRollbackPublisher(RollbackPublisher):
         route_config = version.route_config
         if not isinstance(route_config, dict):
             raise RuntimeError(
-                "Rollback target "
-                f"{version.service_id} v{version.version_number} is missing route_config."
+                f"Rollback target {version.service_id}"
+                f" v{version.version_number} is missing route_config."
             )
         return await self.route_publisher.publish(route_config)
 
@@ -437,8 +437,8 @@ class RuntimeRollbackValidator(RollbackValidator):
         runtime_base_url = self.deployer.runtime_base_url
         if runtime_base_url is None:
             raise RuntimeError(
-                "Rollback target "
-                f"{version.service_id} v{version.version_number} has no deployed runtime URL."
+                f"Rollback target {version.service_id}"
+                f" v{version.version_number} has no deployed runtime URL."
             )
 
         service_ir = ServiceIR.model_validate(version.ir_json)

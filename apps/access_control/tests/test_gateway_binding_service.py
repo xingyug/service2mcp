@@ -554,8 +554,12 @@ class TestReconcile:
     async def test_syncs_missing_consumers(self) -> None:
         pat_id, user_id = uuid4(), uuid4()
         pat = SimpleNamespace(
-            id=pat_id, user_id=user_id, token_hash="hash123",
-            name="my-pat", created_at=datetime.now(UTC), revoked_at=None,
+            id=pat_id,
+            user_id=user_id,
+            token_hash="hash123",
+            name="my-pat",
+            created_at=datetime.now(UTC),
+            revoked_at=None,
         )
         user = SimpleNamespace(id=user_id, username="alice")
 
@@ -572,8 +576,10 @@ class TestReconcile:
     async def test_deletes_orphan_consumers(self) -> None:
         client = InMemoryGatewayAdminClient()
         await client.upsert_consumer(
-            consumer_id="pat-orphan", username="ghost",
-            credential="old_hash", metadata={},
+            consumer_id="pat-orphan",
+            username="ghost",
+            credential="old_hash",
+            metadata={},
         )
         svc = GatewayBindingService(client)
         result = await svc.reconcile(_mock_session())
@@ -602,15 +608,21 @@ class TestReconcile:
     async def test_resyncs_credential_mismatch(self) -> None:
         pat_id, user_id = uuid4(), uuid4()
         pat = SimpleNamespace(
-            id=pat_id, user_id=user_id, token_hash="new_hash",
-            name="my-pat", created_at=datetime.now(UTC), revoked_at=None,
+            id=pat_id,
+            user_id=user_id,
+            token_hash="new_hash",
+            name="my-pat",
+            created_at=datetime.now(UTC),
+            revoked_at=None,
         )
         user = SimpleNamespace(id=user_id, username="alice")
 
         client = InMemoryGatewayAdminClient()
         await client.upsert_consumer(
-            consumer_id=f"pat-{pat_id}", username="alice",
-            credential="old_hash", metadata={},
+            consumer_id=f"pat-{pat_id}",
+            username="alice",
+            credential="old_hash",
+            metadata={},
         )
         svc = GatewayBindingService(client)
         result = await svc.reconcile(_mock_session(pats_users=[(pat, user)]))
@@ -625,14 +637,19 @@ class TestReconcile:
         pat_id, user_id = uuid4(), uuid4()
         now = datetime.now(UTC)
         pat = SimpleNamespace(
-            id=pat_id, user_id=user_id, token_hash="same_hash",
-            name="my-pat", created_at=now, revoked_at=None,
+            id=pat_id,
+            user_id=user_id,
+            token_hash="same_hash",
+            name="my-pat",
+            created_at=now,
+            revoked_at=None,
         )
         user = SimpleNamespace(id=user_id, username="alice")
 
         client = InMemoryGatewayAdminClient()
         await client.upsert_consumer(
-            consumer_id=f"pat-{pat_id}", username="alice",
+            consumer_id=f"pat-{pat_id}",
+            username="alice",
             credential="same_hash",
             metadata={"username": "alice", "pat_name": "my-pat", "created_at": now.isoformat()},
         )
@@ -647,8 +664,12 @@ class TestReconcile:
         pat_id, user_id = uuid4(), uuid4()
         now = datetime.now(UTC)
         pat = SimpleNamespace(
-            id=pat_id, user_id=user_id, token_hash="same_hash",
-            name="my-pat", created_at=now, revoked_at=None,
+            id=pat_id,
+            user_id=user_id,
+            token_hash="same_hash",
+            name="my-pat",
+            created_at=now,
+            revoked_at=None,
         )
         user = SimpleNamespace(id=user_id, username="alice")
 
@@ -672,9 +693,15 @@ class TestReconcile:
     async def test_syncs_missing_policy_bindings(self) -> None:
         policy_id = uuid4()
         policy = SimpleNamespace(
-            id=policy_id, subject_type="user", subject_id="alice",
-            resource_id="svc-1", action_pattern="*", risk_threshold="safe",
-            decision="allow", created_by="admin", created_at=datetime.now(UTC),
+            id=policy_id,
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action_pattern="*",
+            risk_threshold="safe",
+            decision="allow",
+            created_by="admin",
+            created_at=datetime.now(UTC),
         )
 
         client = InMemoryGatewayAdminClient()
@@ -690,7 +717,8 @@ class TestReconcile:
     async def test_deletes_orphan_policy_bindings(self) -> None:
         client = InMemoryGatewayAdminClient()
         await client.upsert_policy_binding(
-            binding_id="policy-orphan", document={"old": True},
+            binding_id="policy-orphan",
+            document={"old": True},
         )
         svc = GatewayBindingService(client)
         result = await svc.reconcile(_mock_session())
@@ -703,7 +731,8 @@ class TestReconcile:
     async def test_keeps_unmanaged_policy_bindings(self) -> None:
         client = InMemoryGatewayAdminClient()
         await client.upsert_policy_binding(
-            binding_id="external-binding", document={"old": True},
+            binding_id="external-binding",
+            document={"old": True},
         )
         svc = GatewayBindingService(client)
         result = await svc.reconcile(_mock_session())
@@ -716,14 +745,21 @@ class TestReconcile:
     async def test_resyncs_policy_document_mismatch(self) -> None:
         policy_id = uuid4()
         policy = SimpleNamespace(
-            id=policy_id, subject_type="user", subject_id="alice",
-            resource_id="svc-1", action_pattern="*", risk_threshold="safe",
-            decision="allow", created_by="admin", created_at=datetime.now(UTC),
+            id=policy_id,
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action_pattern="*",
+            risk_threshold="safe",
+            decision="allow",
+            created_by="admin",
+            created_at=datetime.now(UTC),
         )
 
         client = InMemoryGatewayAdminClient()
         await client.upsert_policy_binding(
-            binding_id=f"policy-{policy_id}", document={"stale": True},
+            binding_id=f"policy-{policy_id}",
+            document={"stale": True},
         )
         svc = GatewayBindingService(client)
         result = await svc.reconcile(_mock_session(policies=[policy]))
@@ -763,9 +799,7 @@ class TestReconcile:
         assert "svc-1-tenant-team-a-env-prod-active" in routes
         assert "svc-1-tenant-team-a-env-prod-v1" in routes
         assert routes["svc-1-tenant-team-a-env-prod-active"].document["tenant"] == "Team A"
-        assert (
-            routes["svc-1-tenant-team-a-env-prod-active"].document["environment"] == "Prod"
-        )
+        assert routes["svc-1-tenant-team-a-env-prod-active"].document["environment"] == "Prod"
 
     @pytest.mark.asyncio
     async def test_deletes_orphan_routes(self) -> None:
@@ -803,7 +837,9 @@ class TestReconcile:
     async def test_resyncs_route_document_mismatch(self) -> None:
         sv = SimpleNamespace(route_config=_route_config(), is_active=True)
         expected_docs = _service_route_documents(
-            sv.route_config, include_default=True, include_version=True,
+            sv.route_config,
+            include_default=True,
+            include_version=True,
         )
         route_id = next(iter(expected_docs))
 
@@ -850,27 +886,40 @@ class TestReconcile:
         """Mix of create, update, and delete across all resource types."""
         pat_id, user_id = uuid4(), uuid4()
         pat = SimpleNamespace(
-            id=pat_id, user_id=user_id, token_hash="hash123",
-            name="my-pat", created_at=datetime.now(UTC), revoked_at=None,
+            id=pat_id,
+            user_id=user_id,
+            token_hash="hash123",
+            name="my-pat",
+            created_at=datetime.now(UTC),
+            revoked_at=None,
         )
         user = SimpleNamespace(id=user_id, username="alice")
 
         policy_id = uuid4()
         policy = SimpleNamespace(
-            id=policy_id, subject_type="user", subject_id="alice",
-            resource_id="svc-1", action_pattern="*", risk_threshold="safe",
-            decision="allow", created_by="admin", created_at=datetime.now(UTC),
+            id=policy_id,
+            subject_type="user",
+            subject_id="alice",
+            resource_id="svc-1",
+            action_pattern="*",
+            risk_threshold="safe",
+            decision="allow",
+            created_by="admin",
+            created_at=datetime.now(UTC),
         )
 
         sv = SimpleNamespace(route_config=_route_config(), is_active=True)
 
         client = InMemoryGatewayAdminClient()
         await client.upsert_consumer(
-            consumer_id="pat-orphan", username="ghost",
-            credential="old", metadata={},
+            consumer_id="pat-orphan",
+            username="ghost",
+            credential="old",
+            metadata={},
         )
         await client.upsert_policy_binding(
-            binding_id="policy-orphan", document={"old": True},
+            binding_id="policy-orphan",
+            document={"old": True},
         )
         await client.upsert_route(
             route_id="orphan-route",

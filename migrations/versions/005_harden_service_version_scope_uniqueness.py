@@ -19,9 +19,10 @@ depends_on = None
 def _raise_if_duplicate_scope_rows_exist() -> None:
     bind = op.get_bind()
 
-    duplicate_version = bind.execute(
-        sa.text(
-            """
+    duplicate_version = (
+        bind.execute(
+            sa.text(
+                """
             SELECT
                 service_id,
                 version_number,
@@ -33,8 +34,11 @@ def _raise_if_duplicate_scope_rows_exist() -> None:
             HAVING COUNT(*) > 1
             LIMIT 1
             """
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if duplicate_version is not None:
         raise RuntimeError(
             "Cannot upgrade registry.service_versions because duplicate scoped version rows "
@@ -45,9 +49,10 @@ def _raise_if_duplicate_scope_rows_exist() -> None:
             f"count={duplicate_version['row_count']})."
         )
 
-    duplicate_active = bind.execute(
-        sa.text(
-            """
+    duplicate_active = (
+        bind.execute(
+            sa.text(
+                """
             SELECT
                 service_id,
                 tenant,
@@ -59,8 +64,11 @@ def _raise_if_duplicate_scope_rows_exist() -> None:
             HAVING COUNT(*) > 1
             LIMIT 1
             """
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if duplicate_active is not None:
         raise RuntimeError(
             "Cannot upgrade registry.service_versions because multiple active rows already "

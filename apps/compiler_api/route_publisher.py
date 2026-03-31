@@ -124,11 +124,7 @@ class AccessControlArtifactRoutePublisher:
                 path,
                 json={
                     "route_config": route_config,
-                    **(
-                        {"previous_routes": previous_routes}
-                        if previous_routes is not None
-                        else {}
-                    ),
+                    **({"previous_routes": previous_routes} if previous_routes is not None else {}),
                 },
                 headers=self._headers,
             )
