@@ -942,14 +942,14 @@ class TestContentFetching:
         spec_content = '{"openapi": "3.0.0", "info": {"title": "T", "version": "1"}, "paths": {}}'
         request = httpx.Request("GET", "https://example.com/spec.json")
         mock_resp = httpx.Response(200, text=spec_content, request=request)
-        with patch("libs.extractors.openapi.httpx.get", return_value=mock_resp):
+        with patch("libs.extractors.utils.httpx.get", return_value=mock_resp):
             source = SourceConfig(url="https://example.com/spec.json")
             ir = extractor.extract(source)
             assert ir.protocol == "openapi"
 
     def test_get_content_from_url_failure_returns_none(self, extractor):
         """Lines 150-152: HTTP error → None → detect returns 0.0."""
-        with patch("libs.extractors.openapi.httpx.get", side_effect=httpx.ConnectError("fail")):
+        with patch("libs.extractors.utils.httpx.get", side_effect=httpx.ConnectError("fail")):
             source = SourceConfig(url="https://example.com/spec.json")
             assert extractor.detect(source) == 0.0
 

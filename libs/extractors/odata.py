@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-import httpx
-
 from libs.extractors.base import SourceConfig
+from libs.extractors.utils import (
+    compute_content_hash,
+    get_auth_headers,
+    get_content,
+    slugify,
+)
 from libs.ir.models import (
     AuthConfig,
     AuthType,
@@ -120,7 +122,7 @@ class ODataExtractor:
         if _local_name(root.tag) != "Edmx":
             raise ValueError("OData extractor requires an EDMX metadata document.")
 
-        source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        source_hash = compute_content_hash(content)
         odata_version = root.attrib.get("Version", "4.0")
 
         schema = root.find("edmx:DataServices/edm:Schema", NS)
@@ -149,7 +151,7 @@ class ODataExtractor:
         elif base_url.endswith("$metadata"):
             base_url = base_url[: -len("$metadata")]
 
-        service_name = _slugify(container.attrib.get("Name", "odata-service"))
+        service_name = slugify(container.attrib.get("Name", "odata-service"), camel_case=True)
 
         operations: list[Operation] = []
 
@@ -189,27 +191,10 @@ class ODataExtractor:
         )
 
     def _get_content(self, source: SourceConfig) -> str | None:
-        if source.file_content:
-            return source.file_content
-        if source.file_path:
-            return Path(source.file_path).read_text(encoding="utf-8")
-        if source.url:
-            try:
-                response = httpx.get(source.url, timeout=30, headers=self._auth_headers(source))
-                response.raise_for_status()
-                return response.text
-            except (httpx.HTTPError, OSError):
-                logger.warning("Failed to fetch OData $metadata from %s", source.url, exc_info=True)
-                return None
-        return None
+        return get_content(source)
 
     def _auth_headers(self, source: SourceConfig) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        if source.auth_header:
-            headers["Authorization"] = source.auth_header
-        elif source.auth_token:
-            headers["Authorization"] = f"Bearer {source.auth_token}"
-        return headers
+        return get_auth_headers(source)
 
 
 # ── XML parsing helpers ────────────────────────────────────────────────────
@@ -636,11 +621,6 @@ def _humanize_identifier(value: str) -> str:
 def _snake_case(value: str) -> str:
     s = re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
     return re.sub(r"[^a-z0-9]+", "_", s).strip("_")
-
-
-def _slugify(text: str) -> str:
-    normalized = re.sub(r"(?<!^)(?=[A-Z])", "-", text).lower().strip()
-    return re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")
 
 
 __all__ = ["ODataExtractor"]

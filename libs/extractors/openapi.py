@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
-from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urljoin, urlsplit
 
-import httpx
 import yaml
 
 from libs.extractors.base import SourceConfig
+from libs.extractors.utils import (
+    compute_content_hash,
+    get_auth_headers,
+    get_content,
+)
+from libs.extractors.utils import (
+    slugify as _slugify,
+)
 from libs.ir.models import (
     AuthConfig,
     AuthType,
@@ -98,7 +103,7 @@ class OpenAPIExtractor:
             raise ValueError("Could not read source content")
 
         spec = self._parse_spec_string(content)
-        source_hash = hashlib.sha256(content.encode()).hexdigest()
+        source_hash = compute_content_hash(content)
 
         is_swagger = "swagger" in spec
         version = spec.get("swagger", spec.get("openapi", "unknown"))
@@ -141,27 +146,10 @@ class OpenAPIExtractor:
 
     def _get_content(self, source: SourceConfig) -> str | None:
         """Get spec content from URL, file path, or inline content."""
-        if source.file_content:
-            return source.file_content
-        if source.file_path:
-            return Path(source.file_path).read_text(encoding="utf-8")
-        if source.url:
-            try:
-                resp = httpx.get(source.url, timeout=30, headers=self._auth_headers(source))
-                resp.raise_for_status()
-                return resp.text
-            except (httpx.HTTPError, OSError):
-                logger.warning("Failed to fetch spec from %s", source.url, exc_info=True)
-                return None
-        return None
+        return get_content(source)
 
     def _auth_headers(self, source: SourceConfig) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        if source.auth_header:
-            headers["Authorization"] = source.auth_header
-        elif source.auth_token:
-            headers["Authorization"] = f"Bearer {source.auth_token}"
-        return headers
+        return get_auth_headers(source)
 
     def _parse_spec_string(self, content: str) -> JSONDict:
         """Parse YAML or JSON spec string."""
@@ -911,15 +899,6 @@ class OpenAPIExtractor:
             )
 
         return params
-
-
-def _slugify(text: str) -> str:
-    """Convert text to a URL-safe slug."""
-    import re
-
-    text = text.lower().strip()
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    return text.strip("-")
 
 
 def _is_loopback_host(host: str) -> bool:

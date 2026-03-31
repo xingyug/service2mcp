@@ -6,7 +6,6 @@ Generates resource CRUD operations from SCIM schema discovery responses.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import logging
 from pathlib import Path
@@ -16,6 +15,7 @@ from urllib.parse import urlparse
 import httpx
 
 from libs.extractors.base import SourceConfig
+from libs.extractors.utils import compute_content_hash
 from libs.ir.models import (
     AuthConfig,
     AuthType,
@@ -188,7 +188,7 @@ class SCIMExtractor:
             raise ValueError("No content available for extraction")
 
         data = json.loads(raw)
-        source_hash = hashlib.sha256(raw.encode()).hexdigest()
+        source_hash = compute_content_hash(raw)
 
         resources = self._extract_resources(data)
         if not resources:

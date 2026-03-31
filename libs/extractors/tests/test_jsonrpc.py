@@ -356,7 +356,7 @@ def test_get_content_from_url_success() -> None:
     mock_response.text = '{"openrpc": "1.0"}'
     mock_response.raise_for_status = MagicMock()
 
-    with patch("libs.extractors.jsonrpc.httpx.get", return_value=mock_response):
+    with patch("libs.extractors.utils.httpx.get", return_value=mock_response):
         source = SourceConfig(url="https://example.com/spec.json")
         content = extractor._get_content(source)
     assert content == '{"openrpc": "1.0"}'
@@ -366,7 +366,7 @@ def test_get_content_from_url_failure_returns_none() -> None:
     """Lines 275-281: _get_content returns None on HTTP error."""
     extractor = JsonRpcExtractor()
     err = httpx.ConnectError("connection error")
-    with patch("libs.extractors.jsonrpc.httpx.get", side_effect=err):
+    with patch("libs.extractors.utils.httpx.get", side_effect=err):
         source = SourceConfig(url="https://example.com/spec.json")
         content = extractor._get_content(source)
     assert content is None
@@ -378,7 +378,7 @@ def test_get_content_no_source_returns_none() -> None:
     # Use a source where file_content is truthy but empty-ish won't work with SourceConfig
     # So test via mocking _get_content returning None for detect
     source = SourceConfig(url="https://example.com/rpc")
-    with patch("libs.extractors.jsonrpc.httpx.get", side_effect=httpx.ConnectError("fail")):
+    with patch("libs.extractors.utils.httpx.get", side_effect=httpx.ConnectError("fail")):
         content = extractor._get_content(source)
     assert content is None
 

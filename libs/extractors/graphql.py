@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from pathlib import Path
@@ -12,6 +11,13 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 
 from libs.extractors.base import SourceConfig
+from libs.extractors.utils import (
+    compute_content_hash,
+    get_auth_headers,
+)
+from libs.extractors.utils import (
+    slugify as _slugify,
+)
 from libs.ir.models import (
     AuthConfig,
     AuthType,
@@ -123,7 +129,7 @@ class GraphQLExtractor:
 
         return ServiceIR(
             source_url=source.url,
-            source_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            source_hash=compute_content_hash(content),
             protocol="graphql",
             service_name=service_name,
             service_description=str(schema.get("description", "")),
@@ -506,11 +512,7 @@ class GraphQLExtractor:
         return AuthConfig(type=AuthType.none)
 
     def _auth_headers(self, source: SourceConfig) -> dict[str, str]:
-        if source.auth_header:
-            return {"Authorization": source.auth_header}
-        if source.auth_token:
-            return {"Authorization": f"Bearer {source.auth_token}"}
-        return {}
+        return get_auth_headers(source)
 
     def _root_type_name(self, schema: JSONDict, key: str) -> str | None:
         root_type = schema.get(key)
@@ -558,11 +560,3 @@ class GraphQLExtractor:
         ]
         subscription_fields.sort()
         return subscription_fields
-
-
-def _slugify(text: str) -> str:
-    import re
-
-    normalized = text.lower().strip()
-    normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
-    return normalized.strip("-")
