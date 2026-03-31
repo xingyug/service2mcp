@@ -126,7 +126,7 @@ class ReflectionGrpcStreamExecutor:
                 f"Native grpc_stream invocation failed for {operation.id}: "
                 f"{exc.code().name} {exc.details()}"
             ) from exc
-        except Exception as exc:
+        except Exception as exc:  # broad-except: gRPC error boundary
             raise ToolError(
                 f"Native grpc_stream invocation failed for {operation.id}: {exc}"
             ) from exc

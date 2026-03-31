@@ -1063,7 +1063,7 @@ class RuntimeProxy:
             response.raise_for_status()
             try:
                 payload = response.json()
-            except Exception as exc:
+            except ValueError as exc:
                 raise ToolError(
                     f"OAuth2 token endpoint returned non-JSON response for {operation_id}."
                 ) from exc
@@ -1788,7 +1788,7 @@ def _parse_response_payload(response: httpx.Response) -> Any:
     if "json" in normalized_content_type:
         try:
             return response.json()
-        except Exception:
+        except ValueError:
             return response.text
     if any(
         normalized_content_type.startswith(textual) or textual in normalized_content_type

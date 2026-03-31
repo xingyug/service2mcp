@@ -19,6 +19,8 @@ from enum import StrEnum
 from importlib import import_module
 from typing import Any, Protocol
 
+import httpx
+
 from libs.ir.models import Operation, Param, ServiceIR, SourceType
 
 logger = logging.getLogger(__name__)
@@ -375,7 +377,14 @@ class IREnhancer:
             try:
                 batch_result = self._enhance_batch(ir, batch)
                 enhancements.update(batch_result)
-            except Exception:
+            except (
+                json.JSONDecodeError,
+                httpx.HTTPError,
+                ValueError,
+                KeyError,
+                TypeError,
+                RuntimeError,
+            ):
                 logger.warning("LLM enhancement failed for batch", exc_info=True)
                 # Continue with remaining batches
 

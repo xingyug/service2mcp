@@ -79,7 +79,7 @@ class OpenAPIExtractor:
             spec = self._parse_spec_string(content)
         except (ValueError, KeyError, json.JSONDecodeError):
             return 0.0
-        except Exception:
+        except (yaml.YAMLError, TypeError):
             _logger.debug("Unexpected error during OpenAPI detection", exc_info=True)
             return 0.0
 
@@ -150,7 +150,7 @@ class OpenAPIExtractor:
                 resp = httpx.get(source.url, timeout=30, headers=self._auth_headers(source))
                 resp.raise_for_status()
                 return resp.text
-            except Exception:
+            except (httpx.HTTPError, OSError):
                 logger.warning("Failed to fetch spec from %s", source.url, exc_info=True)
                 return None
         return None

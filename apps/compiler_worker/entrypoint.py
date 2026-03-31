@@ -154,7 +154,7 @@ def main() -> int:
             celery_ready,
             timeout_seconds=float(os.getenv("WORKER_CELERY_READY_TIMEOUT_SECONDS", "60")),
         )
-    except Exception:
+    except Exception:  # broad-except: process lifecycle — ensure cleanup before propagating
         _terminate_processes([celery_process])
         celery_process.wait(timeout=30)
         raise

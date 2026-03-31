@@ -599,7 +599,7 @@ class AccessControlRoutePublisher:
             response.raise_for_status()
             try:
                 payload = response.json()
-            except Exception as exc:
+            except ValueError as exc:
                 raise RuntimeError(
                     f"Access control route publisher returned non-JSON response: {exc}"
                 ) from exc
@@ -729,7 +729,7 @@ class KubernetesManifestDeployer:
                 ),
                 manifest_storage_path=f"k8s://{namespace}/deployments/{deployment_name}",
             )
-        except Exception:
+        except Exception:  # broad-except: workflow error boundary — partial K8s manifest cleanup
             cleanup_errors = await self._delete_manifests_best_effort(created_manifests)
             if cleanup_errors:
                 raise RuntimeError(
@@ -788,7 +788,7 @@ class KubernetesManifestDeployer:
         for plural, api_version, name in reversed(manifests):
             try:
                 await self._delete_manifest(plural, api_version, name)
-            except Exception as exc:
+            except Exception as exc:  # broad-except: best-effort cleanup
                 errors.append(f"{plural}/{name}: {exc}")
         return errors
 
@@ -1486,7 +1486,7 @@ def _apply_post_enhancement(
             grouper = ToolGrouper(llm_client_factory())
             grouping_result = grouper.group(ir)
             ir = apply_grouping(ir, grouping_result)
-        except Exception:
+        except Exception:  # broad-except: optional LLM enhancement — graceful degradation
             import logging
 
             logging.getLogger(__name__).warning(
@@ -1502,7 +1502,7 @@ def _apply_post_enhancement(
         try:
             generator = ExamplesGenerator(llm_client_factory())
             ir = generator.generate(ir)
-        except Exception:
+        except Exception:  # broad-except: optional LLM enhancement — graceful degradation
             import logging
 
             logging.getLogger(__name__).warning(
@@ -1765,7 +1765,7 @@ def _validation_failure_message(prefix: str, report: Any) -> str:
 def _summarize_k8s_error(response: httpx.Response) -> str:
     try:
         payload = response.json()
-    except Exception:
+    except ValueError:
         payload = response.text
 
     if isinstance(payload, dict):

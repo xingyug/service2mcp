@@ -158,7 +158,7 @@ async def run_proofs(
                         require_llm_artifacts=require_llm_artifacts,
                     )
                 )
-            except Exception as exc:
+            except Exception as exc:  # broad-except: proof resilience — capture all case failures
                 import logging
 
                 logging.getLogger(__name__).error(
@@ -675,7 +675,7 @@ async def _run_case(
     if enable_llm_judge and llm_judge is not None:
         try:
             judge_evaluation = llm_judge.evaluate(service_ir)
-        except Exception:
+        except Exception:  # broad-except: proof resilience — judge is optional
             import logging
 
             logging.getLogger(__name__).warning(
@@ -1061,7 +1061,7 @@ async def _audit_generated_tools(
         if result is None:
             try:
                 result = _json_safe(await invoker(operation.id, arguments))
-            except Exception as exc:
+            except Exception as exc:  # broad-except: proof resilience
                 failure_skip_reason = audit_policy.failure_skip_reason(operation, arguments)
                 if failure_skip_reason is not None:
                     audit_results.append(
@@ -1523,7 +1523,7 @@ def _build_llm_judge_from_env() -> LLMJudge | None:
         config = EnhancerConfig.from_env()
         client = create_llm_client(config)
         return LLMJudge(client)
-    except Exception:
+    except Exception:  # broad-except: proof resilience — judge initialization is optional
         import logging
 
         logging.getLogger(__name__).warning(

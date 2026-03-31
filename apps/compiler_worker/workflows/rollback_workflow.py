@@ -133,7 +133,7 @@ class RollbackWorkflow:
                     request=request,
                     restore_routes=False,
                 )
-            except Exception as exc:
+            except Exception as exc:  # broad-except: workflow error boundary — rollback safety
                 restore_error = exc
             message = (
                 f"Rollback validation failed for {request.service_id} v{request.target_version}."
@@ -162,7 +162,7 @@ class RollbackWorkflow:
                 request.target_version,
                 **scope,
             )
-        except Exception:
+        except Exception:  # broad-except: restore previous active on failure
             await self._restore_current_active(
                 current_active,
                 request=request,
