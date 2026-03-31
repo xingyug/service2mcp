@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from argparse import Namespace
 import json
+from argparse import Namespace
 
 import httpx
 import pytest
@@ -479,7 +479,9 @@ def _patch_successful_run_case_dependencies(
     *,
     artifact_ir: ServiceIR,
 ) -> None:
-    async def fake_submit(client: httpx.AsyncClient, payload: dict[str, object]) -> dict[str, object]:
+    async def fake_submit(
+        client: httpx.AsyncClient, payload: dict[str, object]
+    ) -> dict[str, object]:
         return {"id": "job-1"}
 
     async def fake_wait(
@@ -530,8 +532,12 @@ def _patch_successful_run_case_dependencies(
 
 
 @pytest.mark.asyncio
-async def test_run_case_validates_artifact_before_llm_field_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_submit(client: httpx.AsyncClient, payload: dict[str, object]) -> dict[str, object]:
+async def test_run_case_validates_artifact_before_llm_field_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_submit(
+        client: httpx.AsyncClient, payload: dict[str, object]
+    ) -> dict[str, object]:
         return {"id": "job-1"}
 
     async def fake_wait(
@@ -873,5 +879,8 @@ async def test_audit_generated_tools_skips_default_placeholder_path_samples() ->
     result = audit_summary.results[0]
     assert result.tool_name == "get_user"
     assert result.outcome == "skipped"
-    assert result.reason == "Skipped tool because path parameters still use synthetic placeholder samples."
+    assert (
+        result.reason
+        == "Skipped tool because path parameters still use synthetic placeholder samples."
+    )
     assert result.arguments == {"id": PATH_PLACEHOLDER_ID_SAMPLE}

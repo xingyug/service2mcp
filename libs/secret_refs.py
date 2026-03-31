@@ -25,12 +25,9 @@ class SecretReferenceCollisionError(ValueError):
 
     def __init__(self, *, context: str, collisions: dict[str, tuple[str, ...]]) -> None:
         details = "; ".join(
-            f"{normalized} <- {', '.join(refs)}"
-            for normalized, refs in sorted(collisions.items())
+            f"{normalized} <- {', '.join(refs)}" for normalized, refs in sorted(collisions.items())
         )
-        super().__init__(
-            f"Secret refs for {context} normalize to the same env name: {details}."
-        )
+        super().__init__(f"Secret refs for {context} normalize to the same env name: {details}.")
         self.context = context
         self.collisions = collisions
 
@@ -58,11 +55,7 @@ def find_secret_ref_name_collisions(secret_refs: Sequence[str]) -> dict[str, tup
         refs = grouped.setdefault(normalized, [])
         if secret_ref not in refs:
             refs.append(secret_ref)
-    return {
-        normalized: tuple(refs)
-        for normalized, refs in grouped.items()
-        if len(refs) > 1
-    }
+    return {normalized: tuple(refs) for normalized, refs in grouped.items() if len(refs) > 1}
 
 
 def ensure_no_secret_ref_name_collisions(secret_refs: Sequence[str], *, context: str) -> None:

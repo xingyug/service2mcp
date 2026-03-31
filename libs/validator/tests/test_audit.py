@@ -514,36 +514,52 @@ class TestContainsSyntheticPlaceholderSample:
 
     def test_list_recursive_check(self) -> None:
         """Lines 157-164: synthetic value nested in a list → True."""
-        assert _contains_synthetic_placeholder_sample(
-            ["real", PATH_PLACEHOLDER_STRING_SAMPLE], include_numeric_fallbacks=False
-        ) is True
+        assert (
+            _contains_synthetic_placeholder_sample(
+                ["real", PATH_PLACEHOLDER_STRING_SAMPLE], include_numeric_fallbacks=False
+            )
+            is True
+        )
 
     def test_list_no_synthetic(self) -> None:
         """Lines 157-164: list with no synthetic values → False."""
-        assert _contains_synthetic_placeholder_sample(
-            ["real", "data"], include_numeric_fallbacks=False
-        ) is False
+        assert (
+            _contains_synthetic_placeholder_sample(
+                ["real", "data"], include_numeric_fallbacks=False
+            )
+            is False
+        )
 
     def test_dict_recursive_check(self) -> None:
         """Lines 165-172: synthetic value nested in a dict → True."""
-        assert _contains_synthetic_placeholder_sample(
-            {"key": PATH_PLACEHOLDER_STRING_SAMPLE}, include_numeric_fallbacks=False
-        ) is True
+        assert (
+            _contains_synthetic_placeholder_sample(
+                {"key": PATH_PLACEHOLDER_STRING_SAMPLE}, include_numeric_fallbacks=False
+            )
+            is True
+        )
 
     def test_dict_no_synthetic(self) -> None:
         """Lines 165-172: dict with no synthetic values → False."""
-        assert _contains_synthetic_placeholder_sample(
-            {"key": "real"}, include_numeric_fallbacks=False
-        ) is False
+        assert (
+            _contains_synthetic_placeholder_sample({"key": "real"}, include_numeric_fallbacks=False)
+            is False
+        )
 
     def test_list_with_numeric_fallback(self) -> None:
         """Lines 157-164: list containing int 1 with numeric fallbacks → True."""
-        assert _contains_synthetic_placeholder_sample(
-            [PATH_PLACEHOLDER_INT_SAMPLE], include_numeric_fallbacks=True
-        ) is True
+        assert (
+            _contains_synthetic_placeholder_sample(
+                [PATH_PLACEHOLDER_INT_SAMPLE], include_numeric_fallbacks=True
+            )
+            is True
+        )
 
     def test_dict_with_numeric_fallback(self) -> None:
         """Lines 165-172: dict containing int 1 with numeric fallbacks → True."""
-        assert _contains_synthetic_placeholder_sample(
-            {"id": PATH_PLACEHOLDER_INT_SAMPLE}, include_numeric_fallbacks=True
-        ) is True
+        assert (
+            _contains_synthetic_placeholder_sample(
+                {"id": PATH_PLACEHOLDER_INT_SAMPLE}, include_numeric_fallbacks=True
+            )
+            is True
+        )

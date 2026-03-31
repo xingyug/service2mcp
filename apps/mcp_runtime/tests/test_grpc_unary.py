@@ -117,6 +117,7 @@ class TestBuildChannel:
         with pytest.raises(ToolError, match="not a valid grpc target"):
             executor._build_channel()
 
+
 class TestInvokeSyncErrorHandling:
     def _make_executor(
         self, base_url: str = "grpc://localhost:50051"
@@ -153,9 +154,7 @@ class TestInvokeSyncErrorHandling:
 
             # Mock the reflection and protobuf setup
             with (
-                patch(
-                    "apps.mcp_runtime.grpc_unary.ProtoReflectionDescriptorDatabase"
-                ),
+                patch("apps.mcp_runtime.grpc_unary.ProtoReflectionDescriptorDatabase"),
                 patch("apps.mcp_runtime.grpc_unary.DescriptorPool") as mock_pool_cls,
                 patch("apps.mcp_runtime.grpc_unary._method_full_name") as mock_method_name,
                 patch("apps.mcp_runtime.grpc_unary._prime_service_descriptor"),

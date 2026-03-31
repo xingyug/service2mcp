@@ -90,11 +90,7 @@ def caller_roles(caller: TokenPrincipalResponse) -> set[str]:
         roles = raw_roles
     else:
         roles = []
-    return {
-        role.strip().lower()
-        for role in roles
-        if isinstance(role, str) and role.strip()
-    }
+    return {role.strip().lower() for role in roles if isinstance(role, str) and role.strip()}
 
 
 def _extract_bearer_token(auth_header: str) -> str | None:

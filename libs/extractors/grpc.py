@@ -64,6 +64,7 @@ def _find_blocks(keyword: str, text: str) -> list[tuple[str, str]]:
                     break
     return results
 
+
 _PROTO_TYPE_MAP: dict[str, str] = {
     "string": "string",
     "bool": "boolean",

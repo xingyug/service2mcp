@@ -348,8 +348,7 @@ def _build_operation(
     input_message_name = _qname_local(input_tag.attrib.get("message", ""))
     if not input_message_name:
         logger.warning(
-            "WSDL operation '%s' <wsdl:input> has no 'message' attribute, "
-            "using empty params.",
+            "WSDL operation '%s' <wsdl:input> has no 'message' attribute, using empty params.",
             operation_name,
         )
     output_element_name = ""
@@ -365,16 +364,24 @@ def _build_operation(
         else:
             output_element_name = messages.get(output_message_name, "")
     input_element_name = messages.get(input_message_name, "") if input_message_name else ""
-    input_fields = _resolve_wsdl_fields(
-        input_element_name,
-        elements=elements,
-        complex_types=complex_types,
-    ) if input_element_name else []
-    output_fields = _resolve_wsdl_fields(
-        output_element_name,
-        elements=elements,
-        complex_types=complex_types,
-    ) if output_element_name else []
+    input_fields = (
+        _resolve_wsdl_fields(
+            input_element_name,
+            elements=elements,
+            complex_types=complex_types,
+        )
+        if input_element_name
+        else []
+    )
+    output_fields = (
+        _resolve_wsdl_fields(
+            output_element_name,
+            elements=elements,
+            complex_types=complex_types,
+        )
+        if output_element_name
+        else []
+    )
     return Operation(
         id=operation_name,
         name=_humanize_identifier(operation_name),

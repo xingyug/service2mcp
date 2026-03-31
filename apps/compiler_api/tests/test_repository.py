@@ -355,7 +355,13 @@ class TestGetService:
         mock_session = AsyncMock()
         mock_result = MagicMock()
         mock_result.all.return_value = [
-            (_fake_service_version(service_id="billing-api", tenant="team-a", environment="prod"), 1, _utcnow()),
+            (
+                _fake_service_version(
+                    service_id="billing-api", tenant="team-a", environment="prod"
+                ),
+                1,
+                _utcnow(),
+            ),
             (
                 _fake_service_version(
                     service_id="billing-api",
@@ -403,15 +409,17 @@ class TestServiceCatalogMalformedActiveIr:
     async def test_get_service_raises_for_malformed_active_record(self) -> None:
         mock_session = AsyncMock()
         mock_result = MagicMock()
-        mock_result.all.return_value = [(
-            _fake_service_version(
-                service_id="bad-svc",
-                version_number=7,
-                ir_json={"service_id": "bad-svc"},
-            ),
-            1,
-            _utcnow(),
-        )]
+        mock_result.all.return_value = [
+            (
+                _fake_service_version(
+                    service_id="bad-svc",
+                    version_number=7,
+                    ir_json={"service_id": "bad-svc"},
+                ),
+                1,
+                _utcnow(),
+            )
+        ]
         mock_session.execute.return_value = mock_result
 
         repo = ServiceCatalogRepository(mock_session)
@@ -685,7 +693,9 @@ class TestActivateVersionSuccess:
         assert result is not None
         assert mock_record.is_active is True
         mock_deactivate.assert_called_once_with(
-            "svc", tenant=None, environment=None,
+            "svc",
+            tenant=None,
+            environment=None,
         )
         mock_session.flush.assert_called_once()
         mock_session.commit.assert_called_once()

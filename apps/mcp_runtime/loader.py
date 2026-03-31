@@ -211,7 +211,9 @@ def register_ir_resources(
     from mcp.server.fastmcp.resources import FunctionResource
 
     registered: list[ResourceDefinition] = []
-    operations_by_id = {operation.id: operation for operation in service_ir.operations if operation.enabled}
+    operations_by_id = {
+        operation.id: operation for operation in service_ir.operations if operation.enabled
+    }
     for resource_def in service_ir.resource_definitions:
         if resource_def.content_type == "dynamic":
             operation_id = resource_def.operation_id
@@ -269,9 +271,7 @@ def _dynamic_resource_arguments(
 ) -> dict[str, Any]:
     arguments: dict[str, Any] = {}
     missing_required = [
-        param.name
-        for param in operation.params
-        if param.required and param.default is None
+        param.name for param in operation.params if param.required and param.default is None
     ]
     if missing_required:
         raise RuntimeLoadError(

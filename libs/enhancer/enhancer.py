@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def _sanitize_for_prompt(value: str, max_length: int = 200) -> str:
     """Sanitize a value for safe inclusion in an LLM prompt."""
-    sanitized = re.sub(r'[\n\r\x00-\x1f]', ' ', value)
+    sanitized = re.sub(r"[\n\r\x00-\x1f]", " ", value)
     return sanitized[:max_length]
 
 

@@ -115,7 +115,7 @@ class TestGraphQL:
         resp = await client.post(
             "/graphql",
             json={
-                "query": "{ searchProducts(term: \"puzzle\") { id name } }",
+                "query": '{ searchProducts(term: "puzzle") { id name } }',
                 "variables": {"term": "puzzle"},
             },
         )

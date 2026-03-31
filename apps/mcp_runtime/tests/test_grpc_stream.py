@@ -152,6 +152,7 @@ class TestInvokeSyncRejectsNonServerMode:
         with pytest.raises(ToolError, match="not implemented yet"):
             executor._invoke_sync(op, {}, config)
 
+
 class TestInvokeSyncErrorHandling:
     def _make_executor(
         self, base_url: str = "grpc://localhost:50051"

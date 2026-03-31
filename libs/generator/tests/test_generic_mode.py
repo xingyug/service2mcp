@@ -28,8 +28,8 @@ from libs.ir.models import (
     GrpcStreamMode,
     GrpcStreamRuntimeConfig,
     GrpcUnaryRuntimeConfig,
-    Operation,
     OAuth2ClientCredentialsConfig,
+    Operation,
     Param,
     RequestSigningConfig,
     RiskLevel,
@@ -271,9 +271,7 @@ def test_generate_generic_manifests_supports_version_coexistence_route_config() 
 
 
 def test_generate_generic_manifests_scopes_gateway_route_ids_by_service_scope() -> None:
-    service_ir = _load_service_ir().model_copy(
-        update={"tenant": "Team A", "environment": "Prod"}
-    )
+    service_ir = _load_service_ir().model_copy(update={"tenant": "Team A", "environment": "Prod"})
 
     manifest_set = generate_generic_manifests(
         service_ir,
@@ -293,9 +291,7 @@ def test_generate_generic_manifests_scopes_gateway_route_ids_by_service_scope() 
     assert route_config["default_route"]["route_id"] == (
         "billing-api-tenant-team-a-env-prod-active"
     )
-    assert route_config["version_route"]["route_id"] == (
-        "billing-api-tenant-team-a-env-prod-v2"
-    )
+    assert route_config["version_route"]["route_id"] == ("billing-api-tenant-team-a-env-prod-v2")
 
 
 def test_generate_generic_manifests_injects_runtime_auth_secret_envs() -> None:
@@ -380,7 +376,9 @@ def test_generate_generic_manifests_skips_native_grpc_stream_for_client_mode() -
     service_ir = _build_grpc_stream_ir().model_copy(
         update={
             "event_descriptors": [
-                _build_grpc_stream_ir().event_descriptors[0].model_copy(
+                _build_grpc_stream_ir()
+                .event_descriptors[0]
+                .model_copy(
                     update={
                         "grpc_stream": _build_grpc_stream_ir()
                         .event_descriptors[0]
@@ -422,7 +420,9 @@ def test_generate_generic_manifests_enables_native_grpc_unary_runtime_when_requi
     assert env_entries["ENABLE_NATIVE_GRPC_UNARY"] == "true"
 
 
-def test_generate_generic_manifests_rejects_missing_runtime_secret_name_when_auth_uses_refs() -> None:
+def test_generate_generic_manifests_rejects_missing_runtime_secret_name_when_auth_uses_refs() -> (
+    None
+):
     service_ir = _load_service_ir().model_copy(
         update={
             "auth": AuthConfig(

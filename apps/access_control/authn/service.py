@@ -426,9 +426,7 @@ def _b64decode_json(segment: str) -> str:
 
 def _b64encode_json(payload: dict[str, object]) -> str:
     return (
-        base64.urlsafe_b64encode(
-            json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        )
+        base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
         .decode("utf-8")
         .rstrip("=")
     )

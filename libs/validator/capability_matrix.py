@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from libs.ir.models import EventDescriptor, EventSupportLevel, EventTransport, GrpcStreamMode, ServiceIR
+from libs.ir.models import (
+    EventDescriptor,
+    EventSupportLevel,
+    EventTransport,
+    GrpcStreamMode,
+    ServiceIR,
+)
 
 
 @dataclass(frozen=True)
@@ -201,7 +207,10 @@ def protocol_capability_key(service_ir: ServiceIR) -> str:
     if protocol != "grpc":
         return protocol
 
-    if any(_supports_native_grpc_stream_capability(descriptor) for descriptor in service_ir.event_descriptors):
+    if any(
+        _supports_native_grpc_stream_capability(descriptor)
+        for descriptor in service_ir.event_descriptors
+    ):
         return "grpc_stream"
 
     if any(

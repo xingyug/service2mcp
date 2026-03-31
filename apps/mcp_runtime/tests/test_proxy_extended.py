@@ -904,7 +904,9 @@ class TestPollAsyncJob:
             request=_make_request(),
         )
         p = _proxy()
-        with pytest.raises(ToolError, match="Async kickoff for operation op1 received invalid JSON"):
+        with pytest.raises(
+            ToolError, match="Async kickoff for operation op1 received invalid JSON"
+        ):
             await p._poll_async_job("op1", response, config)
 
     async def test_timeout_raises(self) -> None:

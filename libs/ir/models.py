@@ -162,7 +162,9 @@ class OAuth2ClientCredentialsConfig(BaseModel):
     @model_validator(mode="after")
     def client_id_must_be_configured(self) -> OAuth2ClientCredentialsConfig:
         if not self.client_id_ref and not self.client_id:
-            raise ValueError("oauth2 client credentials config requires client_id or client_id_ref.")
+            raise ValueError(
+                "oauth2 client credentials config requires client_id or client_id_ref."
+            )
         return self
 
 
@@ -498,11 +500,16 @@ class AuthConfig(BaseModel):
         if self.oauth2 is not None and self.type != AuthType.oauth2:
             raise ValueError("oauth2 client credentials config requires auth.type=oauth2.")
 
-        if (self.basic_username is not None or self.basic_password_ref is not None) and self.type != AuthType.basic:
+        if (
+            self.basic_username is not None or self.basic_password_ref is not None
+        ) and self.type != AuthType.basic:
             raise ValueError("basic auth username/password config requires auth.type=basic.")
 
         if (self.basic_username is None) != (self.basic_password_ref is None):
-            raise ValueError("basic auth username/password config requires both basic_username and basic_password_ref.")
+            raise ValueError(
+                "basic auth username/password config requires both"
+                " basic_username and basic_password_ref."
+            )
 
         return self
 
@@ -546,9 +553,7 @@ class ResourceDefinition(BaseModel):
     @model_validator(mode="after")
     def validate_content_shape(self) -> ResourceDefinition:
         if self.content_type == "static" and self.content is None:
-            raise ValueError(
-                f"Static ResourceDefinition '{self.id}' must define content."
-            )
+            raise ValueError(f"Static ResourceDefinition '{self.id}' must define content.")
         if self.content_type == "dynamic":
             if self.operation_id is None:
                 raise ValueError(

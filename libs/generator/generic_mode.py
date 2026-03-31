@@ -27,9 +27,7 @@ DEFAULT_RUNTIME_SECRET_NAME = "tool-compiler-runtime-secrets"
 _DNS_PORT = 53
 _MAX_RESOURCE_NAME_LENGTH = 63
 _TEMPLATE_DIRECTORY = Path(__file__).with_name("templates")
-_RESERVED_SELECTOR_LABELS = frozenset(
-    {"app.kubernetes.io/name", "app.kubernetes.io/instance"}
-)
+_RESERVED_SELECTOR_LABELS = frozenset({"app.kubernetes.io/name", "app.kubernetes.io/instance"})
 _TEMPLATE_ORDER = (
     "configmap.yaml.j2",
     "deployment.yaml.j2",
@@ -74,9 +72,7 @@ class GenericManifestConfig:
         reserved_label_keys = sorted(_RESERVED_SELECTOR_LABELS & self.labels.keys())
         if reserved_label_keys:
             reserved = ", ".join(reserved_label_keys)
-            raise ValueError(
-                f"labels must not override reserved selector labels: {reserved}."
-            )
+            raise ValueError(f"labels must not override reserved selector labels: {reserved}.")
 
 
 @dataclass(frozen=True)

@@ -1028,13 +1028,10 @@ async def _audit_generated_tools(
             continue
 
         arguments = sample_invocations[operation.id]
-        if (
-            operation.id not in representative_tool_ids
-            and _has_synthetic_path_placeholder_samples(
-                operation,
-                arguments,
-                include_numeric_fallbacks=True,
-            )
+        if operation.id not in representative_tool_ids and _has_synthetic_path_placeholder_samples(
+            operation,
+            arguments,
+            include_numeric_fallbacks=True,
         ):
             audit_results.append(
                 ToolAuditResult(
@@ -1225,9 +1222,7 @@ def _require_list_field(
 ) -> list[Any]:
     value = _require_field(payload, field, context=context)
     if not isinstance(value, list):
-        raise RuntimeError(
-            f"{context} field {field!r} was {type(value).__name__}, expected list."
-        )
+        raise RuntimeError(f"{context} field {field!r} was {type(value).__name__}, expected list.")
     return value
 
 

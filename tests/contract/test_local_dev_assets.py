@@ -113,9 +113,7 @@ def test_smoke_scripts_and_quickstart_cover_gateway_route_smoke_flow() -> None:
     assert 'PROTOCOL="${PROTOCOL:-all}"' in gke_llm_e2e_smoke
     protocol_usage = re.search(r"all\|[A-Za-z0-9_|-]+", gke_llm_e2e_smoke)
     assert protocol_usage is not None
-    assert protocol_usage.group(0) == (
-        "all|graphql|rest|openapi|grpc|jsonrpc|odata|scim|soap|sql"
-    )
+    assert protocol_usage.group(0) == ("all|graphql|rest|openapi|grpc|jsonrpc|odata|scim|soap|sql")
     assert '--protocol"' in gke_llm_e2e_smoke
     assert "llm-proof-sql" in gke_llm_e2e_smoke
     assert "startupProbe:" in gke_llm_e2e_smoke

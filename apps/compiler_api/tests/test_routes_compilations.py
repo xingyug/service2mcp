@@ -490,12 +490,8 @@ class TestRetryCompilation:
         new_job.service_name = "pet-store"
 
         with (
-            patch(
-                "apps.compiler_api.routes.compilations.CompilationRepository"
-            ) as mock_repo_class,
-            patch(
-                "apps.compiler_api.routes.compilations.AuditLogService"
-            ) as mock_audit_class,
+            patch("apps.compiler_api.routes.compilations.CompilationRepository") as mock_repo_class,
+            patch("apps.compiler_api.routes.compilations.AuditLogService") as mock_audit_class,
         ):
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
@@ -528,9 +524,7 @@ class TestRetryCompilation:
             mock_repo.get_job.return_value = None
 
             with pytest.raises(HTTPException) as exc_info:
-                await retry_compilation(
-                    uuid4(), None, mock_session, mock_dispatcher, caller
-                )
+                await retry_compilation(uuid4(), None, mock_session, mock_dispatcher, caller)
             assert exc_info.value.status_code == 404
 
     async def test_retry_includes_from_stage(self) -> None:
@@ -562,12 +556,8 @@ class TestRetryCompilation:
         new_job.service_name = "svc"
 
         with (
-            patch(
-                "apps.compiler_api.routes.compilations.CompilationRepository"
-            ) as mock_repo_class,
-            patch(
-                "apps.compiler_api.routes.compilations.AuditLogService"
-            ) as mock_audit_class,
+            patch("apps.compiler_api.routes.compilations.CompilationRepository") as mock_repo_class,
+            patch("apps.compiler_api.routes.compilations.AuditLogService") as mock_audit_class,
         ):
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
@@ -657,12 +647,8 @@ class TestRetryCompilation:
         new_job.service_name = "pet-store"
 
         with (
-            patch(
-                "apps.compiler_api.routes.compilations.CompilationRepository"
-            ) as mock_repo_class,
-            patch(
-                "apps.compiler_api.routes.compilations.AuditLogService"
-            ) as mock_audit_class,
+            patch("apps.compiler_api.routes.compilations.CompilationRepository") as mock_repo_class,
+            patch("apps.compiler_api.routes.compilations.AuditLogService") as mock_audit_class,
         ):
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
@@ -673,9 +659,7 @@ class TestRetryCompilation:
             mock_audit_class.return_value = mock_audit
 
             with pytest.raises(HTTPException) as exc_info:
-                await retry_compilation(
-                    original_id, None, mock_session, mock_dispatcher, caller
-                )
+                await retry_compilation(original_id, None, mock_session, mock_dispatcher, caller)
 
             assert exc_info.value.status_code == 503
             assert "Dispatch failed" in exc_info.value.detail
@@ -690,7 +674,9 @@ class TestRetryCompilation:
         original_job.id = uuid4()
         original_job.options = {}
 
-        with patch("apps.compiler_api.routes.compilations.CompilationRepository") as mock_repo_class:
+        with patch(
+            "apps.compiler_api.routes.compilations.CompilationRepository"
+        ) as mock_repo_class:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.get_job.return_value = original_job
@@ -715,7 +701,9 @@ class TestRetryCompilation:
         original_job.id = uuid4()
         original_job.options = {}
 
-        with patch("apps.compiler_api.routes.compilations.CompilationRepository") as mock_repo_class:
+        with patch(
+            "apps.compiler_api.routes.compilations.CompilationRepository"
+        ) as mock_repo_class:
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.get_job.return_value = original_job
@@ -765,15 +753,11 @@ class TestRollbackCompilation:
         new_job.service_name = "pet-store"
 
         with (
-            patch(
-                "apps.compiler_api.routes.compilations.CompilationRepository"
-            ) as mock_repo_class,
+            patch("apps.compiler_api.routes.compilations.CompilationRepository") as mock_repo_class,
             patch(
                 "apps.compiler_api.routes.compilations.ArtifactRegistryRepository"
             ) as mock_artifact_repo_class,
-            patch(
-                "apps.compiler_api.routes.compilations.AuditLogService"
-            ) as mock_audit_class,
+            patch("apps.compiler_api.routes.compilations.AuditLogService") as mock_audit_class,
         ):
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
@@ -794,9 +778,7 @@ class TestRollbackCompilation:
             mock_audit = AsyncMock()
             mock_audit_class.return_value = mock_audit
 
-            result = await rollback_compilation(
-                original_id, mock_session, mock_dispatcher, caller
-            )
+            result = await rollback_compilation(original_id, mock_session, mock_dispatcher, caller)
 
             assert result == new_job
             mock_dispatcher.enqueue.assert_called_once()
@@ -891,9 +873,7 @@ class TestRollbackCompilation:
             mock_repo.get_job.return_value = None
 
             with pytest.raises(HTTPException) as exc_info:
-                await rollback_compilation(
-                    uuid4(), mock_session, mock_dispatcher, caller
-                )
+                await rollback_compilation(uuid4(), mock_session, mock_dispatcher, caller)
             assert exc_info.value.status_code == 404
 
     async def test_rollback_rejects_non_succeeded(self) -> None:
@@ -912,9 +892,7 @@ class TestRollbackCompilation:
             mock_repo.get_job.return_value = original_job
 
             with pytest.raises(HTTPException) as exc_info:
-                await rollback_compilation(
-                    uuid4(), mock_session, mock_dispatcher, caller
-                )
+                await rollback_compilation(uuid4(), mock_session, mock_dispatcher, caller)
             assert exc_info.value.status_code == 409
             assert "succeeded" in exc_info.value.detail
 
@@ -956,9 +934,7 @@ class TestRollbackCompilation:
             mock_artifact_repo.get_active_version.return_value = active_version
 
             with pytest.raises(HTTPException) as exc_info:
-                await rollback_compilation(
-                    uuid4(), mock_session, mock_dispatcher, caller
-                )
+                await rollback_compilation(uuid4(), mock_session, mock_dispatcher, caller)
             assert exc_info.value.status_code == 409
             assert "active deployment" in exc_info.value.detail
 
@@ -993,15 +969,11 @@ class TestRollbackCompilation:
         new_job.service_name = "pet-store"
 
         with (
-            patch(
-                "apps.compiler_api.routes.compilations.CompilationRepository"
-            ) as mock_repo_class,
+            patch("apps.compiler_api.routes.compilations.CompilationRepository") as mock_repo_class,
             patch(
                 "apps.compiler_api.routes.compilations.ArtifactRegistryRepository"
             ) as mock_artifact_repo_class,
-            patch(
-                "apps.compiler_api.routes.compilations.AuditLogService"
-            ) as mock_audit_class,
+            patch("apps.compiler_api.routes.compilations.AuditLogService") as mock_audit_class,
         ):
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
@@ -1023,9 +995,7 @@ class TestRollbackCompilation:
             mock_audit_class.return_value = mock_audit
 
             with pytest.raises(HTTPException) as exc_info:
-                await rollback_compilation(
-                    original_id, mock_session, mock_dispatcher, caller
-                )
+                await rollback_compilation(original_id, mock_session, mock_dispatcher, caller)
 
             assert exc_info.value.status_code == 503
             assert "Dispatch failed" in exc_info.value.detail

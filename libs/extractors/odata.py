@@ -319,9 +319,7 @@ def _build_entity_set_operations(entity_set_name: str, et_info: EntityTypeInfo) 
         if len(key_props) == 1:
             key_path_segment = f"{{{key_props[0].name}}}"
         else:
-            key_path_segment = ",".join(
-                f"{kp.name}={{{kp.name}}}" for kp in key_props
-            )
+            key_path_segment = ",".join(f"{kp.name}={{{kp.name}}}" for kp in key_props)
         key_params = [
             Param(
                 name=kp.name,

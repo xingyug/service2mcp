@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -288,7 +288,10 @@ def request_scope_from_options(
 
     if not isinstance(options, Mapping):
         return None, None
-    return (_normalize_scope_value(options.get("tenant")), _normalize_scope_value(options.get("environment")))
+    return (
+        _normalize_scope_value(options.get("tenant")),
+        _normalize_scope_value(options.get("environment")),
+    )
 
 
 def _normalize_scope_value(value: Any) -> str | None:

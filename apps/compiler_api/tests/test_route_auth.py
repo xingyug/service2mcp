@@ -12,7 +12,11 @@ from apps.compiler_api.routes.services import router as services_router
 
 def _route(router: object, path: str, method: str) -> APIRoute:
     for candidate in getattr(router, "routes", []):
-        if isinstance(candidate, APIRoute) and candidate.path == path and method in candidate.methods:
+        if (
+            isinstance(candidate, APIRoute)
+            and candidate.path == path
+            and method in candidate.methods
+        ):
             return candidate
     raise AssertionError(f"Route {method} {path} was not found.")
 

@@ -47,7 +47,9 @@ async def _rollback_and_reconcile_gateway(
     try:
         await gateway_binding.reconcile(session)
     except Exception as exc:  # pragma: no cover - exercised via route failure tests
-        raise RuntimeError(f"Gateway compensation failed after transaction rollback: {exc}") from exc
+        raise RuntimeError(
+            f"Gateway compensation failed after transaction rollback: {exc}"
+        ) from exc
 
 
 @router.post("/policies", response_model=PolicyResponse, status_code=status.HTTP_201_CREATED)

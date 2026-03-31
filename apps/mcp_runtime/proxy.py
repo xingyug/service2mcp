@@ -1679,9 +1679,7 @@ def _normalize_websocket_message(value: Any) -> str | bytes:
             try:
                 return base64.b64decode(value["bytes_base64"], validate=True)
             except ValueError as exc:
-                raise ToolError(
-                    "WebSocket bytes_base64 contains invalid base64 data."
-                ) from exc
+                raise ToolError("WebSocket bytes_base64 contains invalid base64 data.") from exc
         if "text" in value and isinstance(value["text"], str):
             return value["text"]
         if "json" in value:
@@ -1816,9 +1814,7 @@ def _build_soap_envelope(config: SoapOperationConfig, arguments: dict[str, Any])
         f"{{{config.target_namespace}}}{config.request_element}",
     )
 
-    child_namespace = (
-        config.target_namespace if config.child_element_form == "qualified" else None
-    )
+    child_namespace = config.target_namespace if config.child_element_form == "qualified" else None
     for key, value in arguments.items():
         _append_soap_argument(
             request_root,

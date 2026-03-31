@@ -426,8 +426,7 @@ def test_current_pocketbase_collection_entrypoint_is_discovered_without_links() 
     assert service_ir.base_url == "https://pocketbase.example.com/api/collections/products/records"
     assert "/api/collections/products/records" in service_ir.metadata["discovered_paths"]
     assert (
-        "/api/collections/products/records/{record_id}"
-        in service_ir.metadata["discovered_paths"]
+        "/api/collections/products/records/{record_id}" in service_ir.metadata["discovered_paths"]
     )
     assert "/" in operation_paths
     assert "/{record_id}" in operation_paths

@@ -434,7 +434,9 @@ async def test_policy_update_reconciles_gateway_when_audit_fails(
 
     monkeypatch.setattr(authz_routes.AuditLogService, "append_entry", _fail_audit)
     failing_transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=failing_transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=failing_transport, base_url="http://testserver"
+    ) as client:
         updated = await client.put(
             f"/api/v1/authz/policies/{policy['id']}",
             json={"decision": "deny"},
@@ -517,7 +519,9 @@ async def test_policy_delete_reconciles_gateway_when_audit_fails(
 
     monkeypatch.setattr(authz_routes.AuditLogService, "append_entry", _fail_audit)
     failing_transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=failing_transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=failing_transport, base_url="http://testserver"
+    ) as client:
         deleted = await client.delete(
             f"/api/v1/authz/policies/{policy['id']}",
             headers=_auth_headers(roles=["admin"]),

@@ -337,33 +337,25 @@ def test_resolve_base_url_openrpc_falls_back_to_default_endpoint() -> None:
 
 def test_default_openrpc_endpoint_strips_json_suffix() -> None:
     """Lines 268-279: strips /openrpc.json and appends /rpc."""
-    result = JsonRpcExtractor._default_openrpc_endpoint(
-        "https://example.com/api/openrpc.json"
-    )
+    result = JsonRpcExtractor._default_openrpc_endpoint("https://example.com/api/openrpc.json")
     assert result == "https://example.com/api/rpc"
 
 
 def test_default_openrpc_endpoint_strips_yaml_suffix() -> None:
     """Lines 268-279: strips /openrpc.yaml and appends /rpc."""
-    result = JsonRpcExtractor._default_openrpc_endpoint(
-        "https://example.com/openrpc.yaml"
-    )
+    result = JsonRpcExtractor._default_openrpc_endpoint("https://example.com/openrpc.yaml")
     assert result == "https://example.com/rpc"
 
 
 def test_default_openrpc_endpoint_strips_yml_suffix() -> None:
     """Lines 268-279: strips /openrpc.yml and appends /rpc."""
-    result = JsonRpcExtractor._default_openrpc_endpoint(
-        "https://example.com/openrpc.yml"
-    )
+    result = JsonRpcExtractor._default_openrpc_endpoint("https://example.com/openrpc.yml")
     assert result == "https://example.com/rpc"
 
 
 def test_default_openrpc_endpoint_no_known_suffix() -> None:
     """Line 279: no recognized suffix → returns source_url unchanged."""
-    result = JsonRpcExtractor._default_openrpc_endpoint(
-        "https://example.com/api/v1"
-    )
+    result = JsonRpcExtractor._default_openrpc_endpoint("https://example.com/api/v1")
     assert result == "https://example.com/api/v1"
 
 

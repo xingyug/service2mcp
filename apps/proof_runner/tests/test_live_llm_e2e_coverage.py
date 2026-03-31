@@ -1237,9 +1237,7 @@ class TestRunCase:
             "tenant": "tenant-a",
             "environment": "prod",
         }
-        mock_builder.assert_called_once_with(
-            "http://billing-api-v2.test-ns.svc.cluster.local:8003"
-        )
+        mock_builder.assert_called_once_with("http://billing-api-v2.test-ns.svc.cluster.local:8003")
 
     async def test_run_case_failed_job_raises(self) -> None:
         from apps.proof_runner.live_llm_e2e import _run_case

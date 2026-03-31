@@ -18,10 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from testcontainers.postgres import PostgresContainer
 
 import apps.access_control.authn.routes as authn_routes
-from apps.access_control.authn.service import JWTSettings
+from apps.access_control.authn.service import JWTSettings, hash_token_value
 from apps.access_control.gateway_binding.client import InMemoryAPISIXAdminClient
 from apps.access_control.main import create_app
-from apps.access_control.authn.service import hash_token_value
 from libs.db_models import Base, PersonalAccessToken, User
 
 
@@ -581,7 +580,9 @@ async def test_pat_revocation_reconciles_gateway_when_audit_fails(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     create_transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=create_transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=create_transport, base_url="http://testserver"
+    ) as client:
         created = await client.post(
             "/api/v1/authn/pats",
             json={"username": "alice", "name": "CI token"},
@@ -597,7 +598,9 @@ async def test_pat_revocation_reconciles_gateway_when_audit_fails(
 
     monkeypatch.setattr(authn_routes.AuditLogService, "append_entry", _fail_audit)
     revoke_transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
-    async with httpx.AsyncClient(transport=revoke_transport, base_url="http://testserver") as client:
+    async with httpx.AsyncClient(
+        transport=revoke_transport, base_url="http://testserver"
+    ) as client:
         revoked = await client.post(
             f"/api/v1/authn/pats/{pat['id']}/revoke",
             headers=_auth_headers(subject="alice"),

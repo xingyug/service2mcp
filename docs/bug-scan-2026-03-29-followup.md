@@ -4281,3 +4281,551 @@ These findings therefore describe bugs that are currently latent or scenario-dep
   - Deploy or mock a service whose only smokeable operation contains a required path parameter such as `/users/{id}`.
   - Let production validation use its default generated `sample_invocations`.
   - Observe that the validator sends a live probe with a placeholder path value like `{"id":"1"}` instead of requiring a real sample or skipping the smoke test.
+
+### BUG-348 — Compilation job metadata collapses `service_id` and `service_name`, so job APIs can return display names where stable IDs are expected
+
+- Severity: High
+- Files:
+  - `libs/db_models.py`
+  - `apps/compiler_worker/activities/production.py`
+  - `apps/compiler_worker/repository.py`
+  - `apps/compiler_api/repository.py`
+  - `apps/compiler_api/models.py`
+- Summary:
+  - The persisted `compiler.compilation_jobs` row has only a `service_name` column and no separate `service_id`.
+  - The worker then overloads that `service_name` field with the stable service identifier after extract/register stages by passing `service_name=service_id` through stage results.
+  - The compiler API repository and response model in turn serialize `service_id=job.service_name` and `service_name=job.service_name`.
+  - As a result, compilation job APIs cannot preserve both the stable identifier and the human-readable service name; callers can receive the display name in `service_id`, or lose the display name entirely once later stages overwrite the field with the stable ID.
+- Evidence:
+  - `libs/db_models.py` defines `CompilationJob.service_name` but no `CompilationJob.service_id`.
+  - `apps/compiler_worker/activities/production.py` lines 939-955 compute `service_id = context.request.service_id or context.request.service_name or service_ir.service_name` and then return `_stage_result(..., service_name=service_id)`.
+  - Later stages continue persisting `service_name=context.payload.get("service_id")` or `service_name=service_id`.
+  - `apps/compiler_worker/repository.py` writes that stage result back with `job.service_name = service_name`.
+  - `apps/compiler_api/repository.py` serializes `service_id=job.service_name` and `service_name=job.service_name`.
+  - `apps/compiler_api/models.py` `CompilationJobResponse.from_record(...)` also does `service_id=record.service_name` and `service_name=record.service_name`.
+  - A local probe using `CompilationJobResponse.from_record(...)` on a record with `service_name='Billing API'` produced `{'service_id': 'Billing API', 'service_name': 'Billing API', ...}`, i.e. no stable service ID can be represented at all.
+- Why it is a bug:
+  - The system models `service_id` and `service_name` as distinct concepts elsewhere, and UI/control-plane flows rely on the stable ID for links, rollbacks, and registry lookups.
+  - Reusing one field for both meanings makes job responses semantically unstable across stages and can surface non-identifier display names where downstream code expects a stable service ID.
+- Suggested validation:
+  - Submit a compilation whose `service_id` and `service_name` differ (for example `billing-api` vs `Billing API`).
+  - Inspect the returned job payloads and any later `/api/v1/compilations/{job_id}` response.
+  - Observe that the API cannot expose both values distinctly and may report the display name where callers expect the stable service ID.
+
+### BUG-349 — Distinct service IDs can collapse onto the same gateway `route_id` after DNS-label sanitization/truncation
+
+- Severity: High
+- Files:
+  - `libs/generator/generic_mode.py`
+  - `apps/access_control/gateway_binding/service.py`
+- Summary:
+  - Route IDs are generated from `_route_identity_base(...)`, which starts from `_route_base_name(...)`.
+  - `_route_base_name(...)` sanitizes `config.service_id` with `_sanitize_dns_label(...)`, lowercasing it, converting non-alphanumerics to `-`, collapsing repeated separators, and truncating to 63 characters.
+  - Different original service IDs can therefore normalize to the same route base even within the same tenant/environment scope.
+  - Because gateway sync/upsert logic keys routes by `route_id`, two unrelated services whose IDs sanitize to the same value can overwrite each other’s active and version-pinned routes.
+- Evidence:
+  - `libs/generator/generic_mode.py` lines 272-289 implement `_sanitize_dns_label(...)` with lossy normalization and truncation.
+  - Lines 330-345 derive `_route_base_name(...)` / `_route_identity_base(...)` from that sanitized value.
+  - Lines 390-404 build `default_route.route_id = f"{resolved_route_base}-active"` and `version_route.route_id = f"{resolved_route_base}-v{config.version_number}"`.
+  - `apps/access_control/gateway_binding/service.py` syncs routes by those `route_id` keys.
+  - A local probe with `service_id='payment@api'` and `service_id='payment_api'` generated the same route IDs for both services:
+    - `payment-api-active`
+    - `payment-api-v1`
+- Why it is a bug:
+  - Route IDs are the gateway’s authoritative identity key.
+  - If two distinct logical services collapse onto the same sanitized route IDs, publishing or deleting one service’s routes can overwrite or remove the other service’s traffic configuration even without any tenant/environment ambiguity.
+- Suggested validation:
+  - Create two services whose IDs differ before sanitization but normalize to the same DNS label (for example `payment@api` and `payment_api`).
+  - Generate or activate both route configs.
+  - Compare the emitted `default_route.route_id` / `version_route.route_id` values and observe the collision on the same gateway identities.
+
+### BUG-350 — Post-deploy health validation still treats a JSON health payload with no `status` field as success
+
+- Severity: Medium
+- Files:
+  - `libs/validator/post_deploy.py`
+- Summary:
+  - The health validator now rejects explicit non-`"ok"` status bodies, but it still returns success when `/healthz` or `/readyz` responds with JSON that omits `status` entirely.
+  - That means a malformed or regressed runtime health implementation can pass post-deploy validation with `{}` even though this repo’s health contract is `{"status": "ok"}`.
+- Evidence:
+  - `PostDeployValidator._health_endpoint_failure_detail(...)` parses JSON and then does `status = payload.get("status")`.
+  - It only fails when `"status" in payload and status != "ok"`.
+  - If the body is `{}`, the helper falls through to `return None`, which is treated as a healthy endpoint.
+  - A local probe showed:
+    - `PostDeployValidator._health_endpoint_failure_detail('healthz', Response(200, json={})) -> None`
+    - so an empty-object health body is currently accepted as healthy.
+  - The same helper correctly rejects `{"status": None}` with `healthz reported status None`, showing that only the missing-key case slips through.
+- Why it is a bug:
+  - The post-deploy gate should confirm the declared readiness contract, not just “HTTP 200 plus any JSON object”.
+  - Accepting `{}` as healthy can mark malformed or partially implemented runtimes ready for publication even though they are no longer returning the expected status signal.
+- Suggested validation:
+  - Mock `/healthz` and `/readyz` to return HTTP `200` with body `{}`.
+  - Run `PostDeployValidator.validate(...)`.
+  - Observe that the health stage still passes even though neither endpoint reported `{"status": "ok"}`.
+
+### BUG-351 — Deferred route publishing crashes on valid version-only route configs because it unconditionally indexes `default_route`
+
+- Severity: High
+- Files:
+  - `apps/compiler_worker/activities/production.py`
+  - `libs/route_config.py`
+- Summary:
+  - The shared route-config schema explicitly allows `default_route` to be absent while `version_route` is present.
+  - `DeferredRoutePublisher.publish(...)` does not honor that schema: it always reads `route_config["default_route"]["route_id"]` and only guards the optional `version_route`.
+  - In the default `deferred` publication mode, a version-only route config therefore crashes the route stage with a raw `KeyError` instead of returning publication metadata.
+- Evidence:
+  - `libs/route_config.py` defines `default_route: GatewayRouteDefinition | None = None` and `version_route: GatewayRouteDefinition | None = None`.
+  - `apps/compiler_worker/activities/production.py` returns `"default_route_id": route_config["default_route"]["route_id"]` with no `None`/type guard, while `version_route_id` is guarded with `isinstance(route_config.get("version_route"), dict)`.
+  - A local probe calling `DeferredRoutePublisher().publish(...)` with a valid config containing only `version_route` printed `KeyError 'default_route'`.
+- Why it is a bug:
+  - The route publisher should accept every shape that the shared validator considers valid.
+  - As written, the worker's default route-publication mode can crash on a schema-valid version-pinned deployment instead of reporting deferred route metadata.
+- Suggested validation:
+  - Feed `DeferredRoutePublisher.publish(...)` a route config with `service_id`, `service_name`, `namespace`, `version_number`, and `version_route`, but no `default_route`.
+  - Observe that the current implementation raises `KeyError: 'default_route'`.
+
+### BUG-352 — Shared route-config validation accepts malformed `target_service` objects missing required `name`/`port`
+
+- Severity: High
+- Files:
+  - `libs/route_config.py`
+  - `libs/registry_client/models.py`
+  - `apps/access_control/gateway_binding/service.py`
+  - `apps/gateway_admin_mock/main.py`
+- Summary:
+  - The shared `GatewayRouteDefinition` model treats `target_service` as an unstructured `dict[str, Any]`, so `validate_route_config(...)` only checks that the field exists, not that it contains the required service identity fields.
+  - Both the registry-client DTOs and the access-control gateway-binding service rely on that helper, so they can accept and normalize route configs whose `target_service` omits `name` and/or `port`.
+  - The gateway-binding path then copies that malformed dict straight into emitted route documents even though the downstream gateway admin schema requires `target_service.name` and `target_service.port`.
+- Evidence:
+  - `libs/route_config.py` defines `GatewayRouteDefinition.target_service: dict[str, Any]` with no nested schema for required keys.
+  - `libs/registry_client/models.py` and `apps/access_control/gateway_binding/service.py` both call `validate_route_config(...)`.
+  - `apps/access_control/gateway_binding/service.py` `_route_document(...)` copies `route_definition["target_service"]` directly into the outgoing document.
+  - `apps/gateway_admin_mock/main.py` defines `RouteTargetService` with required `name: str` and `port: int`.
+  - A local probe `validate_route_config({... "default_route": {"route_id": "svc-1-active", "target_service": {"namespace": "default"}}})` succeeded and returned the malformed nested dict unchanged.
+- Why it is a bug:
+  - The shared validation boundary is supposed to reject malformed route metadata before it reaches publication/reconcile paths.
+  - Accepting `target_service` objects without `name`/`port` lets invalid route configs pass "validation" and fail only later when a downstream gateway expects a real target service identity.
+- Suggested validation:
+  - Call `validate_route_config(...)` or a route-sync path that uses it with `target_service={"namespace":"default"}`.
+  - Observe that the payload is accepted even though downstream route documents require `target_service.name` and `target_service.port`.
+
+### BUG-353 — Streaming contract validation never checks individual event objects, so malformed stream payloads pass proof and post-deploy validation
+
+- Severity: High
+- Files:
+  - `libs/runtime_contracts.py`
+  - `libs/validator/post_deploy.py`
+  - `apps/proof_runner/live_llm_e2e.py`
+- Summary:
+  - `stream_result_failure_reason(...)` validates only the top-level `events` list plus the `lifecycle` object.
+  - It never validates the shape of each event entry inside `events`, so strings or malformed objects are accepted as long as the lifecycle fields are present.
+  - Both proof auditing and post-deploy validation reuse that helper, so malformed streaming envelopes can still be treated as successful invocations.
+- Evidence:
+  - `libs/runtime_contracts.py` checks `isinstance(events, list)` and validates lifecycle fields, but never inspects `events[index]` contents.
+  - `libs/validator/post_deploy.py` `_tool_result_failure_reason(...)` returns `stream_result_failure_reason(result.get("result"), transport=...)`.
+  - `apps/proof_runner/live_llm_e2e.py` `_generated_tool_audit_failure_reason(...)` does the same.
+  - A local probe using an SSE event descriptor and a runtime result whose `events` was `['oops', {'message_type': 123, 'parsed_data': 'bad'}]` still produced `_tool_result_failure_reason(...) -> None` as long as `lifecycle` contained the expected fields.
+- Why it is a bug:
+  - Event items are part of the runtime response contract for streaming tools; malformed entries should not be counted as a successful proof/validator result.
+  - The current contract lets obviously bad event payloads pass the control-plane checks, hiding broken stream encoders behind a success path.
+- Suggested validation:
+  - Return a streaming success envelope with a valid `lifecycle` object but malformed `events` items, such as a raw string or an object with non-string `message_type`.
+  - Run proof or post-deploy validation and observe that the current code accepts the invocation instead of flagging the malformed event payload.
+
+### BUG-354 — Compiler worker `/readyz` reports `not_ready` in the body but still returns HTTP 200, so Kubernetes probes never fail
+
+- Severity: High
+- Files:
+  - `apps/compiler_worker/main.py`
+  - `deploy/helm/tool-compiler/templates/apps.yaml`
+- Summary:
+  - The compiler worker computes a `missing` list and sets `status = "not_ready"` when required runtime/publication settings are absent.
+  - But the `/readyz` handler always returns a plain dict, never a non-200 response.
+  - The Helm chart uses `/readyz` for both startup and readiness probes.
+- Evidence:
+  - On `main`, `apps/compiler_worker/main.py` lines 37-53 build the readiness payload, set `checks["status"] = "ok" if ready else "not_ready"`, optionally add `checks["missing"]`, and then unconditionally `return checks`.
+  - On `main`, `deploy/helm/tool-compiler/templates/apps.yaml` lines 287-296 configure both `startupProbe` and `readinessProbe` to call `/readyz`.
+  - Local probe from this scan using the `main`-branch `apps/compiler_worker/main.py` with `ROUTE_PUBLISH_MODE=access-control` and `MCP_RUNTIME_IMAGE`, `COMPILER_TARGET_NAMESPACE`, and `ACCESS_CONTROL_URL` unset returned:
+    - `{'workflow_engine': 'celery', 'compilation_queue': 'compiler.jobs', 'task_name': 'compiler_worker.execute_compilation', 'runtime_image': None, 'target_namespace': None, 'route_publish_mode': 'access-control', 'access_control_url': None, 'status': 'not_ready', 'missing': ['runtime_image', 'target_namespace', 'access_control_url']}`
+- Why it is a bug:
+  - FastAPI will serialize that dict as an HTTP 200 response, so Kubernetes sees the pod as healthy even when the worker has already declared itself `not_ready`.
+  - In that state the worker can still become Ready and consume jobs without a runtime image, target namespace, or access-control endpoint configured.
+- Suggested validation:
+  - Start the worker with `ROUTE_PUBLISH_MODE=access-control` and leave `MCP_RUNTIME_IMAGE`, `COMPILER_TARGET_NAMESPACE`, and `ACCESS_CONTROL_URL` unset.
+  - Call `/readyz` and observe that the payload says `status: not_ready`, but the HTTP status is still 200, so the Helm startup/readiness probes still pass.
+
+### BUG-355 — Helm marks access-control Ready from `/healthz`, bypassing the service's real database readiness gate
+
+- Severity: High
+- Files:
+  - `deploy/helm/tool-compiler/templates/apps.yaml`
+  - `apps/access_control/main.py`
+  - `apps/access_control/tests/test_main.py`
+- Summary:
+  - Access-control implements a real `/readyz` endpoint that performs `SELECT 1` and returns HTTP 503 when the database is unavailable.
+  - But the Helm chart uses `/healthz` for both startup and readiness probes.
+  - `/healthz` always returns `{"status":"ok"}` and never checks the database.
+- Evidence:
+  - On `main`, `apps/access_control/main.py` lines 55-68 define `/healthz` as an unconditional `{"status": "ok"}` response, while `/readyz` executes `SELECT 1` and returns `JSONResponse(status_code=503, content={"status":"not_ready"})` on failure.
+  - On `main`, `apps/access_control/tests/test_main.py` lines 111-132 explicitly assert that a database failure on `/readyz` returns HTTP 503 and `{"status":"not_ready"}`.
+  - On `main`, `deploy/helm/tool-compiler/templates/apps.yaml` lines 135-144 configure both `startupProbe` and `readinessProbe` to call `/healthz`, not `/readyz`.
+  - Local probe from this scan loading the `main`-branch `apps/access_control/main.py` with explicit test `jwt_settings` / `gateway_admin_client` and a mocked DB session that raises printed:
+    - `healthz= {'status': 'ok'}`
+    - `readyz_status= 503`
+    - `readyz_body= {"status":"not_ready"}`
+- Why it is a bug:
+  - Kubernetes can mark the access-control pod Ready while its database is unavailable, because the probe path ignores the service's actual readiness contract.
+  - That sends traffic to a control-plane component that is alive enough to answer `/healthz` but not ready to serve authenticated stateful requests.
+- Suggested validation:
+  - Deploy access-control with a bad `DATABASE_URL` (or temporarily break DB connectivity).
+  - Observe that `/healthz` still returns 200 while `/readyz` returns 503, yet the Helm startup/readiness probes continue to succeed because they target `/healthz`.
+
+### BUG-356 — Compiler worker `/readyz` reports ready even when Celery has fallen back to the in-memory broker/backend
+
+- Severity: High
+- Files:
+  - `apps/compiler_worker/main.py`
+  - `apps/compiler_worker/celery_app.py`
+  - `apps/compiler_worker/entrypoint.py`
+- Summary:
+  - The worker readiness endpoint checks only a small set of env-backed strings such as `runtime_image`, `target_namespace`, and `route_publish_mode`.
+  - It never checks whether Celery has a real broker/backend configured.
+  - Meanwhile `create_celery_app()` silently falls back to `memory://` and `cache+memory://` when `CELERY_BROKER_URL` / `REDIS_URL` are absent, and the entrypoint skips broker waiting entirely when no Redis-style broker URL is configured.
+  - The pod can therefore report `status: ok` even though compilation jobs are running on an ephemeral in-process broker/result backend.
+- Evidence:
+  - `apps/compiler_worker/main.py` lines 39-63 build `/readyz` from `workflow_engine`, `compilation_queue`, `task_name`, `runtime_image`, `target_namespace`, `route_publish_mode`, and optional `access_control_url`; neither `REDIS_URL` nor `CELERY_BROKER_URL` is checked.
+  - `apps/compiler_worker/celery_app.py` lines 30-47 resolve `broker_url` to `os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL") or "memory://"` and `result_backend` to `os.getenv("CELERY_RESULT_BACKEND") or os.getenv("REDIS_URL") or "cache+memory://"`.
+  - `apps/compiler_worker/entrypoint.py` lines 53-76 return `None` from `_broker_endpoint()` when no Redis-style broker URL is configured, so `_wait_for_broker_socket()` becomes a no-op.
+  - A local probe with `WORKFLOW_ENGINE=celery`, `MCP_RUNTIME_IMAGE`, `COMPILER_TARGET_NAMESPACE`, and `ROUTE_PUBLISH_MODE=deferred`, but no broker envs, printed:
+    - `celery_ready_probe 200 {... 'status': 'ok'}`
+    - `celery_broker_url memory://`
+    - `celery_result_backend cache+memory://`
+    - `broker_endpoint None`
+- Why it is a bug:
+  - A production worker should not be marked ready when accepted jobs will be processed through a process-local ephemeral broker/backend that loses tasks and results on restart.
+  - The current readiness signal can give Kubernetes and operators a false green even though queue durability is gone.
+- Suggested validation:
+  - Start the worker with `MCP_RUNTIME_IMAGE`, `COMPILER_TARGET_NAMESPACE`, and `ROUTE_PUBLISH_MODE` set, but omit `REDIS_URL`, `CELERY_BROKER_URL`, and `CELERY_RESULT_BACKEND`.
+  - Call `/readyz` and observe it returns HTTP 200 with `status: ok`.
+  - Inspect the Celery app config and confirm the broker/backend resolved to `memory://` and `cache+memory://`.
+
+### BUG-357 — Setting `WORKFLOW_ENGINE=temporal` only changes worker status output; the entrypoint still always launches Celery
+
+- Severity: High
+- Files:
+  - `apps/compiler_worker/main.py`
+  - `apps/compiler_worker/entrypoint.py`
+  - `apps/compiler_worker/workflows/compile_workflow.py`
+- Summary:
+  - The worker health shell reads `WORKFLOW_ENGINE` and reports it back from `/readyz`.
+  - But the actual process supervisor ignores that setting entirely and always starts `celery -A apps.compiler_worker.celery_app:celery_app worker`.
+  - There is no Temporal-specific startup branch in `apps/compiler_worker`; the only Temporal mention in source is a future-facing docstring in the workflow core plus a status test.
+  - Operators can therefore configure `WORKFLOW_ENGINE=temporal`, see `/readyz` report `"workflow_engine": "temporal"`, and still be running a Celery worker.
+- Evidence:
+  - `apps/compiler_worker/main.py` line 23 sets `app.state.workflow_engine = os.getenv("WORKFLOW_ENGINE", "celery")`, and `/readyz` returns that field unchanged.
+  - `apps/compiler_worker/entrypoint.py` lines 31-50 hard-code `_build_celery_command()` and lines 136-165 always launch that Celery worker before the HTTP shell; the file contains no `WORKFLOW_ENGINE` branch.
+  - Repository search under `apps/compiler_worker` found no Temporal runtime implementation besides `tests/test_main.py` and the `compile_workflow.py` comment describing the workflow core as suitable for “future Temporal wrappers.”
+  - A local probe with `WORKFLOW_ENGINE=temporal`, `MCP_RUNTIME_IMAGE`, `COMPILER_TARGET_NAMESPACE`, and `ROUTE_PUBLISH_MODE=deferred` printed:
+    - `temporal_ready_probe 200 {... 'workflow_engine': 'temporal', 'status': 'ok'}`
+    - `temporal_celery_command [..., '-m', 'celery', '-A', 'apps.compiler_worker.celery_app:celery_app', 'worker', ...]`
+- Why it is a bug:
+  - The worker exposes `WORKFLOW_ENGINE` as if alternate engines are supported, but the actual supervisor path only knows how to run Celery.
+  - This creates a false-ready/false-configured state where operators believe they selected Temporal even though the worker will still run the Celery stack.
+- Suggested validation:
+  - Set `WORKFLOW_ENGINE=temporal` and start the compiler worker.
+  - Call `/readyz` and observe it reports `workflow_engine: temporal`.
+  - Inspect the launched subprocesses or the command builder and confirm the entrypoint still starts Celery with no Temporal branch.
+
+### BUG-358 — Compiler worker `/readyz` accepts unsupported `ROUTE_PUBLISH_MODE` values as healthy even though production route resolution will crash later
+
+- Severity: High
+- Files:
+  - `apps/compiler_worker/main.py`
+  - `apps/compiler_worker/activities/production.py`
+- Summary:
+  - `/readyz` only checks whether `route_publish_mode` is present, not whether it is one of the supported modes.
+  - The production activity resolver supports only `deferred` and `access-control`; any other non-empty string raises `RuntimeError("Unsupported ROUTE_PUBLISH_MODE: ...")`.
+  - A worker can therefore be marked ready with an invalid publication mode even though route publication will fail as soon as a compilation reaches that path.
+- Evidence:
+  - `apps/compiler_worker/main.py` lines 48-63 include `route_publish_mode` in the required key set and treat any non-`None` value as satisfying readiness.
+  - `apps/compiler_worker/activities/production.py` lines 199-213 resolve publishers only for `deferred` and `access-control`, then raise `RuntimeError(f"Unsupported ROUTE_PUBLISH_MODE: {mode}.")` for any other value.
+  - A local probe with `WORKFLOW_ENGINE=celery`, `MCP_RUNTIME_IMAGE`, `COMPILER_TARGET_NAMESPACE`, and `ROUTE_PUBLISH_MODE=bogus-mode` printed:
+    - `ready_probe 200 {... 'route_publish_mode': 'bogus-mode', 'status': 'ok'}`
+    - `RuntimeError Unsupported ROUTE_PUBLISH_MODE: bogus-mode.`
+- Why it is a bug:
+  - Readiness should reject configuration that the main production workflow cannot execute.
+  - The current implementation can declare the pod healthy even though every route-publication path will fail on first use.
+- Suggested validation:
+  - Start the worker with `ROUTE_PUBLISH_MODE=bogus-mode` plus the other currently required readiness env vars.
+  - Call `/readyz` and observe it still returns HTTP 200 with `status: ok`.
+  - Then invoke the route publisher resolution path and observe `RuntimeError: Unsupported ROUTE_PUBLISH_MODE: bogus-mode.`
+
+
+### BUG-359 — Helm marks compiler-api Ready from `/healthz`, but the service exposes no real readiness gate
+
+- Severity: High
+- Files:
+  - `deploy/helm/tool-compiler/templates/apps.yaml`
+  - `apps/compiler_api/main.py`
+  - `apps/compiler_api/tests/test_init_main_uncovered.py`
+- Summary:
+  - The compiler API only exposes `/healthz`; it does not implement `/readyz` or any dependency-aware readiness check.
+  - The Helm chart uses `/healthz` for startup, readiness, and liveness probes.
+  - `/healthz` always returns `{"status": "ok"}` without checking database connectivity or any dispatcher/route-publisher dependency.
+- Evidence:
+  - On `main`, `apps/compiler_api/main.py` lines 37-51 configure the database, dispatcher, and route publisher, but lines 67-69 define `/healthz` as an unconditional `{"status": "ok"}` response and there is no `/readyz` route.
+  - On `main`, `apps/compiler_api/tests/test_init_main_uncovered.py` lines 60-70 explicitly assert that `/healthz` always returns HTTP 200 with `{"status": "ok"}`.
+  - On `main`, `deploy/helm/tool-compiler/templates/apps.yaml` lines 67-79 configure the compiler-api `startupProbe`, `readinessProbe`, and `livenessProbe` to all call `/healthz`.
+  - Local probe from this scan using `create_app(database_url="postgresql+asyncpg://bad:bad@127.0.0.1:1/missing")` with `ACCESS_CONTROL_JWT_SECRET=test-secret` printed:
+    - `healthz 200 {"status": "ok"}`
+    - `readyz 404`
+- Why it is a bug:
+  - Kubernetes can mark compiler-api Ready even when there is no dependency-aware readiness endpoint and the configured database URL is unusable.
+  - That means traffic can be routed to a process that is merely alive enough to answer `/healthz`, but has not proven it can serve stateful compilation and artifact requests safely.
+- Suggested validation:
+  - Start compiler-api with a bad `DATABASE_URL` but a valid `ACCESS_CONTROL_JWT_SECRET`.
+  - Observe that `/healthz` still returns HTTP 200, `/readyz` is missing, and the Helm readiness probe still passes because it only checks `/healthz`.
+
+### BUG-360 — Compilation requests accept both `source_url` and `source_content`, then silently compile the inline payload while preserving the URL as provenance metadata
+
+- Severity: High
+- Files:
+  - `apps/compiler_api/models.py`
+  - `apps/compiler_worker/activities/production.py`
+  - `libs/extractors/base.py`
+  - `libs/extractors/openapi.py`
+- Summary:
+  - The compiler API validates only that at least one source is present; it does not reject requests that provide both `source_url` and `source_content`.
+  - The worker forwards both into `SourceConfig` unchanged.
+  - At least the OpenAPI extractor prefers inline `file_content` over the remote URL, but still writes `source.url` into `ServiceIR.source_url`.
+- Evidence:
+  - On `main`, `apps/compiler_api/models.py` lines 37-41 reject only the case where both fields are absent, and lines 46-49 forward both `source_url` and `source_content` into the workflow request unchanged.
+  - On `main`, `libs/extractors/base.py` lines 25-27 require only that one of `url`, `file_path`, or `file_content` be present; simultaneous values are allowed.
+  - On `main`, `apps/compiler_worker/activities/production.py` lines 1289-1293 build `SourceConfig(url=context.request.source_url, file_content=context.request.source_content, ...)`, so dual-source requests reach extractors intact.
+  - On `main`, `libs/extractors/openapi.py` lines 142-148 prefer `file_content` before `file_path` and `url`, while lines 127-129 still set `ServiceIR(source_url=source.url, source_hash=...)`.
+  - Local probe from this scan created `CompilationCreateRequest(source_url="https://example.com/remote-spec.yaml", source_content=<inline OpenAPI titled "Inline Billing API">)` and printed:
+    - `accepted_both https://example.com/remote-spec.yaml True`
+    - `{"service_name": "inline-billing-api", "source_url": "https://example.com/remote-spec.yaml"}`
+- Why it is a bug:
+  - The system can compile one artifact while recording a different source location as its provenance, so audit logs, retries, and operator debugging no longer describe what was actually compiled.
+  - Because extractor precedence is implementation-defined, the same dual-source request can resolve differently across protocols instead of failing fast as an invalid contract.
+- Suggested validation:
+  - Submit a compilation whose `source_url` points at one spec and whose `source_content` contains a different inline spec.
+  - Observe that extraction uses the inline content, while persisted job/audit metadata still points at the remote URL.
+
+### BUG-361 — Extract computes the canonical `source_hash`, but compilation jobs keep the request hash and replay that stale value
+
+- Severity: Medium
+- Files:
+  - `apps/compiler_worker/activities/production.py`
+  - `apps/compiler_worker/workflows/compile_workflow.py`
+  - `apps/compiler_worker/repository.py`
+  - `apps/compiler_api/routes/compilations.py`
+- Summary:
+  - The extract stage computes `service_ir.source_hash` from the actual extracted source and places it into the workflow payload.
+  - But job persistence never writes that canonical hash back to `CompilationJob.source_hash`; it only stores the original request value and the checkpoint payload.
+  - API responses and retry requests keep reading the stale job-column hash instead of the extracted hash.
+- Evidence:
+  - On `main`, `apps/compiler_worker/activities/production.py` lines 945-950 add `"source_hash": service_ir.source_hash` to the stage `context_updates`.
+  - On `main`, `apps/compiler_worker/workflows/compile_workflow.py` lines 253-265 merge those context updates into `context.payload` and pass the payload to `update_checkpoint(...)`.
+  - On `main`, `apps/compiler_worker/repository.py` lines 47-50 create jobs with `source_hash=request.source_hash`, lines 203-210 update only `job.options` during checkpoint persistence, and lines 231-235 serialize `CompilationJobRecord.source_hash` straight from `job.source_hash`.
+  - On `main`, `apps/compiler_api/routes/compilations.py` lines 213-217 rebuild retry requests from `original.source_hash`, so retries inherit the stale job-level value.
+  - Local probe from this scan built a `CompilationJob(source_hash="request-hash")`, stored a checkpoint payload containing `source_hash="extracted-hash"`, converted it through `_to_job_record()`, and printed:
+    - `{"record_source_hash": "request-hash", "checkpoint_source_hash": "extracted-hash"}`
+- Why it is a bug:
+  - The API and Web UI can display a hash that never matched the artifact actually extracted and compiled.
+  - Retry/replay paths propagate stale or user-supplied hashes instead of the canonical extracted hash, which breaks provenance, cache/debug assumptions, and source-change reasoning.
+- Suggested validation:
+  - Start a compilation with a bogus or missing `source_hash` and let extract complete successfully.
+  - Compare the persisted checkpoint payload with `GET /compilations/{job_id}` or a retry request: the checkpoint contains the extracted hash, but the job response and replay request still use the stale column value.
+
+### BUG-362 — Compiler worker `/readyz` checks raw env vars instead of effective production defaults, so it reports `not_ready` for valid deferred/default configs
+
+- Severity: Medium
+- Files:
+  - `apps/compiler_worker/main.py`
+  - `apps/compiler_worker/activities/production.py`
+- Summary:
+  - The worker readiness shell reads `MCP_RUNTIME_IMAGE`, `COMPILER_TARGET_NAMESPACE`, and `ACCESS_CONTROL_URL` straight from the environment and marks any missing raw env as `not_ready`.
+  - But the actual production settings layer does not require that exact env shape:
+    - `runtime_image` falls back to `COMPILER_RUNTIME_IMAGE` or the built-in default image.
+    - `namespace` falls back to the service-account namespace or `"default"`.
+    - `access_control_url` is only relevant when `ROUTE_PUBLISH_MODE=access-control`; deferred mode works with `None`.
+  - As a result, `/readyz` can report a broken worker even when the worker's effective execution settings are valid.
+- Evidence:
+  - On `main`, `apps/compiler_worker/main.py` lines 28-31 set `runtime_image`, `target_namespace`, `route_publish_mode`, and `access_control_url` directly from `os.getenv(...)`, and lines 39-52 then treat every `None` value in that dict as a readiness failure.
+  - On `main`, `apps/compiler_worker/activities/production.py` lines 138-145 derive `namespace` from `COMPILER_TARGET_NAMESPACE` or the service-account namespace or `"default"`, and derive `runtime_image` from `MCP_RUNTIME_IMAGE` or `COMPILER_RUNTIME_IMAGE` or `_DEFAULT_RUNTIME_IMAGE`.
+  - On `main`, `apps/compiler_worker/activities/production.py` line 153 defaults `route_publish_mode` to `deferred`, while `access_control_url` remains optional unless the code later resolves the access-control publisher path.
+  - Local probe from this scan loaded the exact `main` versions of both modules with `ROUTE_PUBLISH_MODE=deferred` and `MCP_RUNTIME_IMAGE`, `COMPILER_RUNTIME_IMAGE`, `COMPILER_TARGET_NAMESPACE`, and `ACCESS_CONTROL_URL` unset, and printed:
+    - `main_readyz= {'workflow_engine': 'celery', 'compilation_queue': 'compiler.jobs', 'task_name': 'compiler_worker.execute_compilation', 'runtime_image': None, 'target_namespace': None, 'route_publish_mode': 'deferred', 'access_control_url': None, 'status': 'not_ready', 'missing': ['runtime_image', 'target_namespace', 'access_control_url']}`
+    - `main_effective_settings= ProductionActivitySettings(runtime_image='tool-compiler/mcp-runtime:latest', namespace='default', image_pull_policy='IfNotPresent', route_publish_mode='deferred', access_control_url=None, proxy_timeout_seconds=10.0, route_publish_timeout_seconds=10.0, runtime_startup_timeout_seconds=10.0, runtime_startup_poll_seconds=1.0)`
+- Why it is a bug:
+  - The readiness endpoint is supposed to describe whether the worker can actually run its production pipeline, but here it disagrees with the settings object the worker itself uses later.
+  - That gives operators a false negative signal in default/deferred deployments, and if `BUG-354` is fixed by simply honoring the `/readyz` body with non-200 responses, the current readiness logic would start blocking otherwise runnable worker pods.
+- Suggested validation:
+  - Start the worker with `ROUTE_PUBLISH_MODE=deferred` and leave `MCP_RUNTIME_IMAGE`, `COMPILER_RUNTIME_IMAGE`, `COMPILER_TARGET_NAMESPACE`, and `ACCESS_CONTROL_URL` unset.
+  - Compare `/readyz` with `ProductionActivitySettings.from_env()`.
+  - Observe that `/readyz` reports missing `runtime_image`, `target_namespace`, and `access_control_url`, while the effective settings still resolve to a default runtime image, default namespace, and no access-control requirement.
+
+### BUG-363 — Compilation detail “Artifacts” card is wired to a synthesized service ID, so real artifact metadata can never appear
+
+- Severity: Medium
+- Files:
+  - `apps/web-ui/src/app/(dashboard)/compilations/[jobId]/page.tsx`
+  - `apps/web-ui/src/lib/api-client.ts`
+  - `apps/web-ui/src/types/api.ts`
+  - `apps/compiler_api/models.py`
+- Summary:
+  - The compilation detail page advertises an “Artifacts” card with `IR ID`, `Image Digest`, and `Deployment ID`.
+  - But the backend `CompilationJobResponse` model has no `artifacts` field at all.
+  - The frontend therefore fabricates `job.artifacts` from `service_id`/`service_name`, and only ever sets `artifacts.ir_id`; `image_digest` and `deployment_id` have no source in the API contract and can never render.
+- Evidence:
+  - `apps/compiler_api/models.py` lines 58-95 define `CompilationJobResponse` with `service_id`, `service_name`, etc., but no `artifacts` field.
+  - `apps/web-ui/src/lib/api-client.ts` defines `RawCompilationJobResponse` at lines 35-47 with no `artifacts`, `image_digest`, or `deployment_id`.
+  - The same file's `normalizeCompilationJob(...)` at lines 360-383 computes `const serviceId = raw.service_id ?? raw.service_name ?? undefined;` and then synthesizes `artifacts: serviceId ? { ir_id: serviceId } : undefined`.
+  - `apps/web-ui/src/types/api.ts` declares `CompilationJobResponse.artifacts` with `ir_id`, `image_digest`, and `deployment_id`, and `page.tsx` lines 302-345 renders all three fields from that object.
+  - Because the normalizer only populates `{ ir_id: serviceId }`, the `Image Digest` and `Deployment ID` branches are dead for every current backend response, and even the displayed “IR ID” is just the service key.
+- Why it is a bug:
+  - The UI promises artifact-level metadata that the backend/job contract cannot currently supply.
+  - Successful compilations can never surface real image/deployment metadata in this view, and the single populated field is mislabeled because it is synthesized from the service identifier rather than a true artifact ID.
+- Suggested validation:
+  - Open a successful compilation in the dashboard and inspect the network response for `GET /api/v1/compilations/{jobId}`.
+  - Observe that the payload has no `artifacts` object.
+  - Then inspect the rendered “Artifacts” card and note that it can only show the synthesized `IR ID` link; `Image Digest` and `Deployment ID` never appear.
+
+### BUG-364 — Compilation event SSE appends the full auth token to the URL query string, exposing JWTs/PATs to browser and proxy logs
+
+- Severity: High
+- Files:
+  - `apps/web-ui/src/lib/api-client.ts`
+  - `apps/compiler_api/routes/compilations.py`
+  - `apps/access_control/security.py`
+- Summary:
+  - The web UI creates compilation event streams with `new EventSource(...)` and appends the current auth token as `?token=...` in the URL.
+  - The backend SSE auth dependency explicitly accepts the token from the query string.
+  - That means long-lived JWTs/PATs are propagated in request URLs instead of headers, making them visible to browser tooling/history and to intermediary logs.
+- Evidence:
+  - `apps/web-ui/src/lib/api-client.ts` lines 246-250 build `authUrl = token ? \`${url}${sep}token=${encodeURIComponent(token)}\` : url;` and pass that to `new EventSource(authUrl)`.
+  - `apps/web-ui/src/lib/api-client.ts` lines 546-549 use that helper for `GET /api/v1/compilations/{jobId}/events`.
+  - `apps/compiler_api/routes/compilations.py` line 483 protects the SSE endpoint with `Depends(require_sse_caller)`.
+  - `apps/access_control/security.py` lines 49-56 read `request.query_params.get("token", "")` before falling back to the `Authorization` header.
+- Why it is a bug:
+  - Query-string credentials are routinely captured by browser history, devtools/network inspectors, reverse proxies, access logs, and other URL-based telemetry.
+  - Using a PAT or JWT in the SSE URL widens the exposure surface for bearer credentials compared with header-based auth.
+- Suggested validation:
+  - Sign in to the web UI and open a compilation detail page that starts the SSE event stream.
+  - Inspect the browser network panel or any reverse-proxy/access logs.
+  - Observe that the full bearer token appears in the `/api/v1/compilations/{jobId}/events?token=...` request URL.
+
+
+### BUG-365 — Compiler API control-plane routes authenticate tokens but never authorize tenant/environment access, so any valid caller can enumerate global jobs and target arbitrary scoped records
+
+- Severity: Critical
+- Files:
+  - `apps/access_control/security.py`
+  - `apps/compiler_api/routes/compilations.py`
+  - `apps/compiler_api/routes/services.py`
+  - `apps/compiler_api/routes/artifacts.py`
+  - `apps/compiler_api/repository.py`
+  - `apps/compiler_api/tests/test_route_auth.py`
+  - `apps/compiler_api/tests/test_routes_services.py`
+  - `apps/compiler_api/tests/test_routes_artifacts.py`
+- Summary:
+  - `require_authenticated_caller()` only proves that a token is valid; it does not enforce tenant, environment, or role-based access to compiler-api data.
+  - Several compiler-api handlers either discard the caller entirely or use the caller only for audit logging, while trusting user-supplied `tenant` and `environment` query parameters.
+  - Compilation job listing and lookup are worse: they have no scope parameters at all and read directly from the global job table.
+- Evidence:
+  - On `main`, `apps/access_control/security.py` lines 22-40 extract a bearer token and return `AuthnService.validate_token(...)`; there is no tenant/environment/role authorization logic in that dependency.
+  - On `main`, `apps/compiler_api/routes/compilations.py` lines 315-340 define `list_compilations()` and `get_compilation()` with authentication dependencies only; the handlers accept no caller object, and lines 323-337 call `repository.list_jobs()` / `repository.get_job(job_id)` directly.
+  - On `main`, `apps/compiler_api/routes/services.py` lines 24-30 and 38-50 forward raw `tenant` / `environment` query parameters into the repository without consulting caller claims.
+  - On `main`, `apps/compiler_api/routes/artifacts.py` lines 89-145 do the same for list/get routes, and lines 128-180 keep using caller identity only for audit log attribution while still trusting caller-supplied scope values for update/delete paths.
+  - On `main`, `apps/compiler_api/repository.py` lines 131-151 implement `get_job()` by UUID only and `list_jobs()` as an unrestricted `select(CompilationJob).order_by(...)`; there is no tenant/environment filter path for compilation jobs.
+  - Local reflection probe from this scan printed route signatures showing no authorization inputs beyond raw query params: `list_compilations(session=...)`, `get_compilation(job_id, session=...)`, `list_services(tenant=None, environment=None, session=...)`, `list_artifact_versions(service_id, tenant=None, environment=None, session=...)`.
+  - Test coverage currently reinforces authentication-only behavior: `apps/compiler_api/tests/test_route_auth.py` lines 24-64 assert only that routes depend on `require_authenticated_caller`, while `apps/compiler_api/tests/test_routes_services.py` lines 25-35 and `apps/compiler_api/tests/test_routes_artifacts.py` lines 116-152 assert that user-supplied `tenant` / `environment` values are forwarded unchanged into repository queries.
+- Why it is a bug:
+  - Any valid token can enumerate global compilation jobs, retrieve arbitrary job UUIDs, and read or mutate service/artifact records outside its intended tenant or environment by choosing the scope in the request.
+  - This collapses multi-tenant control-plane isolation into a client-honesty convention rather than an enforced authorization boundary.
+- Suggested validation:
+  - Authenticate as a low-privilege caller from tenant A.
+  - Call `GET /api/v1/compilations` and observe that no tenant/environment scoping is required.
+  - Then call service/artifact endpoints with `tenant=team-b` / `environment=prod` and observe that the backend accepts those filters without checking caller claims or roles.
+
+### BUG-366 — Review workflow transitions remain role-blind after auth hardening, so any authenticated user can approve, publish, or deploy services
+
+- Severity: High
+- Files:
+  - `apps/compiler_api/routes/workflows.py`
+  - `apps/access_control/security.py`
+  - `apps/compiler_api/tests/test_routes_workflows.py`
+- Summary:
+  - Workflow endpoints now require authentication, but transition authorization is still based only on the current workflow state.
+  - The route never inspects caller roles, reviewer identity, or admin status before allowing transitions such as `in_review -> approved`, `approved -> published`, and `published -> deployed`.
+  - The shared security layer already provides role helpers like `caller_is_admin()`, but compiler-api workflow routes never use them.
+- Evidence:
+  - On `main`, `apps/compiler_api/routes/workflows.py` lines 200-245 accept `caller`, compute `allowed = VALID_TRANSITIONS.get(record.state, [])`, and then immediately update the workflow when `payload.to` is in that state-machine list; there is no role or ownership check.
+  - On `main`, `apps/access_control/security.py` lines 82-111 define `caller_roles()` and `caller_is_admin()`, but repository search under `apps/compiler_api` finds no usages of `caller_is_admin` or `require_self_or_admin`.
+  - Local probe from this scan patched the DB helpers, passed a token principal with `claims={"roles": ["viewer"]}`, called `transition_workflow(..., TransitionRequest(to="approved", ...))`, and printed: `{"state": "approved", "actor": "viewer-user", "roles": ["viewer"]}`.
+  - Current unit tests reflect the same gap: `apps/compiler_api/tests/test_routes_workflows.py` lines 23-32 build `_caller()` with only `claims={"sub": subject}`, and the workflow tests exercise successful transitions and history writes without any `403` / role-gating coverage.
+- Why it is a bug:
+  - Any authenticated user who can reach the compiler API can move a service through approval, publication, and deployment states even if they are only a viewer or belong to the wrong operational role.
+  - That undermines the review workflow as a governance control, because state integrity is enforced but reviewer authorization is not.
+- Suggested validation:
+  - Authenticate with a non-admin token such as a caller whose claims contain only `roles=["viewer"]`.
+  - Invoke `POST /api/v1/workflows/{service_id}/v/{version_number}/transition` from `in_review` to `approved`, or from `approved` to `published`.
+  - Observe that the transition succeeds and records the low-privilege caller in workflow history instead of returning `403 Forbidden`.
+
+### BUG-367 — Compiler worker rebuilds a fresh SQLAlchemy engine for every Celery task, so the executor's engine cache never actually caches anything
+
+- Severity: Medium
+- Files:
+  - `apps/compiler_worker/celery_app.py`
+  - `apps/compiler_worker/executor.py`
+- Summary:
+  - The Celery task path resolves the default executor on every compilation task.
+  - The default resolver returns a brand-new `DatabaseWorkflowCompilationExecutor` object each time.
+  - That executor's `_engine_cache` is instance-local, so it only caches the engine inside that one short-lived executor object.
+  - The result is one new SQLAlchemy async engine / pool per task instead of a process-reused engine.
+- Evidence:
+  - On `main`, `apps/compiler_worker/celery_app.py` lines 84-86 run `executor = resolve_compilation_executor(); await executor.execute(request)` for every queued task.
+  - On `main`, `apps/compiler_worker/executor.py` lines 45-58 define `DatabaseWorkflowCompilationExecutor._engine_cache` and lazily populate it with `create_async_engine(...)`, but only on that executor instance.
+  - On `main`, `apps/compiler_worker/executor.py` lines 88-96 show `resolve_compilation_executor()` returning a fresh `DatabaseWorkflowCompilationExecutor(database_url=database_url)` whenever no override is configured; there is no process-global executor cache and no explicit engine dispose path in this module.
+  - Local probe from this scan loading the exact `main` version of `apps/compiler_worker/executor.py` with `DATABASE_URL=postgresql+asyncpg://u:p@127.0.0.1:5432/db` printed:
+    - `main_same_executor_object= False`
+    - `main_same_engine_object= False`
+    - distinct engine object IDs for the first and second `resolve_compilation_executor()` calls
+- Why it is a bug:
+  - The code advertises an engine cache, but the cache is defeated by constructing a brand-new executor on every task.
+  - Under steady worker load this creates unnecessary engine/pool churn, extra connection handshakes, and cleanup that depends on GC rather than an explicit lifecycle.
+  - That can amplify database connection pressure and latency in the hot path of compilation execution.
+- Suggested validation:
+  - Run a worker process that executes many compilation tasks in sequence.
+  - Instrument `resolve_compilation_executor()` / `_get_engine()` or database connection counts.
+  - Observe that each task creates a new executor and a new engine/pool instead of reusing a process-scoped engine.
+
+### BUG-368 — Replaying the same queued compilation payload reruns the full workflow for the same `job_id`, duplicating events and stage side effects
+
+- Severity: High
+- Files:
+  - `apps/compiler_worker/celery_app.py`
+  - `apps/compiler_worker/workflows/compile_workflow.py`
+  - `apps/compiler_worker/repository.py`
+- Summary:
+  - The worker store tries to be idempotent at job creation time: if `request.job_id` already exists, `create_job(...)` just returns the existing ID.
+  - But the workflow core does not treat that as "already executing/already executed"; it immediately appends `job.created`, `job.started`, and runs every stage again.
+  - Because queued requests include the persisted `job_id`, a duplicate delivery of the same task payload can rerun deploy/route/register side effects for the same logical job instead of being short-circuited.
+- Evidence:
+  - On `main`, `apps/compiler_worker/celery_app.py` lines 67-86 rebuild `CompilationRequest` from the queued payload and pass it straight to `_execute_compilation(request)`, preserving any existing `job_id`.
+  - On `main`, `apps/compiler_worker/repository.py` lines 36-42 and 55-62 return the existing job ID when `request.job_id` / `job_id` is already present in the database.
+  - On `main`, `apps/compiler_worker/workflows/compile_workflow.py` lines 139-170 call `self._store.create_job(...)`, then unconditionally append `JOB_CREATED` / `JOB_STARTED`, mark the job running, and begin stage execution.
+  - Local probe from this scan loading the exact `main` version of `apps/compiler_worker/workflows/compile_workflow.py` and running `workflow.run(request)` twice with the same fixed `request.job_id` printed:
+    - two `job.created` events for the same UUID
+    - two `job.started` events for the same UUID
+    - `stage_call_count= 18` for the 9-stage default pipeline
+    - the second run starting again at `detect`
+- Why it is a bug:
+  - Queue delivery is not guaranteed to be exactly-once. A duplicate delivery or operator replay of the same payload should not redeploy, reroute, and reregister the same job.
+  - As written, the workflow duplicates side effects and corrupts the event history for one logical job instead of treating an already-known `job_id` as terminal or already in progress.
+- Suggested validation:
+  - Submit a compilation and capture the exact queued payload (including `job_id`).
+  - Invoke the worker task twice with that same payload, or otherwise replay the same `CompilationRequest`.
+  - Observe that the second execution appends a second `job.created` / `job.started` sequence and reruns the stage pipeline for the same job UUID.

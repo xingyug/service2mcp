@@ -182,12 +182,21 @@ class TestUpdateArtifactVersion:
             mock_repo.update_version.return_value = mock_response
 
             result = await update_artifact_version(
-                "test-service", 1, mock_payload, session=mock_session, caller=caller,
+                "test-service",
+                1,
+                mock_payload,
+                session=mock_session,
+                caller=caller,
             )
 
             assert result == mock_response
             mock_repo.update_version.assert_called_once_with(
-                "test-service", 1, mock_payload, tenant=None, environment=None, commit=False,
+                "test-service",
+                1,
+                mock_payload,
+                tenant=None,
+                environment=None,
+                commit=False,
             )
             _mock_audit_log.return_value.append_entry.assert_called_once()
             assert _mock_audit_log.return_value.append_entry.call_args.kwargs["commit"] is False
@@ -206,7 +215,11 @@ class TestUpdateArtifactVersion:
 
             with pytest.raises(HTTPException) as exc_info:
                 await update_artifact_version(
-                    "test-service", 1, mock_payload, session=mock_session, caller=caller,
+                    "test-service",
+                    1,
+                    mock_payload,
+                    session=mock_session,
+                    caller=caller,
                 )
 
             assert exc_info.value.status_code == 404
@@ -240,7 +253,11 @@ class TestDeleteArtifactVersion:
 
             assert response.status_code == 204
             mock_repo.delete_version.assert_called_once_with(
-                "test-service", 1, tenant=None, environment=None, commit=False,
+                "test-service",
+                1,
+                tenant=None,
+                environment=None,
+                commit=False,
             )
             route_publisher.delete.assert_awaited_once()
             mock_session.commit.assert_awaited_once()
@@ -259,8 +276,11 @@ class TestDeleteArtifactVersion:
 
             with pytest.raises(HTTPException) as exc_info:
                 await delete_artifact_version(
-                    "test-service", 1,
-                    session=mock_session, route_publisher=route_publisher, caller=caller,
+                    "test-service",
+                    1,
+                    session=mock_session,
+                    route_publisher=route_publisher,
+                    caller=caller,
                 )
 
             assert exc_info.value.status_code == 404
@@ -326,8 +346,11 @@ class TestDeleteArtifactVersion:
 
             with pytest.raises(HTTPException) as exc_info:
                 await delete_artifact_version(
-                    "test-service", 1,
-                    session=mock_session, route_publisher=route_publisher, caller=caller,
+                    "test-service",
+                    1,
+                    session=mock_session,
+                    route_publisher=route_publisher,
+                    caller=caller,
                 )
 
             assert exc_info.value.status_code == 502
@@ -342,14 +365,18 @@ class TestDeleteArtifactVersion:
         caller = _caller()
         deleted_version = MagicMock(
             is_active=False,
-            route_config={"service_id": "test-service", "version_route": {"route_id": "test-service-v1"}},
+            route_config={
+                "service_id": "test-service",
+                "version_route": {"route_id": "test-service-v1"},
+            },
         )
 
-        with patch(
-            "apps.compiler_api.routes.artifacts.ArtifactRegistryRepository"
-        ) as mock_repo_class, patch(
-            "apps.compiler_api.routes.artifacts.AuditLogService"
-        ) as mock_audit_cls:
+        with (
+            patch(
+                "apps.compiler_api.routes.artifacts.ArtifactRegistryRepository"
+            ) as mock_repo_class,
+            patch("apps.compiler_api.routes.artifacts.AuditLogService") as mock_audit_cls,
+        ):
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.get_version.return_value = deleted_version
@@ -369,7 +396,11 @@ class TestDeleteArtifactVersion:
 
             assert exc_info.value.status_code == 502
             route_publisher.rollback.assert_awaited_once_with(
-                {"service_id": "test-service", "default_route": None, "version_route": {"route_id": "test-service-v1"}},
+                {
+                    "service_id": "test-service",
+                    "default_route": None,
+                    "version_route": {"route_id": "test-service-v1"},
+                },
                 {"test-service-v1": {"route_id": "test-service-v1"}},
             )
 
@@ -401,7 +432,11 @@ class TestActivateArtifactVersion:
 
             assert result == mock_response
             mock_repo.activate_version.assert_called_once_with(
-                "test-service", 1, tenant=None, environment=None, commit=False,
+                "test-service",
+                1,
+                tenant=None,
+                environment=None,
+                commit=False,
             )
             route_publisher.sync.assert_awaited_once_with(mock_response.route_config)
             mock_session.commit.assert_awaited_once()
@@ -420,8 +455,11 @@ class TestActivateArtifactVersion:
 
             with pytest.raises(HTTPException) as exc_info:
                 await activate_artifact_version(
-                    "test-service", 1,
-                    session=mock_session, route_publisher=route_publisher, caller=caller,
+                    "test-service",
+                    1,
+                    session=mock_session,
+                    route_publisher=route_publisher,
+                    caller=caller,
                 )
 
             assert exc_info.value.status_code == 404
@@ -445,8 +483,11 @@ class TestActivateArtifactVersion:
 
             with pytest.raises(HTTPException) as exc_info:
                 await activate_artifact_version(
-                    "test-service", 1,
-                    session=mock_session, route_publisher=route_publisher, caller=caller,
+                    "test-service",
+                    1,
+                    session=mock_session,
+                    route_publisher=route_publisher,
+                    caller=caller,
                 )
 
             assert exc_info.value.status_code == 502
@@ -461,14 +502,18 @@ class TestActivateArtifactVersion:
         caller = _caller()
         mock_response = MagicMock(
             spec=ArtifactVersionResponse,
-            route_config={"service_id": "test-service", "default_route": {"route_id": "test-service-active"}},
+            route_config={
+                "service_id": "test-service",
+                "default_route": {"route_id": "test-service-active"},
+            },
         )
 
-        with patch(
-            "apps.compiler_api.routes.artifacts.ArtifactRegistryRepository"
-        ) as mock_repo_class, patch(
-            "apps.compiler_api.routes.artifacts.AuditLogService"
-        ) as mock_audit_cls:
+        with (
+            patch(
+                "apps.compiler_api.routes.artifacts.ArtifactRegistryRepository"
+            ) as mock_repo_class,
+            patch("apps.compiler_api.routes.artifacts.AuditLogService") as mock_audit_cls,
+        ):
             mock_repo = AsyncMock()
             mock_repo_class.return_value = mock_repo
             mock_repo.activate_version.return_value = mock_response
