@@ -12,10 +12,6 @@ from sqlalchemy import Select, Subquery, and_, delete, desc, func, select, updat
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.elements import ColumnElement
-<<<<<<< HEAD
-from sqlalchemy.sql.selectable import Subquery
-=======
->>>>>>> 3d38424 (Q-004: type annotation completion — mypy 7 errors → 0, all return types added)
 
 from apps.compiler_api.models import (
     CompilationEventResponse,
@@ -333,11 +329,7 @@ class ServiceCatalogRepository:
         )
 
     @staticmethod
-<<<<<<< HEAD
     def _service_stats_join_condition(stats: Subquery) -> ColumnElement[bool]:
-=======
-    def _service_stats_join_condition(stats: Any) -> ColumnElement[bool]:
->>>>>>> 3d38424 (Q-004: type annotation completion — mypy 7 errors → 0, all return types added)
         return and_(
             ServiceVersion.service_id == stats.c.service_id,
             ServiceVersion.tenant.is_not_distinct_from(stats.c.tenant),

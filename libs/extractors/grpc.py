@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -9,7 +10,6 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import grpc
-import httpx
 from google.protobuf.descriptor import (
     Descriptor,
     EnumDescriptor,

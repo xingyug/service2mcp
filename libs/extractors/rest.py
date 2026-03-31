@@ -36,14 +36,18 @@ from libs.extractors.rest_probing import (  # noqa: F401
     _HTML_LINK_PATTERN,
     _JSON_SERVER_MARKERS,
     _LINK_LIKE_JSON_KEYS,
+    _MAX_RETRY_ATTEMPTS,
     _PATH_PARAM_PATTERN,
     _STATIC_ASSET_EXTENSIONS,
     _SUB_RESOURCE_HINTS,
     _SUPPORTED_METHODS,
     DiscoveredEndpoint,
+    _bootstrap_collection_registry,
     _bootstrap_current_json_entrypoint,
     _bootstrap_json_server,
+    _collection_registry_candidates,
     _common_sub_resources,
+    _directus_collection_candidates,
     _extract_candidate_paths,
     _extract_collection_items,
     _extract_from_html,
@@ -51,6 +55,7 @@ from libs.extractors.rest_probing import (  # noqa: F401
     _head_probe,
     _infer_json_server_relations,
     _infer_sub_resources,
+    _int_like,
     _is_link_like_json_key,
     _is_path_like,
     _is_static_asset_path,
@@ -65,13 +70,22 @@ from libs.extractors.rest_probing import (  # noqa: F401
     _normalize_candidate,
     _normalize_classification_path,
     _normalize_path,
+    _normalize_same_origin_candidate,
     _ObservedEndpoint,
+    _pagination_followup_urls,
+    _pagination_followups,
+    _pagination_state,
     _pluralize_resource_name,
+    _pocketbase_collection_candidates,
     _probe_allowed_methods,
     _probe_and_register,
     _register_endpoint,
+    _RegistryCollectionCandidate,
+    _request,
     _resource_param_name_from_path,
+    _retry_after_seconds,
     _sample_resource_id,
+    _set_query_param,
     _shared_query_suffix,
     _slugify,
     _walk_json_link_candidates,
@@ -144,7 +158,7 @@ class RESTExtractor:
         if not classified:
             raise ValueError(f"Classifier returned no REST operations for {source.url}")
 
-        base_path = _normalized_base_path(source.url)
+        base_path = _discovery_base_path(source.url, discovered_endpoints)
         path_param_defaults = _path_param_defaults_by_operation_path(
             discovered_endpoints,
             base_path=base_path,
@@ -170,13 +184,13 @@ class RESTExtractor:
             protocol="rest",
             service_name=_service_name_from_url(source),
             service_description=f"Discovered REST API at {source.url}",
-            base_url=_runtime_base_url(source.url),
+            base_url=_runtime_base_url(source.url, base_path=base_path),
             auth=AuthConfig(type=AuthType.none),
             operations=operations,
             metadata={
                 "discovered_paths": [endpoint.path for endpoint in discovered_endpoints],
                 "classifier": self._classifier.__class__.__name__,
-                "base_path": urlparse(source.url).path or "/",
+                "base_path": base_path or "/",
                 "discovery_entrypoint": source.url,
                 "llm_seed_mutation": self._llm_client is not None,
             },
@@ -205,7 +219,7 @@ class RESTExtractor:
             visited_pages.add(current_url)
 
             try:
-                response = self._client.get(current_url, headers=headers)
+                response = _request(self._client, "GET", current_url, headers=headers)
             except httpx.HTTPError:
                 continue
             if response.status_code >= 400:
@@ -228,6 +242,21 @@ class RESTExtractor:
                 observed=observed,
                 auth_headers=headers,
             )
+            for candidate in _bootstrap_collection_registry(
+                self._client,
+                current_url=current_url,
+                response=response,
+                observed=observed,
+            ):
+                if depth + 1 < self._max_pages and candidate not in visited_pages:
+                    queue.append((candidate, depth + 1))
+            for candidate in _pagination_followups(
+                self._client,
+                current_url=current_url,
+                response=response,
+            ):
+                if depth + 1 < self._max_pages and candidate not in visited_pages:
+                    queue.append((candidate, depth + 1))
 
             for path, source_name in _extract_candidate_paths(base_url, response):
                 candidate_url = urljoin(base_url, path)
@@ -510,8 +539,40 @@ def _normalized_base_path(url: str) -> str:
     return raw_path.rstrip("/")
 
 
-def _runtime_base_url(url: str) -> str:
-    return f"{_origin(url)}{_normalized_base_path(url)}"
+def _runtime_base_url(url: str, *, base_path: str | None = None) -> str:
+    resolved_base_path = _normalized_base_path(url) if base_path is None else base_path
+    return f"{_origin(url)}{resolved_base_path}"
+
+
+def _discovery_base_path(url: str, endpoints: list[DiscoveredEndpoint]) -> str:
+    entrypoint_path = _normalized_base_path(url)
+    if not entrypoint_path:
+        return ""
+    candidate_paths = [entrypoint_path] + [
+        _normalized_base_path(endpoint.path) for endpoint in endpoints
+    ]
+    return _common_path_prefix(candidate_paths)
+
+
+def _common_path_prefix(paths: list[str]) -> str:
+    normalized_paths = [
+        [segment for segment in path.split("/") if segment]
+        for path in paths
+        if path not in {"", "/"}
+    ]
+    if not normalized_paths:
+        return ""
+    prefix = normalized_paths[0]
+    for path_segments in normalized_paths[1:]:
+        shared: list[str] = []
+        for left, right in zip(prefix, path_segments, strict=False):
+            if left != right:
+                break
+            shared.append(left)
+        prefix = shared
+        if not prefix:
+            return ""
+    return f"/{'/'.join(prefix)}" if prefix else ""
 
 
 __all__ = [

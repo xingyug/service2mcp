@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
+import httpx
+
 from libs.extractors.base import SourceConfig
 from libs.extractors.utils import (
-    compute_content_hash,
     get_auth_headers,
     get_content,
 )

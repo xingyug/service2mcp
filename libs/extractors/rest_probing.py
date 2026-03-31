@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from html import unescape
@@ -94,10 +95,20 @@ _DEFAULT_SUB_RESOURCES = [
     "comments",
 ]
 
+_MAX_RETRY_ATTEMPTS = 3
+_DEFAULT_RETRY_AFTER_SECONDS = 1.0
+
 
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _RegistryCollectionCandidate:
+    collection_url: str
+    methods: tuple[str, ...]
+    source: str
 
 
 @dataclass(frozen=True)
@@ -728,6 +739,260 @@ def _bootstrap_current_json_entrypoint(
         source="json_entrypoint",
         auth_headers=auth_headers,
     )
+
+
+# ---------------------------------------------------------------------------
+# Collection registry discovery (Directus, PocketBase, etc.)
+# ---------------------------------------------------------------------------
+
+
+def _origin(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _bootstrap_collection_registry(
+    client: httpx.Client,
+    *,
+    current_url: str,
+    response: httpx.Response,
+    observed: dict[str, _ObservedEndpoint],
+) -> list[str]:
+    content_type = response.headers.get("content-type", "").lower()
+    if "json" not in content_type:
+        return []
+
+    try:
+        payload = response.json()
+    except Exception:
+        return []
+
+    candidate_urls: list[str] = []
+    for candidate in _collection_registry_candidates(current_url, payload):
+        normalized_path = _normalize_path(candidate.collection_url)
+        _register_endpoint(
+            observed,
+            path=normalized_path,
+            absolute_url=candidate.collection_url,
+            methods=set(candidate.methods),
+            source=candidate.source,
+            confidence=0.93,
+        )
+        candidate_urls.append(candidate.collection_url)
+    return candidate_urls
+
+
+def _collection_registry_candidates(
+    current_url: str,
+    payload: Any,
+) -> list[_RegistryCollectionCandidate]:
+    current_path = urlparse(current_url).path.rstrip("/")
+    if current_path.endswith("/api/collections"):
+        return _pocketbase_collection_candidates(current_url, payload)
+    if current_path.endswith("/collections"):
+        return _directus_collection_candidates(current_url, payload)
+    return []
+
+
+def _directus_collection_candidates(
+    current_url: str,
+    payload: Any,
+) -> list[_RegistryCollectionCandidate]:
+    collection_items = _extract_collection_items(payload)
+    if collection_items is None:
+        return []
+
+    current_path = urlparse(current_url).path.rstrip("/")
+    prefix = current_path[: -len("/collections")] if current_path.endswith("/collections") else ""
+    seen: set[str] = set()
+    candidates: list[_RegistryCollectionCandidate] = []
+    for item in collection_items:
+        if not isinstance(item, dict):
+            continue
+        collection_name = item.get("collection") or item.get("name")
+        if not isinstance(collection_name, str) or not collection_name.strip():
+            continue
+        if collection_name.startswith("directus_"):
+            continue
+        collection_path = f"{prefix}/items/{collection_name}".replace("//", "/")
+        collection_url = urljoin(_origin(current_url), collection_path)
+        if collection_url in seen:
+            continue
+        seen.add(collection_url)
+        candidates.append(
+            _RegistryCollectionCandidate(
+                collection_url=collection_url,
+                methods=("GET", "POST"),
+                source="collection_registry",
+            )
+        )
+    return candidates
+
+
+def _pocketbase_collection_candidates(
+    current_url: str,
+    payload: Any,
+) -> list[_RegistryCollectionCandidate]:
+    collection_items = _extract_collection_items(payload)
+    if collection_items is None:
+        return []
+
+    parsed_current = urlparse(current_url)
+    registry_root = parsed_current._replace(query="", fragment="").geturl().rstrip("/")
+    seen: set[str] = set()
+    candidates: list[_RegistryCollectionCandidate] = []
+    for item in collection_items:
+        if not isinstance(item, dict):
+            continue
+        collection_name = item.get("name")
+        if not isinstance(collection_name, str) or not collection_name.strip():
+            continue
+        collection_type = item.get("type")
+        if collection_name.startswith("_") or collection_type not in {None, "base", "view"}:
+            continue
+        collection_url = _join_relative_url(registry_root, f"{collection_name}/records")
+        if collection_url in seen:
+            continue
+        seen.add(collection_url)
+        candidates.append(
+            _RegistryCollectionCandidate(
+                collection_url=collection_url,
+                methods=("GET", "POST"),
+                source="collection_registry",
+            )
+        )
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# Pagination followup discovery
+# ---------------------------------------------------------------------------
+
+
+def _pagination_followups(
+    client: httpx.Client,
+    *,
+    current_url: str,
+    response: httpx.Response,
+) -> list[str]:
+    content_type = response.headers.get("content-type", "").lower()
+    if "json" not in content_type:
+        return []
+    try:
+        payload = response.json()
+    except Exception:
+        return []
+    return _pagination_followup_urls(current_url, payload)
+
+
+def _pagination_followup_urls(current_url: str, payload: Any) -> list[str]:
+    followups: set[str] = set()
+    if isinstance(payload, dict):
+        for key in ("@odata.nextLink", "next", "next_link", "nextLink", "next_url", "nextUrl"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                normalized = _normalize_same_origin_candidate(current_url, value)
+                if normalized is not None:
+                    followups.add(normalized)
+
+    pagination_state = _pagination_state(payload)
+    if pagination_state is not None:
+        current_page, total_pages, per_page = pagination_state
+        if current_page < total_pages:
+            next_page_url = _set_query_param(current_url, "page", current_page + 1)
+            if per_page is not None:
+                next_page_url = _set_query_param(next_page_url, "perPage", per_page)
+            followups.add(next_page_url)
+    return sorted(followups)
+
+
+def _pagination_state(payload: Any) -> tuple[int, int, int | None] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    candidates: list[dict[str, Any]] = [payload]
+    meta = payload.get("meta")
+    if isinstance(meta, dict):
+        candidates.append(meta)
+        pagination = meta.get("pagination")
+        if isinstance(pagination, dict):
+            candidates.append(pagination)
+    pagination = payload.get("pagination")
+    if isinstance(pagination, dict):
+        candidates.append(pagination)
+
+    for candidate in candidates:
+        current_page = _int_like(candidate.get("page"))
+        if current_page is None:
+            continue
+        per_page = _int_like(candidate.get("perPage")) or _int_like(candidate.get("per_page"))
+        total_pages = _int_like(candidate.get("totalPages")) or _int_like(
+            candidate.get("total_pages")
+        )
+        total_items = _int_like(candidate.get("totalItems")) or _int_like(candidate.get("total"))
+        if total_pages is None and per_page and total_items is not None and total_items >= 0:
+            total_pages = max(1, (total_items + per_page - 1) // per_page)
+        if total_pages is None:
+            continue
+        return current_page, total_pages, per_page
+    return None
+
+
+def _normalize_same_origin_candidate(base_url: str, candidate: str) -> str | None:
+    absolute = urljoin(base_url, candidate)
+    if urlparse(absolute).netloc != urlparse(base_url).netloc:
+        return None
+    return absolute
+
+
+def _set_query_param(url: str, name: str, value: int) -> str:
+    parsed = urlparse(url)
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    filtered = [(key, existing) for key, existing in query_pairs if key != name]
+    filtered.append((name, str(value)))
+    encoded = urlencode(filtered, doseq=True)
+    return parsed._replace(query=encoded).geturl()
+
+
+def _int_like(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 429 retry logic
+# ---------------------------------------------------------------------------
+
+
+def _request(
+    client: httpx.Client,
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+) -> httpx.Response:
+    response: httpx.Response | None = None
+    for attempt in range(_MAX_RETRY_ATTEMPTS):
+        response = client.request(method, url, headers=headers or {})
+        if response.status_code != 429 or attempt == _MAX_RETRY_ATTEMPTS - 1:
+            return response
+        time.sleep(_retry_after_seconds(response))
+    assert response is not None
+    return response
+
+
+def _retry_after_seconds(response: httpx.Response) -> float:
+    retry_after = response.headers.get("retry-after")
+    if retry_after is None:
+        return _DEFAULT_RETRY_AFTER_SECONDS
+    try:
+        return max(float(retry_after), 0.0)
+    except ValueError:
+        return _DEFAULT_RETRY_AFTER_SECONDS
 
 
 def _infer_sub_resources(

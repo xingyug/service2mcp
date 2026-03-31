@@ -815,6 +815,7 @@ async def test_async_main_exits_nonzero_when_any_result_failed(
             timeout_seconds=5.0,
             run_id="rid",
             audit_all_generated_tools=False,
+            audit_mutating_tools=False,
             enable_llm_judge=False,
             case_ids=[],
             skip_llm_artifact_checks=False,
