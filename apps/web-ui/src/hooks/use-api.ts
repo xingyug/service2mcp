@@ -131,6 +131,17 @@ export function useService(
   });
 }
 
+export function useRebuildService() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (serviceId: string) => serviceApi.rebuild(serviceId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.compilations.all });
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Artifacts
 // ---------------------------------------------------------------------------
@@ -161,6 +172,27 @@ export function useArtifactDiff(
     queryFn: () => artifactApi.diff(serviceId, from, to),
     enabled: !!serviceId && from > 0 && to > 0 && from !== to,
     ...options,
+  });
+}
+
+export function useUpdateIR() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      serviceId,
+      versionNumber,
+      irJson,
+    }: {
+      serviceId: string;
+      versionNumber: number;
+      irJson: object;
+    }) => artifactApi.updateIR(serviceId, versionNumber, irJson),
+    onSuccess: (_, { serviceId }) => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.artifacts.versions(serviceId),
+      });
+    },
   });
 }
 

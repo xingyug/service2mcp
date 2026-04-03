@@ -177,6 +177,13 @@ export const serviceApi = {
       `${COMPILER_API}/api/v1/services/${serviceId}`,
     );
   },
+
+  rebuild(serviceId: string) {
+    return fetchAPI<CompilationJobResponse>(
+      `${COMPILER_API}/api/v1/services/${serviceId}/rebuild`,
+      { method: "POST" },
+    );
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -199,6 +206,13 @@ export const artifactApi = {
   diff(serviceId: string, from: number, to: number) {
     return fetchAPI<ArtifactDiffResponse>(
       `${COMPILER_API}/api/v1/services/${serviceId}/diff?from=${from}&to=${to}`,
+    );
+  },
+
+  updateIR(serviceId: string, versionNumber: number, irJson: object) {
+    return fetchAPI<ArtifactVersionResponse>(
+      `${COMPILER_API}/api/v1/artifacts/${serviceId}/versions/${versionNumber}`,
+      { method: "PUT", body: JSON.stringify({ ir_json: irJson }) },
     );
   },
 };

@@ -18,6 +18,9 @@ import {
 } from "lucide-react";
 
 
+import { toast } from "sonner";
+
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,7 +56,7 @@ import { ToolCard } from "@/components/services/tool-card";
 import { IREditor } from "@/components/services/ir-editor";
 import { VersionDiffDialog } from "@/components/services/version-diff-dialog";
 import { ReviewStatusBadge } from "@/components/review/review-status-badge";
-import { useService, useArtifactVersions } from "@/hooks/use-api";
+import { useService, useArtifactVersions, useRebuildService } from "@/hooks/use-api";
 import type { Operation, ServiceIR } from "@/types/api";
 
 // ---------------------------------------------------------------------------
@@ -416,6 +419,7 @@ export default function ServiceDetailPage() {
 
   const { data: service, isLoading, error } = useService(serviceId);
   const { data: versionsData } = useArtifactVersions(serviceId);
+  const rebuild = useRebuildService();
 
   const activeVersion = versionsData?.versions?.find((v) => v.is_active);
   const operations: Operation[] = activeVersion?.ir?.operations ?? [];
@@ -476,9 +480,19 @@ export default function ServiceDetailPage() {
           )}
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm">
-            <RefreshCw className="mr-1 size-4" />
-            Recompile
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              rebuild.mutate(serviceId, {
+                onSuccess: () => toast.success("MCP server rebuild initiated"),
+                onError: () => toast.error("Failed to initiate rebuild"),
+              });
+            }}
+            disabled={rebuild.isPending}
+          >
+            <RefreshCw className={cn("mr-1 size-4", rebuild.isPending && "animate-spin")} />
+            {rebuild.isPending ? "Rebuilding…" : "Rebuild MCP Server"}
           </Button>
           <Button variant="outline" size="sm">
             <Code className="mr-1 size-4" />

@@ -18,7 +18,7 @@ import { ReviewStateBadge } from "@/components/review/review-status-badge";
 import { IREditor } from "@/components/services/ir-editor";
 import { VersionDiff } from "@/components/services/version-diff";
 import { ProtocolBadge } from "@/components/services/protocol-badge";
-import { useService, useArtifactVersions } from "@/hooks/use-api";
+import { useService, useArtifactVersions, useUpdateIR } from "@/hooks/use-api";
 import { useWorkflowStore, type WorkflowState } from "@/stores/workflow-store";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +37,8 @@ export default function ReviewPage() {
   const { data: service, isLoading: serviceLoading } = useService(serviceId);
   const { data: versionsData, isLoading: versionsLoading } = useArtifactVersions(serviceId);
   const versions = versionsData?.versions ?? [];
+
+  const updateIR = useUpdateIR();
 
   // Determine which version to review
   const versionNumber = requestedVersion
@@ -210,7 +212,19 @@ export default function ReviewPage() {
             </CardHeader>
             <CardContent>
               {ir ? (
-                <IREditor ir={ir} readOnly={!isEditable} />
+                <IREditor
+                  ir={ir}
+                  readOnly={!isEditable}
+                  onSave={(updatedIR) => {
+                    updateIR.mutate(
+                      { serviceId, versionNumber, irJson: updatedIR },
+                      {
+                        onSuccess: () => toast.success("IR saved successfully"),
+                        onError: () => toast.error("Failed to save IR"),
+                      },
+                    );
+                  }}
+                />
               ) : (
                 <p className="py-8 text-center text-sm text-muted-foreground">
                   No IR available for this version.
