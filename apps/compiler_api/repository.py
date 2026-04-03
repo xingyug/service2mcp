@@ -73,6 +73,31 @@ class CompilationRepository:
             return None
         return self._to_job_response(job)
 
+    async def list_jobs(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[CompilationJobResponse]:
+        query = select(CompilationJob).order_by(desc(CompilationJob.created_at)).limit(limit)
+        if status is not None:
+            query = query.where(CompilationJob.status == status)
+        result = await self._session.scalars(query)
+        return [self._to_job_response(job) for job in result.all()]
+
+    async def update_job_status(
+        self,
+        job_id: UUID,
+        new_status: str,
+    ) -> CompilationJobResponse | None:
+        job = await self._session.get(CompilationJob, job_id)
+        if job is None:
+            return None
+        job.status = new_status
+        await self._session.commit()
+        await self._session.refresh(job)
+        return self._to_job_response(job)
+
     async def list_events(
         self,
         job_id: UUID,
