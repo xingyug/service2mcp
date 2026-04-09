@@ -323,8 +323,8 @@ class SCIMExtractor:
                 resp = httpx.get(source.url, headers=headers, timeout=30)
                 resp.raise_for_status()
                 return resp.text
-            except httpx.HTTPStatusError:
-                logger.debug("HTTP %s for %s", resp.status_code, source.url)
+            except httpx.HTTPStatusError as exc:
+                logger.debug("HTTP %s for %s", exc.response.status_code, source.url)
                 return ""
         return ""
 
