@@ -139,7 +139,8 @@ class TestSwagger20Extraction:
 
         assert ir.protocol == "openapi"
         assert ir.service_name == "petstore-swagger"
-        assert ir.base_url and "petstore.swagger.io" in ir.base_url  # noqa: S105 — test assertion, not sanitization
+        assert ir.base_url is not None
+        assert ir.base_url == "https://petstore.swagger.io/v2"
         assert ir.metadata["openapi_version"] == "2.0"
 
     def test_operations_count(self, extractor):

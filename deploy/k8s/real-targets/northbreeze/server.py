@@ -11,7 +11,6 @@ A real OData V4 service modeled after SAP's Northbreeze tutorial, implementing:
 """
 
 import json
-import re
 
 from flask import Flask, Response, jsonify, request
 
@@ -320,43 +319,62 @@ def odata_entity(entity, context=None):
 
 
 def apply_filter(items, filter_str):
-    """Basic OData $filter support: eq, ne, gt, lt, ge, le, contains, startswith."""
+    """Basic OData $filter support: eq, ne, gt, lt, ge, le, contains, startswith.
+
+    Uses string splitting instead of regex to avoid polynomial-regex risks
+    on untrusted input (CodeQL py/redos).
+    """
     if not filter_str:
         return items
-    # Guard against pathologically long filter strings (ReDoS mitigation).
     if len(filter_str) > 500:
         return items
 
-    # eq
-    m = re.match(r"(\w+)\s+eq\s+'([^']*)'", filter_str)
-    if m:
-        field, val = m.group(1), m.group(2)
-        return [i for i in items if str(i.get(field, "")) == val]
-    m = re.match(r"(\w+)\s+eq\s+(\d+(?:\.\d+)?)\Z", filter_str)
-    if m:
-        field, val = m.group(1), float(m.group(2))
-        return [i for i in items if i.get(field) == (int(val) if val == int(val) else val)]
-    # gt / lt / ge / le
-    for op, fn in [
-        ("gt", lambda a, b: a > b),
-        ("lt", lambda a, b: a < b),
-        ("ge", lambda a, b: a >= b),
-        ("le", lambda a, b: a <= b),
+    stripped = filter_str.strip()
+
+    # Function-style: contains(Field,'value') / startswith(Field,'value')
+    for func_name, match_fn in [
+        ("contains", lambda haystack, needle: needle in haystack),
+        ("startswith", lambda haystack, needle: haystack.startswith(needle)),
     ]:
-        m = re.match(rf"(\w+)\s+{op}\s+(\d+(?:\.\d+)?)", filter_str)
-        if m:
-            field, val = m.group(1), float(m.group(2))
-            return [i for i in items if fn(i.get(field, 0), val)]
-    # contains
-    m = re.match(r"contains\((\w+),\s*'([^']*)'\)", filter_str)
-    if m:
-        field, val = m.group(1), m.group(2).lower()
-        return [i for i in items if val in str(i.get(field, "")).lower()]
-    # startswith
-    m = re.match(r"startswith\((\w+),\s*'([^']*)'\)", filter_str)
-    if m:
-        field, val = m.group(1), m.group(2).lower()
-        return [i for i in items if str(i.get(field, "")).lower().startswith(val)]
+        prefix = f"{func_name}("
+        if stripped.startswith(prefix) and stripped.endswith(")"):
+            inner = stripped[len(prefix):-1]
+            parts = inner.split(",", 1)
+            if len(parts) == 2:
+                field = parts[0].strip()
+                val = parts[1].strip().strip("'").lower()
+                return [i for i in items if match_fn(str(i.get(field, "")).lower(), val)]
+            return items
+
+    # Binary operators: Field op Value
+    ops = {
+        "eq": lambda a, b: a == b,
+        "ne": lambda a, b: a != b,
+        "gt": lambda a, b: a > b,
+        "lt": lambda a, b: a < b,
+        "ge": lambda a, b: a >= b,
+        "le": lambda a, b: a <= b,
+    }
+    for op_name, op_fn in ops.items():
+        token = f" {op_name} "
+        idx = stripped.find(token)
+        if idx < 0:
+            continue
+        field = stripped[:idx].strip()
+        val_str = stripped[idx + len(token):].strip()
+        if not field.isidentifier():
+            continue
+        # String value: 'some text'
+        if val_str.startswith("'") and val_str.endswith("'"):
+            return [i for i in items if op_fn(str(i.get(field, "")), val_str[1:-1])]
+        # Numeric value
+        try:
+            val_num = float(val_str)
+            if val_num == int(val_num):
+                val_num = int(val_num)
+            return [i for i in items if op_fn(i.get(field, 0), val_num)]
+        except ValueError:
+            continue
 
     return items
 
