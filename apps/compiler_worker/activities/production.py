@@ -1980,7 +1980,7 @@ def build_streamable_http_tool_invoker(
     http_client_factory: RuntimeHttpClientFactory | None = None,
     max_retries: int = 2,
 ) -> ToolInvoker:
-    endpoint = f"{runtime_base_url.rstrip('/')}/mcp/mcp"
+    endpoint = f"{runtime_base_url.rstrip('/')}/mcp"
 
     async def invoke(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         last_exc: Exception | None = None

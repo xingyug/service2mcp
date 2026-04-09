@@ -53,6 +53,11 @@ def get_content(source: SourceConfig, *, timeout: float = 30.0) -> str | None:
     if source.file_path:
         return Path(source.file_path).read_text(encoding="utf-8")
     if source.url:
+        # Skip non-HTTP schemes (e.g. grpc://, grpcs://) — they need
+        # protocol-specific transports, not plain HTTP GET.
+        scheme = source.url.split("://", 1)[0].lower() if "://" in source.url else ""
+        if scheme in ("grpc", "grpcs"):
+            return None
         try:
             resp = httpx.get(
                 source.url,

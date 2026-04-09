@@ -614,6 +614,14 @@ class SQLExtractor:
             return database_url
         if database_url.startswith("sqlite://"):
             return database_url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+        if database_url.startswith("mysql+aiomysql://"):
+            return database_url
+        if database_url.startswith("mysql+pymysql://"):
+            return database_url.replace("mysql+pymysql://", "mysql+aiomysql://", 1)
+        if database_url.startswith("mysql://"):
+            return database_url.replace("mysql://", "mysql+aiomysql://", 1)
+        if database_url.startswith("mariadb://"):
+            return database_url.replace("mariadb://", "mysql+aiomysql://", 1)
         raise ValueError(f"Unsupported SQL database URL: {database_url}")
 
 
@@ -623,18 +631,26 @@ def _run_coroutine[T](coroutine: Coroutine[Any, Any, T]) -> T:
     except RuntimeError:
         return asyncio.run(coroutine)
 
+    # Running inside an existing event loop (e.g. Celery worker).
+    # Execute in a daemon thread with its own event loop.
     result: list[T] = []
     error: list[BaseException] = []
 
     def runner() -> None:
         try:
-            result.append(asyncio.run(coroutine))
+            loop = asyncio.new_event_loop()
+            try:
+                result.append(loop.run_until_complete(coroutine))
+            finally:
+                loop.close()
         except BaseException as exc:  # pragma: no cover - re-raised in caller thread
             error.append(exc)
 
     thread = Thread(target=runner, daemon=True)
     thread.start()
-    thread.join()
+    thread.join(timeout=120)
+    if thread.is_alive():
+        raise RuntimeError("Coroutine thread timed out after 120 seconds")
     if error:
         raise error[0]
     if not result:

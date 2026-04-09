@@ -207,6 +207,7 @@ class GraphQLExtractor:
                 json={"query": _INTROSPECTION_QUERY},
                 headers=self._auth_headers(source),
                 timeout=30,
+                follow_redirects=True,
             )
             response.raise_for_status()
             return response.text

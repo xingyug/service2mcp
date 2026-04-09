@@ -410,7 +410,23 @@ class TestToAsyncUrl:
     def test_unsupported_scheme_raises(self) -> None:
         """Line 462: unsupported scheme → ValueError."""
         with pytest.raises(ValueError, match="Unsupported SQL database URL"):
-            self.extractor._to_async_url("mysql://localhost/db")
+            self.extractor._to_async_url("oracle://localhost/db")
+
+    def test_mysql_url(self) -> None:
+        """MySQL URL is converted to aiomysql driver."""
+        assert self.extractor._to_async_url("mysql://localhost/db") == "mysql+aiomysql://localhost/db"
+
+    def test_mysql_pymysql_url(self) -> None:
+        """mysql+pymysql URL is converted to aiomysql."""
+        assert self.extractor._to_async_url("mysql+pymysql://localhost/db") == "mysql+aiomysql://localhost/db"
+
+    def test_mariadb_url(self) -> None:
+        """MariaDB URL is converted to aiomysql driver."""
+        assert self.extractor._to_async_url("mariadb://localhost/db") == "mysql+aiomysql://localhost/db"
+
+    def test_mysql_aiomysql_passthrough(self) -> None:
+        """Already async MySQL URL passes through."""
+        assert self.extractor._to_async_url("mysql+aiomysql://localhost/db") == "mysql+aiomysql://localhost/db"
 
 
 # ── _slugify ──────────────────────────────────────────────────────────────

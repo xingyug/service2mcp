@@ -185,6 +185,9 @@ class SCIMExtractor:
     def extract(self, source: SourceConfig) -> ServiceIR:
         raw = self._raw_content(source)
         if not raw:
+            # Root URL may 404; try well-known SCIM discovery endpoints.
+            raw = self._try_discovery_endpoints(source)
+        if not raw:
             raise ValueError("No content available for extraction")
 
         data = json.loads(raw)
@@ -316,9 +319,41 @@ class SCIMExtractor:
                 headers["Authorization"] = source.auth_header
             elif source.auth_token:
                 headers["Authorization"] = f"Bearer {source.auth_token}"
-            resp = httpx.get(source.url, headers=headers, timeout=30)
-            resp.raise_for_status()
-            return resp.text
+            try:
+                resp = httpx.get(source.url, headers=headers, timeout=30)
+                resp.raise_for_status()
+                return resp.text
+            except httpx.HTTPStatusError:
+                logger.debug("HTTP %s for %s", resp.status_code, source.url)
+                return ""
+        return ""
+
+    _DISCOVERY_ENDPOINTS = (
+        "/ServiceProviderConfig",
+        "/ResourceTypes",
+        "/Schemas",
+    )
+
+    def _try_discovery_endpoints(self, source: SourceConfig) -> str:
+        """Probe well-known SCIM endpoints when root URL fails."""
+        if not source.url:
+            return ""
+        base = source.url.rstrip("/")
+        headers: dict[str, str] = {}
+        if source.auth_header and source.auth_token:
+            headers[source.auth_header] = source.auth_token
+        elif source.auth_header:
+            headers["Authorization"] = source.auth_header
+        elif source.auth_token:
+            headers["Authorization"] = f"Bearer {source.auth_token}"
+
+        for endpoint in self._DISCOVERY_ENDPOINTS:
+            try:
+                resp = httpx.get(f"{base}{endpoint}", headers=headers, timeout=30)
+                if resp.status_code == 200 and resp.text.strip():
+                    return resp.text
+            except (httpx.HTTPError, OSError):
+                continue
         return ""
 
     def _map_type(self, attr: dict[str, Any]) -> str:

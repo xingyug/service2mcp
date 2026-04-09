@@ -395,7 +395,13 @@ class OpenAPIExtractor:
                 str(servers[0].get("url", source.url or "http://localhost")),
                 source,
             )
-        return source.url or "http://localhost"
+        # No servers field — fall back to origin of the source URL
+        # (strip spec filename like /openapi.json, /swagger.json).
+        if source.url:
+            parts = urlsplit(source.url)
+            if parts.scheme and parts.netloc:
+                return f"{parts.scheme}://{parts.netloc}"
+        return "http://localhost"
 
     def _resolve_server_url(self, server_url: str, source: SourceConfig) -> str:
         parsed = urlsplit(server_url)

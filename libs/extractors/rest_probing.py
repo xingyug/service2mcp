@@ -228,6 +228,24 @@ def _is_path_like(value: str, *, parent_key: str | None = None) -> bool:
     stripped = value.strip()
     if not stripped:
         return False
+
+    # Filter out filesystem paths that are not API endpoints.
+    fs_prefixes = (
+        "/etc/", "/usr/", "/var/", "/tmp/", "/opt/",
+        "/home/", "/root/", "/proc/", "/sys/", "/dev/",
+    )
+    if any(stripped.startswith(p) for p in fs_prefixes):
+        return False
+    # Paths containing file extensions common in config are not API endpoints.
+    config_exts = (
+        ".env", ".conf", ".cfg", ".ini", ".log",
+        ".pid", ".sock", ".key", ".pem", ".crt",
+    )
+    if stripped.startswith("/") and any(
+        stripped.endswith(ext) for ext in config_exts
+    ):
+        return False
+
     if stripped.startswith(("/", "./", "../", "http://", "https://")):
         return True
     if "://" in stripped:

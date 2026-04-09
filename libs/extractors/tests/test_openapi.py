@@ -128,6 +128,28 @@ class TestOpenAPI30Extraction:
             for param in op.params:
                 assert param.source.value == "extractor"
 
+    def test_base_url_strips_spec_path_when_no_servers(self, extractor):
+        """When spec has no servers field and source is a URL, base_url
+        should be the origin (scheme://host), not the full spec URL."""
+        spec_content = json.dumps({
+            "openapi": "3.0.3",
+            "info": {"title": "Test", "version": "1.0"},
+            "paths": {
+                "/items": {
+                    "get": {
+                        "operationId": "listItems",
+                        "responses": {"200": {"description": "OK"}},
+                    }
+                }
+            },
+        })
+        source = SourceConfig(
+            url="http://myservice:8080/openapi.json",
+            file_content=spec_content,
+        )
+        ir = extractor.extract(source)
+        assert ir.base_url == "http://myservice:8080"
+
 
 # ── Swagger 2.0 Extraction Tests ──────────────────────────────────────────
 
