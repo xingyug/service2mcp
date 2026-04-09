@@ -209,7 +209,7 @@ def create_app(
 
     app = FastAPI(title="Generic MCP Runtime", version="0.1.0", lifespan=lifespan)
     app.state.runtime_state = runtime_state
-    app.mount("/", mcp_http_app)
+    app.mount("/mcp", mcp_http_app)
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:

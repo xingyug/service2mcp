@@ -70,6 +70,7 @@ def create_runtime_server(name: str = "generic-mcp-runtime") -> FastMCP:
     allowed_origins = _split_csv_env("MCP_ALLOWED_ORIGINS")
     return FastMCP(
         name=name,
+        streamable_http_path="/",
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=not disable_rebinding_protection,
             allowed_hosts=allowed_hosts,
