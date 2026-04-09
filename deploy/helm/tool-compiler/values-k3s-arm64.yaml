@@ -1,0 +1,138 @@
+fullnameOverride: service2mcp
+
+imagePullSecrets:
+  - name: gcr-secret
+
+# Schedule all pods on the same node (CoreDNS node) to work around
+# broken cross-node flannel networking in this k3s cluster.
+nodeSelector:
+  kubernetes.io/hostname: YOUR_NODE_HOSTNAME
+
+global:
+  database:
+    host: service2mcp-postgres
+    port: 5432
+    name: toolcompiler
+    user: toolcompiler
+    password: toolcompiler
+  redisUrl: redis://service2mcp-redis:6379/0
+  temporalAddress: service2mcp-temporal:7233
+  jwtSecret: dev-secret-k3s
+  billingSecret: dev-token-k3s
+
+images:
+  compilerApi:
+    repository: YOUR_REGISTRY/YOUR_PROJECT/compiler-api
+    tag: arm64-e8c9358
+    pullPolicy: Always
+  accessControl:
+    repository: YOUR_REGISTRY/YOUR_PROJECT/access-control
+    tag: arm64-e8c9358
+    pullPolicy: Always
+  gatewayAdminMock:
+    repository: YOUR_REGISTRY/YOUR_PROJECT/gateway-admin-mock
+    tag: arm64-e8c9358
+    pullPolicy: Always
+  compilerWorker:
+    repository: YOUR_REGISTRY/YOUR_PROJECT/compiler-worker
+    tag: arm64-k3s-fix
+    pullPolicy: Always
+  mcpRuntime:
+    repository: YOUR_REGISTRY/YOUR_PROJECT/mcp-runtime
+    tag: arm64-e8c9358
+    pullPolicy: Always
+  # Infra images (official multi-arch, no change needed)
+  postgres:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  redis:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  temporal:
+    repository: temporalio/server
+    tag: "1.25.2"
+    pullPolicy: IfNotPresent
+
+services:
+  compilerApi:
+    port: 8000
+  accessControl:
+    port: 8001
+  compilerWorker:
+    port: 8002
+  mcpRuntime:
+    port: 8003
+  gatewayAdminMock:
+    port: 8004
+
+gatewayAdminMock:
+  enabled: true
+
+# Runtime instance deployment config (for compiled MCP servers)
+compilerWorker:
+  runtimeImagePullSecrets: "gcr-secret"
+  runtimeNodeSelector: "kubernetes.io/hostname=YOUR_NODE_HOSTNAME"
+  extraEnv:
+    - name: COMPILER_RUNTIME_STARTUP_TIMEOUT_SECONDS
+      value: "120"
+
+# Reduced resource limits for Raspberry Pi (4 CPU, 8 GB each)
+resources:
+  compilerApi:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 384Mi
+  accessControl:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 125m
+      memory: 192Mi
+  gatewayAdminMock:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 125m
+      memory: 128Mi
+  compilerWorker:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  mcpRuntime:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 192Mi
+  postgres:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 512Mi
+  redis:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      cpu: 125m
+      memory: 128Mi
+  temporal:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 384Mi

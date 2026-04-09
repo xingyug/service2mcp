@@ -1,0 +1,51 @@
+name: simple-tool
+description: A simple CLI tool for testing
+version: "1.0.0"
+base_command: simple-tool
+commands:
+  - name: list-items
+    description: List all items
+    subcommands: ["list"]
+    args:
+      - name: format
+        type: string
+        description: Output format (json, table, text)
+        required: false
+        default: table
+      - name: limit
+        type: integer
+        description: Maximum number of results
+        required: false
+    output_format: json
+    risk:
+      writes_state: false
+      destructive: false
+      risk_level: safe
+  - name: create-item
+    description: Create a new item
+    subcommands: ["create"]
+    args:
+      - name: name
+        type: string
+        required: true
+        description: Item name
+      - name: tags
+        type: string
+        required: false
+        description: Comma-separated tags
+    risk:
+      writes_state: true
+      destructive: false
+      risk_level: cautious
+  - name: delete-item
+    description: Delete an item
+    subcommands: ["delete"]
+    args:
+      - name: id
+        type: string
+        required: true
+        description: Item ID
+    risk:
+      writes_state: true
+      destructive: true
+      risk_level: dangerous

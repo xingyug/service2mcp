@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions name="OrderService"
+             targetNamespace="http://example.com/order"
+             xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:tns="http://example.com/order"
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/">
+
+  <types>
+    <xsd:schema targetNamespace="http://example.com/order">
+
+      <!-- Common types -->
+      <xsd:complexType name="Address">
+        <xsd:sequence>
+          <xsd:element name="street"  type="xsd:string"/>
+          <xsd:element name="city"    type="xsd:string"/>
+          <xsd:element name="state"   type="xsd:string" minOccurs="0"/>
+          <xsd:element name="zipCode" type="xsd:string"/>
+          <xsd:element name="country" type="xsd:string"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:complexType name="OrderLineItem">
+        <xsd:sequence>
+          <xsd:element name="sku"      type="xsd:string"/>
+          <xsd:element name="name"     type="xsd:string"/>
+          <xsd:element name="quantity" type="xsd:int"/>
+          <xsd:element name="unitPriceCents" type="xsd:int"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:simpleType name="OrderStatus">
+        <xsd:restriction base="xsd:string">
+          <xsd:enumeration value="PENDING"/>
+          <xsd:enumeration value="CONFIRMED"/>
+          <xsd:enumeration value="PROCESSING"/>
+          <xsd:enumeration value="SHIPPED"/>
+          <xsd:enumeration value="DELIVERED"/>
+          <xsd:enumeration value="CANCELLED"/>
+        </xsd:restriction>
+      </xsd:simpleType>
+
+      <xsd:simpleType name="Priority">
+        <xsd:restriction base="xsd:string">
+          <xsd:enumeration value="STANDARD"/>
+          <xsd:enumeration value="EXPRESS"/>
+          <xsd:enumeration value="OVERNIGHT"/>
+        </xsd:restriction>
+      </xsd:simpleType>
+
+      <xsd:complexType name="HistoryEntry">
+        <xsd:sequence>
+          <xsd:element name="timestamp" type="xsd:dateTime"/>
+          <xsd:element name="status"    type="tns:OrderStatus"/>
+          <xsd:element name="note"      type="xsd:string" minOccurs="0"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <!-- GetOrderStatus -->
+      <xsd:element name="GetOrderStatusRequest">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="orderId"        type="xsd:string"/>
+            <xsd:element name="includeHistory" type="xsd:boolean" default="false"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="GetOrderStatusResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="orderId"           type="xsd:string"/>
+            <xsd:element name="status"            type="tns:OrderStatus"/>
+            <xsd:element name="estimatedDelivery" type="xsd:date" minOccurs="0"/>
+            <xsd:element name="history"           type="tns:HistoryEntry" minOccurs="0" maxOccurs="unbounded"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <!-- SubmitOrder -->
+      <xsd:element name="SubmitOrderRequest">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="customerId"      type="xsd:string"/>
+            <xsd:element name="priority"        type="tns:Priority"/>
+            <xsd:element name="shippingAddress" type="tns:Address"/>
+            <xsd:element name="items"           type="tns:OrderLineItem" maxOccurs="unbounded"/>
+            <xsd:element name="notes"           type="xsd:string" minOccurs="0"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="SubmitOrderResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="confirmationNumber" type="xsd:string"/>
+            <xsd:element name="totalAmountCents"    type="xsd:int"/>
+            <xsd:element name="estimatedDelivery"   type="xsd:date"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <!-- CancelOrder -->
+      <xsd:element name="CancelOrderRequest">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="orderId" type="xsd:string"/>
+            <xsd:element name="reason"  type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="CancelOrderResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="success" type="xsd:boolean"/>
+            <xsd:element name="message" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <!-- Fault -->
+      <xsd:element name="OrderFault">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="errorCode"    type="xsd:string"/>
+            <xsd:element name="errorMessage" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+    </xsd:schema>
+  </types>
+
+  <!-- Messages -->
+  <message name="GetOrderStatusInput">
+    <part name="parameters" element="tns:GetOrderStatusRequest"/>
+  </message>
+  <message name="GetOrderStatusOutput">
+    <part name="parameters" element="tns:GetOrderStatusResponse"/>
+  </message>
+  <message name="SubmitOrderInput">
+    <part name="parameters" element="tns:SubmitOrderRequest"/>
+  </message>
+  <message name="SubmitOrderOutput">
+    <part name="parameters" element="tns:SubmitOrderResponse"/>
+  </message>
+  <message name="CancelOrderInput">
+    <part name="parameters" element="tns:CancelOrderRequest"/>
+  </message>
+  <message name="CancelOrderOutput">
+    <part name="parameters" element="tns:CancelOrderResponse"/>
+  </message>
+  <message name="OrderFaultMessage">
+    <part name="fault" element="tns:OrderFault"/>
+  </message>
+
+  <!-- Port Type -->
+  <portType name="OrderPortType">
+    <operation name="GetOrderStatus">
+      <input  message="tns:GetOrderStatusInput"/>
+      <output message="tns:GetOrderStatusOutput"/>
+      <fault  name="OrderFault" message="tns:OrderFaultMessage"/>
+    </operation>
+    <operation name="SubmitOrder">
+      <input  message="tns:SubmitOrderInput"/>
+      <output message="tns:SubmitOrderOutput"/>
+      <fault  name="OrderFault" message="tns:OrderFaultMessage"/>
+    </operation>
+    <operation name="CancelOrder">
+      <input  message="tns:CancelOrderInput"/>
+      <output message="tns:CancelOrderOutput"/>
+      <fault  name="OrderFault" message="tns:OrderFaultMessage"/>
+    </operation>
+  </portType>
+
+  <!-- Binding -->
+  <binding name="OrderSoapBinding" type="tns:OrderPortType">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <operation name="GetOrderStatus">
+      <soap:operation soapAction="http://example.com/order/GetOrderStatus"/>
+      <input>  <soap:body use="literal"/> </input>
+      <output> <soap:body use="literal"/> </output>
+      <fault name="OrderFault"> <soap:fault name="OrderFault" use="literal"/> </fault>
+    </operation>
+    <operation name="SubmitOrder">
+      <soap:operation soapAction="http://example.com/order/SubmitOrder"/>
+      <input>  <soap:body use="literal"/> </input>
+      <output> <soap:body use="literal"/> </output>
+      <fault name="OrderFault"> <soap:fault name="OrderFault" use="literal"/> </fault>
+    </operation>
+    <operation name="CancelOrder">
+      <soap:operation soapAction="http://example.com/order/CancelOrder"/>
+      <input>  <soap:body use="literal"/> </input>
+      <output> <soap:body use="literal"/> </output>
+      <fault name="OrderFault"> <soap:fault name="OrderFault" use="literal"/> </fault>
+    </operation>
+  </binding>
+
+  <!-- Service -->
+  <service name="OrderService">
+    <port name="OrderPort" binding="tns:OrderSoapBinding">
+      <soap:address location="http://localhost:8080/services/OrderService"/>
+    </port>
+  </service>
+
+</definitions>

@@ -1,0 +1,1023 @@
+openapi: "3.0.3"
+info:
+  title: Large Surface REST API
+  version: "1.0.0"
+  description: >-
+    A large-surface API fixture with 62 endpoints across 9 resource groups,
+    used by the spec-first pilot to compare extraction coverage
+    against the black-box REST discovery pilot.
+servers:
+  - url: https://large-surface.example.com/api
+paths:
+  # --- Users (12 endpoints) ---
+  /users:
+    get:
+      operationId: listUsers
+      summary: List all users
+      tags: [users]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: A list of users
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/User"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+    post:
+      operationId: createUser
+      summary: Create a new user
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewUser"
+      responses:
+        "201":
+          description: User created
+  /users/{user_id}:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getUser
+      summary: Get user details
+      tags: [users]
+      responses:
+        "200":
+          description: User details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+    put:
+      operationId: updateUser
+      summary: Update a user
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewUser"
+      responses:
+        "200":
+          description: User updated
+    delete:
+      operationId: deleteUser
+      summary: Delete a user
+      tags: [users]
+      responses:
+        "204":
+          description: User deleted
+  /users/{user_id}/posts:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listUserPosts
+      summary: List posts for a user
+      tags: [users]
+      responses:
+        "200":
+          description: List of user posts
+    post:
+      operationId: createUserPost
+      summary: Create a post for a user
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewPost"
+      responses:
+        "201":
+          description: Post created
+  /users/{user_id}/posts/{post_id}:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: post_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getUserPost
+      summary: Get a specific user post
+      tags: [users]
+      responses:
+        "200":
+          description: Post details
+    put:
+      operationId: updateUserPost
+      summary: Update a user post
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewPost"
+      responses:
+        "200":
+          description: Post updated
+    delete:
+      operationId: deleteUserPost
+      summary: Delete a user post
+      tags: [users]
+      responses:
+        "204":
+          description: Post deleted
+  /users/{user_id}/settings:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getUserSettings
+      summary: View user settings
+      tags: [users]
+      responses:
+        "200":
+          description: User settings
+    put:
+      operationId: updateUserSettings
+      summary: Update user settings
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                theme:
+                  type: string
+                notifications_enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Settings updated
+
+  # --- Products (10 endpoints) ---
+  /products:
+    get:
+      operationId: listProducts
+      summary: List all products
+      tags: [products]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: A list of products
+    post:
+      operationId: createProduct
+      summary: Create a new product
+      tags: [products]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewProduct"
+      responses:
+        "201":
+          description: Product created
+  /products/{product_id}:
+    parameters:
+      - name: product_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getProduct
+      summary: Get product details
+      tags: [products]
+      responses:
+        "200":
+          description: Product details
+    put:
+      operationId: updateProduct
+      summary: Update a product
+      tags: [products]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewProduct"
+      responses:
+        "200":
+          description: Product updated
+    delete:
+      operationId: deleteProduct
+      summary: Delete a product
+      tags: [products]
+      responses:
+        "204":
+          description: Product deleted
+  /products/{product_id}/reviews:
+    parameters:
+      - name: product_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listProductReviews
+      summary: List product reviews
+      tags: [products]
+      responses:
+        "200":
+          description: List of reviews
+    post:
+      operationId: createProductReview
+      summary: Create a product review
+      tags: [products]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rating:
+                  type: integer
+                comment:
+                  type: string
+              required:
+                - rating
+      responses:
+        "201":
+          description: Review created
+  /products/{product_id}/images:
+    parameters:
+      - name: product_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listProductImages
+      summary: List product images
+      tags: [products]
+      responses:
+        "200":
+          description: List of images
+    post:
+      operationId: uploadProductImage
+      summary: Upload a product image
+      tags: [products]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                alt_text:
+                  type: string
+      responses:
+        "201":
+          description: Image uploaded
+  /products/search:
+    get:
+      operationId: searchProducts
+      summary: Search products
+      tags: [products]
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Search results
+
+  # --- Orders (12 endpoints) ---
+  /orders:
+    get:
+      operationId: listOrders
+      summary: List all orders
+      tags: [orders]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: A list of orders
+    post:
+      operationId: createOrder
+      summary: Create a new order
+      tags: [orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewOrder"
+      responses:
+        "201":
+          description: Order created
+  /orders/{order_id}:
+    parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getOrder
+      summary: Get order details
+      tags: [orders]
+      responses:
+        "200":
+          description: Order details
+    put:
+      operationId: updateOrder
+      summary: Update an order
+      tags: [orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewOrder"
+      responses:
+        "200":
+          description: Order updated
+    delete:
+      operationId: deleteOrder
+      summary: Delete an order
+      tags: [orders]
+      responses:
+        "204":
+          description: Order deleted
+  /orders/{order_id}/items:
+    parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listOrderItems
+      summary: List order items
+      tags: [orders]
+      responses:
+        "200":
+          description: List of order items
+    post:
+      operationId: addOrderItem
+      summary: Add an item to an order
+      tags: [orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                product_id:
+                  type: string
+                quantity:
+                  type: integer
+              required:
+                - product_id
+                - quantity
+      responses:
+        "201":
+          description: Item added
+  /orders/{order_id}/items/{item_id}:
+    parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: removeOrderItem
+      summary: Remove an item from an order
+      tags: [orders]
+      responses:
+        "204":
+          description: Item removed
+  /orders/{order_id}/payments:
+    parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listOrderPayments
+      summary: List order payments
+      tags: [orders]
+      responses:
+        "200":
+          description: List of payments
+    post:
+      operationId: createOrderPayment
+      summary: Process a payment for an order
+      tags: [orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: number
+                method:
+                  type: string
+              required:
+                - amount
+                - method
+      responses:
+        "201":
+          description: Payment processed
+  /orders/{order_id}/cancel:
+    parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: cancelOrder
+      summary: Cancel an order
+      tags: [orders]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+      responses:
+        "200":
+          description: Order cancelled
+  /orders/{order_id}/ship:
+    parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: shipOrder
+      summary: Ship an order
+      tags: [orders]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                carrier:
+                  type: string
+                tracking_number:
+                  type: string
+      responses:
+        "200":
+          description: Order shipped
+
+  # --- Categories (6 endpoints) ---
+  /categories:
+    get:
+      operationId: listCategories
+      summary: List all categories
+      tags: [categories]
+      responses:
+        "200":
+          description: A list of categories
+    post:
+      operationId: createCategory
+      summary: Create a new category
+      tags: [categories]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                parent_id:
+                  type: string
+              required:
+                - name
+      responses:
+        "201":
+          description: Category created
+  /categories/{category_id}:
+    parameters:
+      - name: category_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getCategory
+      summary: Get category details
+      tags: [categories]
+      responses:
+        "200":
+          description: Category details
+    put:
+      operationId: updateCategory
+      summary: Update a category
+      tags: [categories]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Category updated
+  /categories/{category_id}/products:
+    parameters:
+      - name: category_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: listCategoryProducts
+      summary: List products in a category
+      tags: [categories]
+      responses:
+        "200":
+          description: Products in category
+  /categories/tree:
+    get:
+      operationId: getCategoryTree
+      summary: Get full category tree
+      tags: [categories]
+      responses:
+        "200":
+          description: Category tree
+
+  # --- Inventory (5 endpoints) ---
+  /inventory:
+    get:
+      operationId: listInventory
+      summary: List all inventory
+      tags: [inventory]
+      responses:
+        "200":
+          description: Inventory listing
+  /inventory/{sku}:
+    parameters:
+      - name: sku
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getInventoryItem
+      summary: Get inventory for a SKU
+      tags: [inventory]
+      responses:
+        "200":
+          description: Inventory details
+    put:
+      operationId: updateInventoryItem
+      summary: Update inventory for a SKU
+      tags: [inventory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                count:
+                  type: integer
+              required:
+                - count
+      responses:
+        "200":
+          description: Inventory updated
+  /inventory/adjust:
+    post:
+      operationId: adjustInventory
+      summary: Adjust inventory levels
+      tags: [inventory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sku:
+                  type: string
+                delta:
+                  type: integer
+              required:
+                - sku
+                - delta
+      responses:
+        "200":
+          description: Inventory adjusted
+  /inventory/bulk-import:
+    post:
+      operationId: bulkImportInventory
+      summary: Bulk import inventory
+      tags: [inventory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      sku:
+                        type: string
+                      count:
+                        type: integer
+      responses:
+        "200":
+          description: Import complete
+
+  # --- Notifications (4 endpoints) ---
+  /notifications:
+    get:
+      operationId: listNotifications
+      summary: List all notifications
+      tags: [notifications]
+      responses:
+        "200":
+          description: A list of notifications
+  /notifications/{notification_id}:
+    parameters:
+      - name: notification_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getNotification
+      summary: Get a notification
+      tags: [notifications]
+      responses:
+        "200":
+          description: Notification details
+  /notifications/{notification_id}/acknowledge:
+    parameters:
+      - name: notification_id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: acknowledgeNotification
+      summary: Acknowledge a notification
+      tags: [notifications]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                acknowledged_by:
+                  type: string
+      responses:
+        "200":
+          description: Notification acknowledged
+  /notifications/dispatch:
+    post:
+      operationId: dispatchNotification
+      summary: Dispatch a notification to external channels
+      tags: [notifications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channel:
+                  type: string
+                message:
+                  type: string
+              required:
+                - channel
+                - message
+      responses:
+        "200":
+          description: Notification dispatched
+
+  # --- Reports (4 endpoints) ---
+  /reports:
+    get:
+      operationId: listReports
+      summary: List all reports
+      tags: [reports]
+      responses:
+        "200":
+          description: A list of reports
+  /reports/generate:
+    post:
+      operationId: generateReport
+      summary: Generate a new report
+      tags: [reports]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                date_range:
+                  type: string
+              required:
+                - type
+      responses:
+        "201":
+          description: Report generation started
+  /reports/{report_id}/status:
+    parameters:
+      - name: report_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getReportStatus
+      summary: Get report generation status
+      tags: [reports]
+      responses:
+        "200":
+          description: Report status
+  /reports/{report_id}/download:
+    parameters:
+      - name: report_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: downloadReport
+      summary: Download a generated report
+      tags: [reports]
+      responses:
+        "200":
+          description: Report file
+
+  # --- Webhooks (5 endpoints) ---
+  /webhooks:
+    get:
+      operationId: listWebhooks
+      summary: List all webhooks
+      tags: [webhooks]
+      responses:
+        "200":
+          description: A list of webhooks
+    post:
+      operationId: createWebhook
+      summary: Create a new webhook
+      tags: [webhooks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+                events:
+                  type: array
+                  items:
+                    type: string
+              required:
+                - url
+      responses:
+        "201":
+          description: Webhook created
+  /webhooks/{webhook_id}:
+    parameters:
+      - name: webhook_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getWebhook
+      summary: Get webhook details
+      tags: [webhooks]
+      responses:
+        "200":
+          description: Webhook details
+    delete:
+      operationId: deleteWebhook
+      summary: Delete a webhook
+      tags: [webhooks]
+      responses:
+        "204":
+          description: Webhook deleted
+  /webhooks/{webhook_id}/test:
+    parameters:
+      - name: webhook_id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      operationId: testWebhook
+      summary: Send a test event to a webhook
+      tags: [webhooks]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event_type:
+                  type: string
+      responses:
+        "200":
+          description: Test event sent
+
+  # --- Admin (4 endpoints) ---
+  /admin/config:
+    get:
+      operationId: getAdminConfig
+      summary: Get admin configuration
+      tags: [admin]
+      responses:
+        "200":
+          description: Admin configuration
+    put:
+      operationId: updateAdminConfig
+      summary: Update admin configuration
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                maintenance_mode:
+                  type: boolean
+                rate_limit:
+                  type: integer
+      responses:
+        "200":
+          description: Configuration updated
+  /admin/flags:
+    get:
+      operationId: getFeatureFlags
+      summary: Get feature flags
+      tags: [admin]
+      responses:
+        "200":
+          description: Feature flags
+  /admin/health:
+    get:
+      operationId: getHealthStatus
+      summary: Get system health status
+      tags: [admin]
+      responses:
+        "200":
+          description: Health status
+
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+      required:
+        - id
+        - name
+    NewUser:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+      required:
+        - name
+    NewPost:
+      type: object
+      properties:
+        title:
+          type: string
+        body:
+          type: string
+      required:
+        - title
+    NewProduct:
+      type: object
+      properties:
+        name:
+          type: string
+        price:
+          type: number
+        description:
+          type: string
+      required:
+        - name
+        - price
+    NewOrder:
+      type: object
+      properties:
+        user_id:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              product_id:
+                type: string
+              quantity:
+                type: integer
+      required:
+        - user_id
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer

@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rest-jsonserver
+  namespace: example-test-targets
+  labels:
+    app: rest-jsonserver
+    app.kubernetes.io/name: rest-jsonserver
+    app.kubernetes.io/part-of: example-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: rest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rest-jsonserver
+  template:
+    metadata:
+      labels:
+        app: rest-jsonserver
+        app.kubernetes.io/name: rest-jsonserver
+        app.kubernetes.io/component: test-target
+        tool-compiler.io/protocol: rest
+    spec:
+      containers:
+        - name: json-server
+          image: YOUR_REGISTRY/YOUR_PROJECT/test-target-rest:latest
+          ports:
+            - containerPort: 3000
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /posts
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /posts
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30

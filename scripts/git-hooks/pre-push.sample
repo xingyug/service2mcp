@@ -1,0 +1,16 @@
+#!/bin/sh
+# Install: from repo root, run:
+#   cp scripts/git-hooks/pre-push.sample .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+# Requires gitleaks on PATH: https://github.com/gitleaks/gitleaks
+
+set -e
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "gitleaks: not found on PATH; install from https://github.com/gitleaks/gitleaks" >&2
+  echo "Or run manually: make gitleaks" >&2
+  exit 1
+fi
+
+exec gitleaks detect --source "$ROOT" --verbose

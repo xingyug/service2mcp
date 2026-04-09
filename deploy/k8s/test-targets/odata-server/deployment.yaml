@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: odata-server
+  namespace: example-test-targets
+  labels:
+    app: odata-server
+    app.kubernetes.io/name: odata-server
+    app.kubernetes.io/part-of: example-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: odata
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: odata-server
+  template:
+    metadata:
+      labels:
+        app: odata-server
+        app.kubernetes.io/name: odata-server
+        app.kubernetes.io/component: test-target
+        tool-compiler.io/protocol: odata
+    spec:
+      containers:
+        - name: odata-server
+          image: YOUR_REGISTRY/YOUR_PROJECT/test-target-odata:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30

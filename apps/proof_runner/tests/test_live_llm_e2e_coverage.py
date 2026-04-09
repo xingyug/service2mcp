@@ -1,0 +1,2296 @@
+"""Tests for apps/proof_runner/live_llm_e2e.py — async orchestration and uncovered paths."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+
+from apps.proof_runner.live_llm_e2e import (
+    ProofCase,
+    ProofResult,
+    ToolInvocationResult,
+    ToolInvocationSpec,
+    _active_version_for_service,
+    _artifact_version,
+    _async_main,
+    _build_audit_policy,
+    _build_llm_judge_from_env,
+    _build_proof_cases,
+    _compute_tool_intent_counts,
+    _fetch_compilation_events,
+    _fetch_runtime_tool_names,
+    _generated_tool_audit_failure_reason,
+    _json_safe,
+    _operations_enhanced_from_events,
+    _parse_args,
+    _parse_sse_events,
+    _resolve_invocation_specs,
+    _submit_compilation,
+    _wait_for_terminal_job,
+    main,
+    run_proofs,
+)
+from libs.ir.models import (
+    EventDescriptor,
+    EventSupportLevel,
+    EventTransport,
+    GrpcStreamMode,
+    GrpcStreamRuntimeConfig,
+    Operation,
+    Param,
+    RiskLevel,
+    RiskMetadata,
+    ServiceIR,
+    ToolIntent,
+)
+from libs.validator.audit import AuditPolicy, ToolAuditSummary
+
+_ENHANCE_STAGE_SUCCEEDED_EVENT = (
+    'event: msg\ndata: {"stage":"enhance","event_type":"stage.succeeded",'
+    '"detail":{"operations_enhanced":3}}\n\n'
+)
+
+
+@pytest.fixture(autouse=True)
+def _set_access_control_jwt_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ACCESS_CONTROL_JWT_SECRET", "test-jwt-secret")
+
+
+def _risk(level: RiskLevel = RiskLevel.safe) -> RiskMetadata:
+    return RiskMetadata(risk_level=level)
+
+
+def _op(op_id: str = "test_op", enabled: bool = True, **kwargs: Any) -> Operation:
+    defaults: dict[str, Any] = {
+        "id": op_id,
+        "operation_id": op_id,
+        "name": op_id,
+        "description": f"Test {op_id}",
+        "method": "GET",
+        "path": f"/{op_id}",
+        "risk": _risk(),
+        "enabled": enabled,
+    }
+    defaults.update(kwargs)
+    return Operation(**defaults)
+
+
+def _ir(
+    operations: list[Any] | None = None,
+    event_descriptors: list[EventDescriptor] | None = None,
+) -> ServiceIR:
+    return ServiceIR(
+        service_id="test-svc",
+        service_name="Test",
+        base_url="https://example.com",
+        source_hash="sha256:abc",
+        protocol="openapi",
+        operations=operations or [],
+        event_descriptors=event_descriptors or [],
+    )
+
+
+# --- _submit_compilation ---
+
+
+class TestSubmitCompilation:
+    async def test_submit_compilation_posts_and_returns_json(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"id": "job-1", "status": "queued"},
+            request=httpx.Request("POST", "http://test/api/v1/compilations"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        result = await _submit_compilation(mock_client, {"service_name": "test"})
+        assert result["id"] == "job-1"
+        _, kwargs = mock_client.post.await_args
+        assert kwargs["json"] == {"service_name": "test"}
+        assert kwargs["headers"]["Authorization"].startswith("Bearer ")
+
+    async def test_submit_compilation_raises_on_error(self) -> None:
+        mock_response = httpx.Response(
+            500,
+            text="Internal Server Error",
+            request=httpx.Request("POST", "http://test/api/v1/compilations"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(httpx.HTTPStatusError):
+            await _submit_compilation(mock_client, {"service_name": "test"})
+
+    async def test_submit_compilation_rejects_invalid_json(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            text="not-json",
+            request=httpx.Request("POST", "http://test/api/v1/compilations"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with pytest.raises(RuntimeError, match="invalid JSON"):
+            await _submit_compilation(mock_client, {"service_name": "test"})
+
+    async def test_submit_compilation_refreshes_auth_header_per_request(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"id": "job-1", "status": "queued"},
+            request=httpx.Request("POST", "http://test/api/v1/compilations"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="fresh-token",
+        ):
+            await _submit_compilation(mock_client, {"service_name": "test"})
+
+        _, kwargs = mock_client.post.await_args
+        assert kwargs["headers"] == {"Authorization": "Bearer fresh-token"}
+
+
+# --- _wait_for_terminal_job ---
+
+
+class TestWaitForTerminalJob:
+    async def test_returns_immediately_on_terminal_status(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"id": "job-1", "status": "succeeded"},
+            request=httpx.Request("GET", "http://test/api/v1/compilations/job-1"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="fresh-token",
+        ):
+            result = await _wait_for_terminal_job(mock_client, "job-1", timeout_seconds=10.0)
+        assert result["status"] == "succeeded"
+        _, kwargs = mock_client.get.await_args
+        assert kwargs["headers"] == {"Authorization": "Bearer fresh-token"}
+
+    async def test_polls_until_terminal(self) -> None:
+        pending = httpx.Response(
+            200,
+            json={"id": "job-1", "status": "running"},
+            request=httpx.Request("GET", "http://test/api/v1/compilations/job-1"),
+        )
+        done = httpx.Response(
+            200,
+            json={"id": "job-1", "status": "succeeded"},
+            request=httpx.Request("GET", "http://test/api/v1/compilations/job-1"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(side_effect=[pending, done])
+
+        with (
+            patch("apps.proof_runner.live_llm_e2e.asyncio.sleep", new_callable=AsyncMock),
+            patch(
+                "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+                side_effect=["token-1", "token-2"],
+            ),
+        ):
+            result = await _wait_for_terminal_job(mock_client, "job-1", timeout_seconds=60.0)
+        assert result["status"] == "succeeded"
+        assert mock_client.get.await_args_list[0].kwargs["headers"] == {
+            "Authorization": "Bearer token-1"
+        }
+        assert mock_client.get.await_args_list[1].kwargs["headers"] == {
+            "Authorization": "Bearer token-2"
+        }
+
+    async def test_raises_timeout(self) -> None:
+        pending = httpx.Response(
+            200,
+            json={"id": "job-1", "status": "running"},
+            request=httpx.Request("GET", "http://test/api/v1/compilations/job-1"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=pending)
+
+        with (
+            pytest.raises(TimeoutError, match="Timed out"),
+            patch(
+                "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+                return_value="fresh-token",
+            ),
+        ):
+            await _wait_for_terminal_job(mock_client, "job-1", timeout_seconds=0.0)
+
+    async def test_failed_status_is_terminal(self) -> None:
+        resp = httpx.Response(
+            200,
+            json={"id": "job-1", "status": "failed", "error_detail": "oops"},
+            request=httpx.Request("GET", "http://test/api/v1/compilations/job-1"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=resp)
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="fresh-token",
+        ):
+            result = await _wait_for_terminal_job(mock_client, "job-1", timeout_seconds=10.0)
+        assert result["status"] == "failed"
+
+    async def test_missing_status_raises_controlled_error(self) -> None:
+        resp = httpx.Response(
+            200,
+            json={"id": "job-1"},
+            request=httpx.Request("GET", "http://test/api/v1/compilations/job-1"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=resp)
+
+        with (
+            pytest.raises(RuntimeError, match="required field 'status'"),
+            patch(
+                "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+                return_value="fresh-token",
+            ),
+        ):
+            await _wait_for_terminal_job(mock_client, "job-1", timeout_seconds=10.0)
+
+
+# --- _fetch_compilation_events ---
+
+
+class TestFetchCompilationEvents:
+    async def test_fetches_and_parses_sse(self) -> None:
+        sse_text = 'event: message\ndata: {"stage": "extract"}\n\n'
+        mock_response = httpx.Response(
+            200,
+            text=sse_text,
+            request=httpx.Request("GET", "http://test/api/v1/compilations/job-1/events"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="sse-token",
+        ):
+            events = await _fetch_compilation_events(mock_client, "job-1")
+        assert len(events) == 1
+        assert events[0]["data"]["stage"] == "extract"
+        mock_client.get.assert_awaited_once_with(
+            "/api/v1/compilations/job-1/events",
+            headers={"Authorization": "Bearer sse-token"},
+            params={"token": "sse-token"},
+        )
+
+    async def test_raises_on_error(self) -> None:
+        mock_response = httpx.Response(
+            404,
+            text="Not Found",
+            request=httpx.Request("GET", "http://test/api/v1/compilations/job-1/events"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="sse-token",
+        ):
+            with pytest.raises(httpx.HTTPStatusError):
+                await _fetch_compilation_events(mock_client, "job-1")
+
+
+# --- _parse_sse_events (JSONDecodeError branch) ---
+
+
+class TestParseSseEventsInvalidJson:
+    def test_invalid_json_stored_as_string(self) -> None:
+        payload = "event: msg\ndata: not-valid-json\n\n"
+        events = _parse_sse_events(payload)
+        assert len(events) == 1
+        assert events[0]["data"] == "not-valid-json"
+
+    def test_multiline_data_is_accumulated(self) -> None:
+        payload = 'event: msg\ndata: {\ndata: "stage": "extract"\ndata: }\n\n'
+        events = _parse_sse_events(payload)
+        assert len(events) == 1
+        assert events[0]["data"] == {"stage": "extract"}
+
+
+# --- _active_version_for_service ---
+
+
+class TestActiveVersionForService:
+    async def test_found(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={
+                "services": [
+                    {"service_id": "other-svc", "active_version": 1},
+                    {"service_id": "my-svc", "active_version": 3},
+                ]
+            },
+            request=httpx.Request("GET", "http://test/api/v1/services"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="fresh-token",
+        ):
+            version = await _active_version_for_service(mock_client, "my-svc")
+        assert version == 3
+        mock_client.get.assert_called_once_with(
+            "/api/v1/services",
+            params=None,
+            headers={"Authorization": "Bearer fresh-token"},
+        )
+
+    async def test_not_found_raises(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"services": [{"service_id": "other-svc", "active_version": 1}]},
+            request=httpx.Request("GET", "http://test/api/v1/services"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with (
+            pytest.raises(RuntimeError, match="not found"),
+            patch(
+                "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+                return_value="fresh-token",
+            ),
+        ):
+            await _active_version_for_service(mock_client, "missing-svc")
+
+    async def test_non_dict_service_skipped(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"services": ["not-a-dict", {"service_id": "my-svc", "active_version": 5}]},
+            request=httpx.Request("GET", "http://test/api/v1/services"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="fresh-token",
+        ):
+            version = await _active_version_for_service(mock_client, "my-svc")
+        assert version == 5
+
+    async def test_missing_active_version_raises_controlled_error(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"services": [{"service_id": "my-svc"}]},
+            request=httpx.Request("GET", "http://test/api/v1/services"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with (
+            pytest.raises(RuntimeError, match="required field 'active_version'"),
+            patch(
+                "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+                return_value="fresh-token",
+            ),
+        ):
+            await _active_version_for_service(mock_client, "my-svc")
+
+    async def test_scope_filters_are_forwarded(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"services": [{"service_id": "my-svc", "active_version": 4}]},
+            request=httpx.Request("GET", "http://test/api/v1/services"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="fresh-token",
+        ):
+            version = await _active_version_for_service(
+                mock_client,
+                "my-svc",
+                tenant="tenant-a",
+                environment="prod",
+            )
+
+        assert version == 4
+        mock_client.get.assert_called_once_with(
+            "/api/v1/services",
+            params={"tenant": "tenant-a", "environment": "prod"},
+            headers={"Authorization": "Bearer fresh-token"},
+        )
+
+
+# --- _artifact_version ---
+
+
+class TestArtifactVersion:
+    async def test_returns_json(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"ir_json": {"operations": []}, "version": 2},
+            request=httpx.Request("GET", "http://test/api/v1/artifacts/svc/versions/2"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="fresh-token",
+        ):
+            result = await _artifact_version(mock_client, "svc", 2)
+        assert result["version"] == 2
+        mock_client.get.assert_called_once_with(
+            "/api/v1/artifacts/svc/versions/2",
+            params=None,
+            headers={"Authorization": "Bearer fresh-token"},
+        )
+
+    async def test_missing_ir_json_raises_controlled_error(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"version": 2},
+            request=httpx.Request("GET", "http://test/api/v1/artifacts/svc/versions/2"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with (
+            pytest.raises(RuntimeError, match="required field 'ir_json'"),
+            patch(
+                "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+                return_value="fresh-token",
+            ),
+        ):
+            await _artifact_version(mock_client, "svc", 2)
+
+    async def test_scope_filters_are_forwarded(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"ir_json": {"operations": []}, "version": 2},
+            request=httpx.Request("GET", "http://test/api/v1/artifacts/svc/versions/2"),
+        )
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._compiler_api_sse_token",
+            return_value="fresh-token",
+        ):
+            result = await _artifact_version(
+                mock_client,
+                "svc",
+                2,
+                tenant="tenant-a",
+                environment="prod",
+            )
+
+        assert result["version"] == 2
+        mock_client.get.assert_called_once_with(
+            "/api/v1/artifacts/svc/versions/2",
+            params={"tenant": "tenant-a", "environment": "prod"},
+            headers={"Authorization": "Bearer fresh-token"},
+        )
+
+
+# --- _fetch_runtime_tool_names ---
+
+
+class TestFetchRuntimeToolNames:
+    async def test_fetches_tool_names(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={
+                "tools": [
+                    {"name": "tool_a", "description": "A"},
+                    {"name": "tool_b", "description": "B"},
+                ]
+            },
+            request=httpx.Request("GET", "http://runtime:8003/tools"),
+        )
+
+        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_class.return_value = mock_client
+
+            names = await _fetch_runtime_tool_names("http://runtime:8003")
+            assert names == {"tool_a", "tool_b"}
+
+    async def test_rejects_malformed_tool_entry(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"tools": [{"name": "tool_a"}, {"id": "broken"}]},
+            request=httpx.Request("GET", "http://runtime:8003/tools"),
+        )
+
+        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_class.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="valid 'name' string"):
+                await _fetch_runtime_tool_names("http://runtime:8003")
+
+    async def test_rejects_duplicate_tool_names(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={"tools": [{"name": "tool_a"}, {"name": "tool_a"}]},
+            request=httpx.Request("GET", "http://runtime:8003/tools"),
+        )
+
+        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_class.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="duplicate tool name"):
+                await _fetch_runtime_tool_names("http://runtime:8003")
+
+    async def test_rejects_non_object_payload(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json=["tool_a", "tool_b"],
+            request=httpx.Request("GET", "http://runtime:8003/tools"),
+        )
+
+        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_class.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="expected object"):
+                await _fetch_runtime_tool_names("http://runtime:8003")
+
+    async def test_rejects_missing_tools_field(self) -> None:
+        mock_response = httpx.Response(
+            200,
+            json={},
+            request=httpx.Request("GET", "http://runtime:8003/tools"),
+        )
+
+        with patch("apps.proof_runner.live_llm_e2e.httpx.AsyncClient") as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.get = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_class.return_value = mock_client
+
+            with pytest.raises(RuntimeError, match="required field 'tools'"):
+                await _fetch_runtime_tool_names("http://runtime:8003")
+
+
+# --- _generated_tool_audit_failure_reason ---
+
+
+class TestGeneratedToolAuditFailureReason:
+    def test_status_not_ok(self) -> None:
+        ir = _ir()
+        reason = _generated_tool_audit_failure_reason(ir, "op1", {"status": "error"})
+        assert reason is not None
+        assert "unexpected status" in reason
+
+    def test_status_ok_without_result_payload(self) -> None:
+        ir = _ir()
+        reason = _generated_tool_audit_failure_reason(ir, "op1", {"status": "ok"})
+        assert reason is not None
+        assert "result payload" in reason
+
+    def test_transport_mismatch(self) -> None:
+        descriptor = EventDescriptor(
+            id="ed1",
+            name="Stream",
+            operation_id="stream_op",
+            transport=EventTransport.grpc_stream,
+            support=EventSupportLevel.supported,
+            grpc_stream=GrpcStreamRuntimeConfig(
+                rpc_path="/pkg.Svc/Stream",
+                mode=GrpcStreamMode.server,
+            ),
+        )
+        ir = _ir(operations=[_op("stream_op")], event_descriptors=[descriptor])
+        reason = _generated_tool_audit_failure_reason(
+            ir,
+            "stream_op",
+            {"status": "ok", "transport": "websocket", "result": {}},
+        )
+        assert reason is not None
+        assert "transport" in reason
+
+    def test_non_object_stream_payload(self) -> None:
+        descriptor = EventDescriptor(
+            id="ed1",
+            name="Stream",
+            operation_id="stream_op",
+            transport=EventTransport.grpc_stream,
+            support=EventSupportLevel.supported,
+            grpc_stream=GrpcStreamRuntimeConfig(
+                rpc_path="/pkg.Svc/Stream",
+                mode=GrpcStreamMode.server,
+            ),
+        )
+        ir = _ir(operations=[_op("stream_op")], event_descriptors=[descriptor])
+        reason = _generated_tool_audit_failure_reason(
+            ir,
+            "stream_op",
+            {"status": "ok", "transport": "grpc_stream", "result": "not-a-dict"},
+        )
+        assert reason is not None
+        assert "non-object" in reason
+
+    def test_missing_lifecycle(self) -> None:
+        descriptor = EventDescriptor(
+            id="ed1",
+            name="Stream",
+            operation_id="stream_op",
+            transport=EventTransport.grpc_stream,
+            support=EventSupportLevel.supported,
+            grpc_stream=GrpcStreamRuntimeConfig(
+                rpc_path="/pkg.Svc/Stream",
+                mode=GrpcStreamMode.server,
+            ),
+        )
+        ir = _ir(operations=[_op("stream_op")], event_descriptors=[descriptor])
+        reason = _generated_tool_audit_failure_reason(
+            ir,
+            "stream_op",
+            {"status": "ok", "transport": "grpc_stream", "result": {"events": []}},
+        )
+        assert reason is not None
+        assert "lifecycle" in reason
+
+    def test_empty_lifecycle_fails_required_field_validation(self) -> None:
+        descriptor = EventDescriptor(
+            id="ed1",
+            name="Stream",
+            operation_id="stream_op",
+            transport=EventTransport.grpc_stream,
+            support=EventSupportLevel.supported,
+            grpc_stream=GrpcStreamRuntimeConfig(
+                rpc_path="/pkg.Svc/Stream",
+                mode=GrpcStreamMode.server,
+            ),
+        )
+        ir = _ir(operations=[_op("stream_op")], event_descriptors=[descriptor])
+        reason = _generated_tool_audit_failure_reason(
+            ir,
+            "stream_op",
+            {"status": "ok", "transport": "grpc_stream", "result": {"events": [], "lifecycle": {}}},
+        )
+        assert reason is not None
+        assert "termination_reason" in reason
+
+    def test_valid_streaming_result(self) -> None:
+        descriptor = EventDescriptor(
+            id="ed1",
+            name="Stream",
+            operation_id="stream_op",
+            transport=EventTransport.grpc_stream,
+            support=EventSupportLevel.supported,
+            grpc_stream=GrpcStreamRuntimeConfig(
+                rpc_path="/pkg.Svc/Stream",
+                mode=GrpcStreamMode.server,
+            ),
+        )
+        ir = _ir(operations=[_op("stream_op")], event_descriptors=[descriptor])
+        reason = _generated_tool_audit_failure_reason(
+            ir,
+            "stream_op",
+            {
+                "status": "ok",
+                "transport": "grpc_stream",
+                "result": {
+                    "events": [{"sku": "x"}],
+                    "lifecycle": {
+                        "termination_reason": "completed",
+                        "messages_collected": 1,
+                        "rpc_path": "/pkg.Svc/Stream",
+                        "mode": "server",
+                    },
+                },
+            },
+        )
+        assert reason is None
+
+
+class TestOperationsEnhancedFromEvents:
+    def test_rejects_non_integer_operations_enhanced(self) -> None:
+        events = [
+            {
+                "data": {
+                    "stage": "enhance",
+                    "event_type": "stage.succeeded",
+                    "detail": {"operations_enhanced": "3"},
+                }
+            }
+        ]
+
+        with pytest.raises(RuntimeError, match="expected integer"):
+            _operations_enhanced_from_events(events)
+
+
+# --- _compute_tool_intent_counts (else branch for unknown intent) ---
+
+
+class TestComputeToolIntentCountsUnknown:
+    def test_unknown_intent_counted_as_unset(self) -> None:
+        op = _op("op1", tool_intent=ToolIntent.discovery)
+        # Simulate an unknown intent value by patching
+        object.__setattr__(op, "tool_intent", "some_unknown_value")
+        ir = _ir(operations=[op])
+        counts = _compute_tool_intent_counts(ir)
+        assert counts.unset == 1
+
+
+# --- _json_safe model_dump TypeError fallback ---
+
+
+class TestJsonSafeModelDumpFallback:
+    def test_model_dump_type_error_fallback(self) -> None:
+        """Test when model_dump(mode='json') raises TypeError."""
+        mock_model = MagicMock()
+        mock_model.model_dump.side_effect = [TypeError("no mode arg"), {"field": "value"}]
+        result = _json_safe(mock_model)
+        assert result == {"field": "value"}
+        assert mock_model.model_dump.call_count == 2
+
+
+# --- _build_proof_cases ---
+
+
+class TestBuildProofCases:
+    def test_builds_all_seven_protocols(self) -> None:
+        cases = _build_proof_cases("test-ns", "run-abc")
+        assert len(cases) == 7
+        protocols = {c.protocol for c in cases}
+        assert protocols == {"graphql", "rest", "grpc", "soap", "sql", "cli", "asyncapi"}
+
+    def test_service_ids_include_run_id(self) -> None:
+        cases = _build_proof_cases("ns", "xyz123")
+        for case in cases:
+            assert "xyz123" in case.service_id
+
+    def test_graphql_case_has_source_content(self) -> None:
+        cases = _build_proof_cases("ns", "rid")
+        graphql_case = next(c for c in cases if c.protocol == "graphql")
+        assert "source_content" in graphql_case.request_payload
+        assert graphql_case.request_payload["options"]["protocol"] == "graphql"
+
+    def test_rest_case_has_source_url(self) -> None:
+        cases = _build_proof_cases("ns", "rid")
+        rest_case = next(c for c in cases if c.protocol == "rest")
+        assert "source_url" in rest_case.request_payload
+        assert "ns.svc.cluster.local" in rest_case.request_payload["source_url"]
+
+    def test_grpc_case_has_proto_content(self) -> None:
+        cases = _build_proof_cases("ns", "rid")
+        grpc_case = next(c for c in cases if c.protocol == "grpc")
+        assert "source_content" in grpc_case.request_payload
+        assert grpc_case.request_payload["options"]["protocol"] == "grpc"
+
+    def test_soap_case_rewrites_wsdl(self) -> None:
+        cases = _build_proof_cases("ns", "rid")
+        soap_case = next(c for c in cases if c.protocol == "soap")
+        assert "source_content" in soap_case.request_payload
+        assert "ns.svc.cluster.local" in soap_case.request_payload["source_content"]
+
+    def test_sql_case_has_database_url(self) -> None:
+        cases = _build_proof_cases("ns", "rid")
+        sql_case = next(c for c in cases if c.protocol == "sql")
+        assert "source_url" in sql_case.request_payload
+        assert "postgresql://" in sql_case.request_payload["source_url"]
+
+    def test_cli_case_has_source_content(self) -> None:
+        cases = _build_proof_cases("ns", "rid")
+        cli_case = next(c for c in cases if c.protocol == "cli")
+        assert "source_content" in cli_case.request_payload
+        assert cli_case.request_payload["options"]["protocol"] == "cli"
+        assert "simple-tool" in cli_case.request_payload["source_content"]
+
+    def test_asyncapi_case_has_source_content(self) -> None:
+        cases = _build_proof_cases("ns", "rid")
+        asyncapi_case = next(c for c in cases if c.protocol == "asyncapi")
+        assert "source_content" in asyncapi_case.request_payload
+        assert asyncapi_case.request_payload["options"]["protocol"] == "asyncapi"
+        assert "User Events" in asyncapi_case.request_payload["source_content"]
+
+    def test_each_case_has_tool_invocations(self) -> None:
+        cases = _build_proof_cases("ns", "rid")
+        for case in cases:
+            assert len(case.tool_invocations) >= 1
+
+    def test_builds_real_target_cases(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PROOF_DIRECTUS_ACCESS_TOKEN", "directus-token")
+        monkeypatch.setenv("PROOF_POCKETBASE_ACCESS_TOKEN", "pocketbase-token")
+        monkeypatch.setenv("PROOF_GITEA_BASIC_AUTH", "gitea_admin:Admin123!")
+        monkeypatch.setenv(
+            "PROOF_JACKSON_SCIM_BASE_URL",
+            "http://jackson.example-targets.svc.cluster.local:5225/api/scim/v2.0/dir-id",
+        )
+        monkeypatch.setenv("PROOF_JACKSON_SCIM_SECRET", "jackson-secret")
+
+        cases = _build_proof_cases(
+            "proof-ns",
+            "rid",
+            profile="real-targets",
+            upstream_namespace="example-targets",
+        )
+
+        assert len(cases) == 11
+        case_ids = {case.case_id for case in cases}
+        assert case_ids == {
+            "aria2-jsonrpc",
+            "directus-graphql",
+            "directus-openapi",
+            "directus-rest",
+            "gitea-openapi",
+            "jackson-scim",
+            "northbreeze-odata",
+            "openfga-grpc",
+            "pocketbase-rest",
+            "real-postgres-sql",
+            "soap-cxf",
+        }
+
+        scim_case = next(case for case in cases if case.case_id == "jackson-scim")
+        assert scim_case.request_payload["source_url"].endswith("/Users")
+        assert scim_case.request_payload["options"]["auth"]["runtime_secret_ref"] == (
+            "jackson-scim-secret"
+        )
+        assert scim_case.request_payload["options"]["preferred_smoke_tool_ids"] == [
+            "list_users",
+            "get_user",
+            "list_groups",
+        ]
+
+        grpc_case = next(case for case in cases if case.case_id == "openfga-grpc")
+        assert grpc_case.request_payload["source_url"].startswith("grpc://openfga.")
+        assert "source_content" not in grpc_case.request_payload
+        assert grpc_case.request_payload["options"]["preferred_smoke_tool_ids"] == [
+            "ListStores",
+            "CreateStore",
+            "GetStore",
+            "ReadAuthorizationModels",
+        ]
+        assert grpc_case.request_payload["options"]["hints"]["enable_native_grpc_stream"] == "true"
+
+        directus_rest_case = next(case for case in cases if case.case_id == "directus-rest")
+        assert directus_rest_case.request_payload["source_url"].endswith("/collections")
+        assert directus_rest_case.request_payload["options"]["hints"]["llm_seed_mutation"] == "true"
+
+        pocketbase_rest_case = next(case for case in cases if case.case_id == "pocketbase-rest")
+        assert pocketbase_rest_case.request_payload["source_url"].endswith("/api/collections")
+        assert (
+            pocketbase_rest_case.request_payload["options"]["hints"]["llm_seed_mutation"] == "true"
+        )
+        assert pocketbase_rest_case.request_payload["options"]["preferred_smoke_tool_ids"] == [
+            "get_api_collections",
+            "get_api_health",
+        ]
+
+        aria2_case = next(case for case in cases if case.case_id == "aria2-jsonrpc")
+        assert aria2_case.request_payload["source_url"].endswith("/jsonrpc")
+        assert "source_content" not in aria2_case.request_payload
+        assert aria2_case.request_payload["options"]["auth_token"] == "token:test-secret"
+        assert aria2_case.request_payload["options"]["preferred_smoke_tool_ids"] == [
+            "aria2_getVersion",
+            "aria2_getGlobalStat",
+            "system_listMethods",
+        ]
+        assert aria2_case.request_payload["options"]["hints"] == {
+            "jsonrpc_auth_in_params": "true",
+            "jsonrpc_fallback_params_type": "positional",
+        }
+        assert aria2_case.audit_skip_tool_ids == (
+            "aria2_getFiles",
+            "aria2_getOption",
+            "aria2_getPeers",
+            "aria2_getServers",
+            "aria2_getUris",
+        )
+        assert "live aria2 download gid" in str(aria2_case.audit_skip_reason)
+
+        assert grpc_case.audit_skip_tool_ids == (
+            "GetStore",
+            "ListObjects",
+            "ListUsers",
+            "Read",
+            "ReadAssertions",
+            "ReadAuthorizationModel",
+            "ReadAuthorizationModels",
+            "ReadChanges",
+        )
+        assert "live OpenFGA store or authorization model context" in str(
+            grpc_case.audit_skip_reason
+        )
+
+        directus_openapi_case = next(case for case in cases if case.case_id == "directus-openapi")
+        assert directus_openapi_case.tool_invocations == (
+            ToolInvocationSpec(tool_name="ping", arguments={}),
+        )
+        assert directus_openapi_case.audit_skip_tool_ids == ("oauth", "oauthProvider")
+
+        gitea_openapi_case = next(case for case in cases if case.case_id == "gitea-openapi")
+        assert gitea_openapi_case.audit_skip_tool_ids == ("getNodeInfo",)
+
+        soap_case = next(case for case in cases if case.case_id == "soap-cxf")
+        assert soap_case.tool_invocations == (
+            ToolInvocationSpec(
+                tool_name="GetOrderStatus",
+                arguments={"orderId": "ORD-1001"},
+            ),
+        )
+
+    def test_disables_llm_enhancement_in_case_payloads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PROOF_DIRECTUS_ACCESS_TOKEN", "directus-token")
+        monkeypatch.setenv("PROOF_POCKETBASE_ACCESS_TOKEN", "pocketbase-token")
+        monkeypatch.setenv("PROOF_GITEA_BASIC_AUTH", "gitea_admin:Admin123!")
+        monkeypatch.setenv(
+            "PROOF_JACKSON_SCIM_BASE_URL",
+            "http://jackson.example-targets.svc.cluster.local:5225/api/scim/v2.0/dir-id",
+        )
+        monkeypatch.setenv("PROOF_JACKSON_SCIM_SECRET", "jackson-secret")
+
+        cases = _build_proof_cases(
+            "proof-ns",
+            "rid",
+            profile="real-targets",
+            upstream_namespace="example-targets",
+            enable_llm_enhancement=False,
+        )
+
+        for case in cases:
+            assert case.request_payload["options"]["skip_enhancement"] is True
+
+        directus_rest_case = next(case for case in cases if case.case_id == "directus-rest")
+        assert "hints" not in directus_rest_case.request_payload["options"]
+
+        pocketbase_rest_case = next(case for case in cases if case.case_id == "pocketbase-rest")
+        assert "hints" not in pocketbase_rest_case.request_payload["options"]
+
+    def test_filters_cases_by_case_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PROOF_DIRECTUS_ACCESS_TOKEN", "directus-token")
+        monkeypatch.setenv("PROOF_POCKETBASE_ACCESS_TOKEN", "pocketbase-token")
+        monkeypatch.setenv("PROOF_GITEA_BASIC_AUTH", "gitea_admin:Admin123!")
+        monkeypatch.setenv(
+            "PROOF_JACKSON_SCIM_BASE_URL",
+            "http://jackson.example-targets.svc.cluster.local:5225/api/scim/v2.0/dir-id",
+        )
+        monkeypatch.setenv("PROOF_JACKSON_SCIM_SECRET", "jackson-secret")
+
+        cases = _build_proof_cases(
+            "proof-ns",
+            "rid",
+            profile="real-targets",
+            upstream_namespace="example-targets",
+            selected_case_ids={"gitea-openapi", "soap-cxf"},
+        )
+
+        assert [case.case_id for case in cases] == ["gitea-openapi", "soap-cxf"]
+
+
+# --- _invoke_runtime_tools ---
+
+
+class TestInvokeRuntimeTools:
+    async def test_invokes_and_collects_results(self) -> None:
+        mock_invoker = AsyncMock(
+            side_effect=[
+                {"status": "ok", "data": "result1"},
+                {"status": "ok", "data": "result2"},
+            ]
+        )
+
+        specs = (
+            ToolInvocationSpec(tool_name="tool_a", arguments={"x": 1}),
+            ToolInvocationSpec(tool_name="tool_b", arguments={"y": 2}),
+        )
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e.build_streamable_http_tool_invoker",
+            return_value=mock_invoker,
+        ):
+            from apps.proof_runner.live_llm_e2e import _invoke_runtime_tools
+
+            results = await _invoke_runtime_tools("http://runtime:8003", specs)
+
+        assert len(results) == 2
+        assert results[0].tool_name == "tool_a"
+        assert results[0].result == {"status": "ok", "data": "result1"}
+        assert results[1].tool_name == "tool_b"
+
+
+# --- _audit_generated_tools ---
+
+
+class TestResolveInvocationSpecs:
+    def test_sample_invocation_overrides_preferred_tool_arguments(self) -> None:
+        ir = _ir(
+            operations=[
+                _op(
+                    "read_order",
+                    path="/orders/{slug}",
+                    params=[Param(name="slug", type="string", required=True)],
+                )
+            ]
+        )
+        case = ProofCase(
+            protocol="rest",
+            service_id="svc",
+            request_payload={"options": {}},
+            preferred_tool_ids=("read_order",),
+        )
+
+        specs = _resolve_invocation_specs(
+            ir,
+            case,
+            sample_invocation_overrides={"read_order": {"slug": "featured"}},
+        )
+
+        assert specs == (
+            ToolInvocationSpec(tool_name="read_order", arguments={"slug": "featured"}),
+        )
+
+
+class TestAuditGeneratedTools:
+    async def test_tool_not_in_runtime_listing(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        ir = _ir(operations=[_op("op1")])
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(),
+            representative_results=[],
+            available_tool_names=set(),
+        )
+        assert summary.failed == 1
+        assert "not expose" in summary.results[0].reason
+
+    async def test_tool_skipped_by_policy(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        op = _op(
+            "op1",
+            method="DELETE",
+            risk=RiskMetadata(risk_level=RiskLevel.dangerous, destructive=True),
+        )
+        ir = _ir(operations=[op])
+        policy = AuditPolicy(
+            skip_destructive=True,
+            audit_safe_methods=True,
+            audit_discovery_intent=False,
+        )
+
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(
+                ToolInvocationSpec(tool_name="op1", arguments={"id": "1"}),
+            ),
+            representative_results=[],
+            available_tool_names={"op1"},
+            audit_policy=policy,
+        )
+        assert summary.skipped == 1
+
+    async def test_tool_skipped_by_case_policy(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        ir = _ir(operations=[_op("getNodeInfo")])
+
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(),
+            representative_results=[],
+            available_tool_names=set(),
+            forced_skip_tool_ids=("getNodeInfo",),
+        )
+
+        assert summary.skipped == 1
+        assert summary.failed == 0
+        assert summary.results[0].tool_name == "getNodeInfo"
+        assert "disabled in the target deployment" in summary.results[0].reason
+
+    async def test_tool_skipped_by_case_policy_uses_custom_reason(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        ir = _ir(operations=[_op("GetStore")])
+
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(),
+            representative_results=[],
+            available_tool_names={"GetStore"},
+            forced_skip_tool_ids=("GetStore",),
+            forced_skip_reason=(
+                "Skipped by proof-case policy because this endpoint needs live context."
+            ),
+        )
+
+        assert summary.skipped == 1
+        assert summary.failed == 0
+        assert summary.results[0].tool_name == "GetStore"
+        assert summary.results[0].reason == (
+            "Skipped by proof-case policy because this endpoint needs live context."
+        )
+
+    async def test_invocation_raises_exception(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        failing_invoker = AsyncMock(side_effect=RuntimeError("connection refused"))
+        ir = _ir(operations=[_op("op1")])
+        policy = AuditPolicy(
+            skip_destructive=False,
+            skip_external_side_effect=False,
+            skip_writes_state=False,
+        )
+
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+            representative_results=[],
+            tool_invoker=failing_invoker,
+            available_tool_names={"op1"},
+            audit_policy=policy,
+        )
+        assert summary.failed == 1
+        assert "Invocation raised" in summary.results[0].reason
+
+    async def test_invocation_fails_audit_check(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        failing_invoker = AsyncMock(return_value={"status": "error", "message": "bad"})
+        ir = _ir(operations=[_op("op1")])
+        policy = AuditPolicy(
+            skip_destructive=False,
+            skip_external_side_effect=False,
+            skip_writes_state=False,
+        )
+
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+            representative_results=[],
+            tool_invoker=failing_invoker,
+            available_tool_names={"op1"},
+            audit_policy=policy,
+        )
+        assert summary.failed == 1
+        assert "unexpected status" in summary.results[0].reason
+
+    async def test_invocation_passes(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        ok_invoker = AsyncMock(return_value={"status": "ok", "result": "good"})
+        ir = _ir(operations=[_op("op1")])
+        policy = AuditPolicy(
+            skip_destructive=False,
+            skip_external_side_effect=False,
+            skip_writes_state=False,
+        )
+
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+            representative_results=[],
+            tool_invoker=ok_invoker,
+            available_tool_names={"op1"},
+            audit_policy=policy,
+        )
+        assert summary.passed == 1
+        assert summary.results[0].outcome == "passed"
+
+    async def test_sample_invocation_overrides_enable_path_parameter_audit(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        ok_invoker = AsyncMock(return_value={"status": "ok", "result": {"good": True}})
+        ir = _ir(
+            operations=[
+                _op(
+                    "read_order",
+                    path="/orders/{slug}",
+                    params=[Param(name="slug", type="string", required=True)],
+                )
+            ]
+        )
+        policy = AuditPolicy(
+            skip_destructive=False,
+            skip_external_side_effect=False,
+            skip_writes_state=False,
+        )
+
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(),
+            representative_results=[],
+            tool_invoker=ok_invoker,
+            available_tool_names={"read_order"},
+            audit_policy=policy,
+            sample_invocation_overrides={"read_order": {"slug": "featured"}},
+        )
+
+        assert summary.passed == 1
+        ok_invoker.assert_awaited_once_with("read_order", {"slug": "featured"})
+
+    async def test_cached_result_used(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        ir = _ir(operations=[_op("op1")])
+        policy = AuditPolicy(
+            skip_destructive=False,
+            skip_external_side_effect=False,
+            skip_writes_state=False,
+        )
+        cached_results = [
+            ToolInvocationResult(tool_name="op1", result={"status": "ok", "result": 42}),
+        ]
+
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+            representative_results=cached_results,
+            available_tool_names={"op1"},
+            audit_policy=policy,
+        )
+        assert summary.passed == 1
+
+    async def test_disabled_operations_excluded(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _audit_generated_tools
+
+        ir = _ir(operations=[_op("op1", enabled=False)])
+        summary = await _audit_generated_tools(
+            "http://runtime:8003",
+            ir,
+            representative_invocations=(),
+            representative_results=[],
+            available_tool_names={"op1"},
+        )
+        assert summary.discovered_operations == 0
+
+
+# --- run_proofs ---
+
+
+class TestRunProofs:
+    async def test_run_proofs_single_protocol(self) -> None:
+        mock_result = ProofResult(
+            protocol="rest",
+            service_id="rest-svc-abc",
+            job_id="job-1",
+            active_version=1,
+            operations_enhanced=2,
+            llm_field_count=3,
+            invocation_results=[],
+        )
+        with patch(
+            "apps.proof_runner.live_llm_e2e._run_case",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            results = await run_proofs(
+                namespace="test-ns",
+                api_base_url="http://test:8000",
+                protocol="rest",
+                timeout_seconds=10.0,
+                run_id="abc",
+            )
+        assert len(results) == 1
+        assert results[0].protocol == "rest"
+
+    async def test_run_proofs_all_protocols(self) -> None:
+        mock_result = ProofResult(
+            protocol="any",
+            service_id="svc",
+            job_id="job-1",
+            active_version=1,
+            operations_enhanced=1,
+            llm_field_count=1,
+            invocation_results=[],
+        )
+        with patch(
+            "apps.proof_runner.live_llm_e2e._run_case",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            results = await run_proofs(
+                namespace="test-ns",
+                api_base_url="http://test:8000",
+                protocol="all",
+                timeout_seconds=10.0,
+                run_id="abc",
+            )
+        assert len(results) == 7
+
+    async def test_run_proofs_filters_selected_case_ids(self) -> None:
+        mock_result = ProofResult(
+            protocol="soap",
+            service_id="soap-svc",
+            job_id="job-1",
+            active_version=1,
+            operations_enhanced=1,
+            llm_field_count=1,
+            invocation_results=[],
+            case_id="mock-soap",
+        )
+        with patch(
+            "apps.proof_runner.live_llm_e2e._run_case",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            results = await run_proofs(
+                namespace="test-ns",
+                api_base_url="http://test:8000",
+                protocol="all",
+                timeout_seconds=10.0,
+                run_id="abc",
+                selected_case_ids={"mock-soap"},
+            )
+        assert len(results) == 1
+        assert results[0].case_id == "mock-soap"
+
+    async def test_run_proofs_surfaces_exception_type_for_blank_message(self) -> None:
+        class BlankError(Exception):
+            pass
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e._run_case",
+            new_callable=AsyncMock,
+            side_effect=BlankError(),
+        ):
+            results = await run_proofs(
+                namespace="test-ns",
+                api_base_url="http://test:8000",
+                protocol="rest",
+                timeout_seconds=10.0,
+                run_id="abc",
+            )
+
+        assert len(results) == 1
+        assert results[0].error == "BlankError"
+
+
+# --- _run_case ---
+
+
+class TestRunCase:
+    async def test_run_case_success(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _run_case
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
+        mock_client.post = AsyncMock(return_value=compile_resp)
+
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
+        events_resp = httpx.Response(
+            200,
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
+            request=httpx.Request("GET", "http://t"),
+        )
+        services_resp = httpx.Response(
+            200,
+            json={"services": [{"service_id": "rest-svc", "active_version": 1}]},
+            request=httpx.Request("GET", "http://t"),
+        )
+        artifact_resp = httpx.Response(
+            200,
+            json={
+                "ir_json": {
+                    "service_id": "rest-svc",
+                    "service_name": "Rest",
+                    "base_url": "http://x",
+                    "source_hash": "sha256:abc",
+                    "protocol": "rest",
+                    "operations": [
+                        {
+                            "id": "op1",
+                            "operation_id": "op1",
+                            "name": "op1",
+                            "description": "Test",
+                            "method": "GET",
+                            "path": "/op1",
+                            "risk": {"risk_level": "safe"},
+                            "enabled": True,
+                            "source": "llm",
+                            "params": [],
+                        }
+                    ],
+                    "event_descriptors": [],
+                }
+            },
+            request=httpx.Request("GET", "http://t"),
+        )
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
+
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
+        case = ProofCase(
+            protocol="rest",
+            service_id="rest-svc",
+            request_payload={"service_name": "rest-svc"},
+            tool_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+        )
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e.build_streamable_http_tool_invoker",
+            return_value=mock_invoker,
+        ):
+            result = await _run_case(
+                mock_client,
+                case,
+                namespace="test-ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+            )
+
+        assert result.protocol == "rest"
+        assert result.operations_enhanced == 3
+        assert result.llm_field_count == 1
+
+    async def test_run_case_uses_sanitized_runtime_service_name_and_scope(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _run_case
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
+        mock_client.post = AsyncMock(return_value=compile_resp)
+
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
+        events_resp = httpx.Response(
+            200,
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
+            request=httpx.Request("GET", "http://t"),
+        )
+        services_resp = httpx.Response(
+            200,
+            json={"services": [{"service_id": "Billing_API", "active_version": 2}]},
+            request=httpx.Request("GET", "http://t"),
+        )
+        artifact_resp = httpx.Response(
+            200,
+            json={
+                "ir_json": {
+                    "service_id": "Billing_API",
+                    "service_name": "Billing_API",
+                    "base_url": "http://x",
+                    "source_hash": "sha256:abc",
+                    "protocol": "rest",
+                    "operations": [
+                        {
+                            "id": "op1",
+                            "operation_id": "op1",
+                            "name": "op1",
+                            "description": "Test",
+                            "method": "GET",
+                            "path": "/op1",
+                            "risk": {"risk_level": "safe"},
+                            "enabled": True,
+                            "source": "llm",
+                            "params": [],
+                        }
+                    ],
+                    "event_descriptors": [],
+                }
+            },
+            request=httpx.Request("GET", "http://t"),
+        )
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
+
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
+        case = ProofCase(
+            protocol="rest",
+            service_id="Billing_API",
+            request_payload={
+                "service_name": "Billing_API",
+                "tenant": "tenant-a",
+                "environment": "prod",
+            },
+            tool_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+        )
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e.build_streamable_http_tool_invoker",
+            return_value=mock_invoker,
+        ) as mock_builder:
+            await _run_case(
+                mock_client,
+                case,
+                namespace="test-ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+            )
+
+        assert mock_client.get.call_args_list[2].kwargs["params"] == {
+            "tenant": "tenant-a",
+            "environment": "prod",
+        }
+        assert mock_client.get.call_args_list[3].kwargs["params"] == {
+            "tenant": "tenant-a",
+            "environment": "prod",
+        }
+        mock_builder.assert_called_once_with("http://billing-api-v2.test-ns.svc.cluster.local:8003")
+
+    async def test_run_case_failed_job_raises(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _run_case
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
+        mock_client.post = AsyncMock(return_value=compile_resp)
+
+        job_resp = httpx.Response(
+            200,
+            json={"id": "j1", "status": "failed", "error_detail": "compile error"},
+            request=httpx.Request("GET", "http://t"),
+        )
+        events_resp = httpx.Response(200, text="", request=httpx.Request("GET", "http://t"))
+        mock_client.get = AsyncMock(side_effect=[job_resp, events_resp])
+
+        case = ProofCase(
+            protocol="rest",
+            service_id="rest-svc",
+            request_payload={"service_name": "rest-svc"},
+            tool_invocations=(ToolInvocationSpec(tool_name="op1", arguments={}),),
+        )
+
+        with pytest.raises(RuntimeError, match="compile error"):
+            await _run_case(
+                mock_client,
+                case,
+                namespace="ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+            )
+
+    async def test_run_case_no_enhancements_raises(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _run_case
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
+        mock_client.post = AsyncMock(return_value=compile_resp)
+
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
+        events_resp = httpx.Response(200, text="", request=httpx.Request("GET", "http://t"))
+        mock_client.get = AsyncMock(side_effect=[job_resp, events_resp])
+
+        case = ProofCase(
+            protocol="rest",
+            service_id="rest-svc",
+            request_payload={"service_name": "rest-svc"},
+            tool_invocations=(ToolInvocationSpec(tool_name="op1", arguments={}),),
+        )
+
+        with pytest.raises(RuntimeError, match="did not record any LLM enhancements"):
+            await _run_case(
+                mock_client,
+                case,
+                namespace="ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+            )
+
+    async def test_run_case_no_llm_fields_raises(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _run_case
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
+        mock_client.post = AsyncMock(return_value=compile_resp)
+
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
+        events_resp = httpx.Response(
+            200,
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
+            request=httpx.Request("GET", "http://t"),
+        )
+        services_resp = httpx.Response(
+            200,
+            json={"services": [{"service_id": "rest-svc", "active_version": 1}]},
+            request=httpx.Request("GET", "http://t"),
+        )
+        artifact_resp = httpx.Response(
+            200,
+            json={
+                "ir_json": {
+                    "service_id": "rest-svc",
+                    "service_name": "Rest",
+                    "base_url": "http://x",
+                    "source_hash": "sha256:abc",
+                    "protocol": "rest",
+                    "operations": [
+                        {
+                            "id": "op1",
+                            "operation_id": "op1",
+                            "name": "op1",
+                            "description": "Test",
+                            "method": "GET",
+                            "path": "/op1",
+                            "risk": {"risk_level": "safe"},
+                            "enabled": True,
+                            "source": "extractor",
+                            "params": [],
+                        }
+                    ],
+                    "event_descriptors": [],
+                }
+            },
+            request=httpx.Request("GET", "http://t"),
+        )
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
+
+        case = ProofCase(
+            protocol="rest",
+            service_id="rest-svc",
+            request_payload={"service_name": "rest-svc"},
+            tool_invocations=(ToolInvocationSpec(tool_name="op1", arguments={}),),
+        )
+
+        with pytest.raises(RuntimeError, match="no llm-sourced fields"):
+            await _run_case(
+                mock_client,
+                case,
+                namespace="ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+            )
+
+    async def test_run_case_with_audit(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _run_case
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
+        mock_client.post = AsyncMock(return_value=compile_resp)
+
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
+        events_resp = httpx.Response(
+            200,
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
+            request=httpx.Request("GET", "http://t"),
+        )
+        services_resp = httpx.Response(
+            200,
+            json={"services": [{"service_id": "rest-svc", "active_version": 1}]},
+            request=httpx.Request("GET", "http://t"),
+        )
+        artifact_resp = httpx.Response(
+            200,
+            json={
+                "ir_json": {
+                    "service_id": "rest-svc",
+                    "service_name": "Rest",
+                    "base_url": "http://x",
+                    "source_hash": "sha256:abc",
+                    "protocol": "rest",
+                    "operations": [
+                        {
+                            "id": "op1",
+                            "operation_id": "op1",
+                            "name": "op1",
+                            "description": "Test",
+                            "method": "GET",
+                            "path": "/op1",
+                            "risk": {"risk_level": "safe"},
+                            "enabled": True,
+                            "source": "llm",
+                            "params": [],
+                        }
+                    ],
+                    "event_descriptors": [],
+                }
+            },
+            request=httpx.Request("GET", "http://t"),
+        )
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
+
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
+        mock_audit_summary = ToolAuditSummary(
+            discovered_operations=1,
+            generated_tools=1,
+            audited_tools=1,
+            passed=1,
+            failed=0,
+            skipped=0,
+            results=[],
+        )
+
+        case = ProofCase(
+            protocol="rest",
+            service_id="rest-svc",
+            request_payload={"service_name": "rest-svc"},
+            tool_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+        )
+
+        with (
+            patch(
+                "apps.proof_runner.live_llm_e2e.build_streamable_http_tool_invoker",
+                return_value=mock_invoker,
+            ),
+            patch(
+                "apps.proof_runner.live_llm_e2e._audit_generated_tools",
+                new_callable=AsyncMock,
+                return_value=mock_audit_summary,
+            ),
+        ):
+            result = await _run_case(
+                mock_client,
+                case,
+                namespace="test-ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=True,
+            )
+
+        assert result.audit_summary is not None
+        assert result.audit_summary.passed == 1
+
+    async def test_run_case_passes_case_audit_skip_reason(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _run_case
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
+        mock_client.post = AsyncMock(return_value=compile_resp)
+
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
+        events_resp = httpx.Response(
+            200,
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
+            request=httpx.Request("GET", "http://t"),
+        )
+        services_resp = httpx.Response(
+            200,
+            json={"services": [{"service_id": "rest-svc", "active_version": 1}]},
+            request=httpx.Request("GET", "http://t"),
+        )
+        artifact_resp = httpx.Response(
+            200,
+            json={
+                "ir_json": {
+                    "service_id": "rest-svc",
+                    "service_name": "Rest",
+                    "base_url": "http://x",
+                    "source_hash": "sha256:abc",
+                    "protocol": "rest",
+                    "operations": [
+                        {
+                            "id": "op1",
+                            "operation_id": "op1",
+                            "name": "op1",
+                            "description": "Test",
+                            "method": "GET",
+                            "path": "/op1",
+                            "risk": {"risk_level": "safe"},
+                            "enabled": True,
+                            "source": "llm",
+                            "params": [],
+                        }
+                    ],
+                    "event_descriptors": [],
+                }
+            },
+            request=httpx.Request("GET", "http://t"),
+        )
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
+
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
+        mock_audit_summary = ToolAuditSummary(
+            discovered_operations=1,
+            generated_tools=1,
+            audited_tools=0,
+            passed=0,
+            failed=0,
+            skipped=1,
+            results=[],
+        )
+
+        case = ProofCase(
+            protocol="rest",
+            service_id="rest-svc",
+            request_payload={"service_name": "rest-svc"},
+            tool_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+            audit_skip_tool_ids=("op1",),
+            audit_skip_reason="Skipped because this tool needs live context.",
+        )
+
+        with (
+            patch(
+                "apps.proof_runner.live_llm_e2e.build_streamable_http_tool_invoker",
+                return_value=mock_invoker,
+            ),
+            patch(
+                "apps.proof_runner.live_llm_e2e._audit_generated_tools",
+                new_callable=AsyncMock,
+                return_value=mock_audit_summary,
+            ) as mock_audit,
+        ):
+            await _run_case(
+                mock_client,
+                case,
+                namespace="test-ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=True,
+            )
+
+        assert mock_audit.await_args.kwargs["forced_skip_tool_ids"] == ("op1",)
+        assert mock_audit.await_args.kwargs["forced_skip_reason"] == (
+            "Skipped because this tool needs live context."
+        )
+
+    async def test_run_case_with_llm_judge(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _run_case
+        from libs.validator.llm_judge import JudgeEvaluation
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
+        mock_client.post = AsyncMock(return_value=compile_resp)
+
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
+        events_resp = httpx.Response(
+            200,
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
+            request=httpx.Request("GET", "http://t"),
+        )
+        services_resp = httpx.Response(
+            200,
+            json={"services": [{"service_id": "rest-svc", "active_version": 1}]},
+            request=httpx.Request("GET", "http://t"),
+        )
+        artifact_resp = httpx.Response(
+            200,
+            json={
+                "ir_json": {
+                    "service_id": "rest-svc",
+                    "service_name": "Rest",
+                    "base_url": "http://x",
+                    "source_hash": "sha256:abc",
+                    "protocol": "rest",
+                    "operations": [
+                        {
+                            "id": "op1",
+                            "operation_id": "op1",
+                            "name": "op1",
+                            "description": "Test",
+                            "method": "GET",
+                            "path": "/op1",
+                            "risk": {"risk_level": "safe"},
+                            "enabled": True,
+                            "source": "llm",
+                            "params": [],
+                        }
+                    ],
+                    "event_descriptors": [],
+                }
+            },
+            request=httpx.Request("GET", "http://t"),
+        )
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
+
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
+        mock_judge = MagicMock()
+        judge_eval = JudgeEvaluation(
+            service_name="rest-svc",
+            tools_evaluated=1,
+            average_accuracy=0.9,
+            average_completeness=0.8,
+            average_clarity=0.85,
+            average_overall=0.85,
+        )
+        mock_judge.evaluate.return_value = judge_eval
+
+        case = ProofCase(
+            protocol="rest",
+            service_id="rest-svc",
+            request_payload={"service_name": "rest-svc"},
+            tool_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+        )
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e.build_streamable_http_tool_invoker",
+            return_value=mock_invoker,
+        ):
+            result = await _run_case(
+                mock_client,
+                case,
+                namespace="test-ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+                enable_llm_judge=True,
+                llm_judge=mock_judge,
+            )
+
+        assert result.judge_evaluation is not None
+        assert result.judge_evaluation.average_overall == 0.85
+
+    async def test_run_case_llm_judge_exception_caught(self) -> None:
+        from apps.proof_runner.live_llm_e2e import _run_case
+
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        compile_resp = httpx.Response(
+            200, json={"id": "j1"}, request=httpx.Request("POST", "http://t")
+        )
+        mock_client.post = AsyncMock(return_value=compile_resp)
+
+        job_resp = httpx.Response(
+            200, json={"id": "j1", "status": "succeeded"}, request=httpx.Request("GET", "http://t")
+        )
+        events_resp = httpx.Response(
+            200,
+            text=_ENHANCE_STAGE_SUCCEEDED_EVENT,
+            request=httpx.Request("GET", "http://t"),
+        )
+        services_resp = httpx.Response(
+            200,
+            json={"services": [{"service_id": "rest-svc", "active_version": 1}]},
+            request=httpx.Request("GET", "http://t"),
+        )
+        artifact_resp = httpx.Response(
+            200,
+            json={
+                "ir_json": {
+                    "service_id": "rest-svc",
+                    "service_name": "Rest",
+                    "base_url": "http://x",
+                    "source_hash": "sha256:abc",
+                    "protocol": "rest",
+                    "operations": [
+                        {
+                            "id": "op1",
+                            "operation_id": "op1",
+                            "name": "op1",
+                            "description": "Test",
+                            "method": "GET",
+                            "path": "/op1",
+                            "risk": {"risk_level": "safe"},
+                            "enabled": True,
+                            "source": "llm",
+                            "params": [],
+                        }
+                    ],
+                    "event_descriptors": [],
+                }
+            },
+            request=httpx.Request("GET", "http://t"),
+        )
+        mock_client.get = AsyncMock(
+            side_effect=[job_resp, events_resp, services_resp, artifact_resp]
+        )
+
+        mock_invoker = AsyncMock(return_value={"status": "ok", "result": {"ok": True}})
+        mock_judge = MagicMock()
+        mock_judge.evaluate.side_effect = RuntimeError("LLM API down")
+
+        case = ProofCase(
+            protocol="rest",
+            service_id="rest-svc",
+            request_payload={"service_name": "rest-svc"},
+            tool_invocations=(ToolInvocationSpec(tool_name="op1", arguments={"x": 1}),),
+        )
+
+        with patch(
+            "apps.proof_runner.live_llm_e2e.build_streamable_http_tool_invoker",
+            return_value=mock_invoker,
+        ):
+            result = await _run_case(
+                mock_client,
+                case,
+                namespace="test-ns",
+                timeout_seconds=30.0,
+                audit_all_generated_tools=False,
+                enable_llm_judge=True,
+                llm_judge=mock_judge,
+            )
+
+        assert result.judge_evaluation is None
+
+
+# --- _parse_args ---
+
+
+class TestParseArgs:
+    def test_required_namespace(self) -> None:
+        with patch("sys.argv", ["prog", "--namespace", "my-ns"]):
+            args = _parse_args()
+            assert args.namespace == "my-ns"
+            assert args.api_base_url == "http://127.0.0.1:8000"
+            assert args.protocol == "all"
+            assert args.timeout_seconds == 900.0
+            assert args.audit_all_generated_tools is False
+            assert args.audit_mutating_tools is False
+            assert args.enable_llm_judge is False
+            assert args.case_ids == []
+            assert args.skip_llm_artifact_checks is False
+
+    def test_all_arguments(self) -> None:
+        with patch(
+            "sys.argv",
+            [
+                "prog",
+                "--namespace",
+                "prod-ns",
+                "--api-base-url",
+                "http://api:9000",
+                "--protocol",
+                "graphql",
+                "--timeout-seconds",
+                "120",
+                "--run-id",
+                "test-run",
+                "--audit-all-generated-tools",
+                "--audit-mutating-tools",
+                "--enable-llm-judge",
+                "--case-id",
+                "directus-openapi",
+                "--case-id",
+                "gitea-openapi",
+                "--skip-llm-artifact-checks",
+            ],
+        ):
+            args = _parse_args()
+            assert args.namespace == "prod-ns"
+            assert args.api_base_url == "http://api:9000"
+            assert args.protocol == "graphql"
+            assert args.timeout_seconds == 120.0
+            assert args.run_id == "test-run"
+            assert args.audit_all_generated_tools is True
+            assert args.audit_mutating_tools is True
+            assert args.enable_llm_judge is True
+            assert args.case_ids == ["directus-openapi", "gitea-openapi"]
+            assert args.skip_llm_artifact_checks is True
+
+
+class TestBuildAuditPolicy:
+    def test_defaults_to_conservative_policy(self) -> None:
+        assert _build_audit_policy(audit_mutating_tools=False) == AuditPolicy()
+
+    def test_enables_mutating_tool_audit(self) -> None:
+        policy = _build_audit_policy(audit_mutating_tools=True)
+
+        assert policy.skip_destructive is False
+        assert policy.skip_external_side_effect is False
+        assert policy.skip_writes_state is False
+
+
+# --- _build_llm_judge_from_env ---
+
+
+class TestBuildLlmJudgeFromEnv:
+    def test_success(self) -> None:
+        MagicMock()
+        MagicMock()
+        with patch("apps.proof_runner.live_llm_e2e._build_llm_judge_from_env") as mock_fn:
+            mock_fn.return_value = MagicMock()
+            result = mock_fn()
+            assert result is not None
+
+    def test_returns_none_on_import_error(self) -> None:
+        with patch.dict("sys.modules", {"libs.enhancer.enhancer": None}):
+            result = _build_llm_judge_from_env()
+            assert result is None
+
+    def test_returns_none_on_exception(self) -> None:
+        with patch(
+            "apps.proof_runner.live_llm_e2e._build_llm_judge_from_env",
+            wraps=_build_llm_judge_from_env,
+        ):
+            # The function tries to import and create things from env;
+            # without proper env vars it should return None
+            result = _build_llm_judge_from_env()
+            assert result is None
+
+
+# --- _async_main and main ---
+
+
+class TestAsyncMainAndMain:
+    async def test_async_main(self) -> None:
+        mock_args = argparse.Namespace(
+            namespace="test-ns",
+            api_base_url="http://test:8000",
+            protocol="rest",
+            profile="mock",
+            upstream_namespace=None,
+            timeout_seconds=30.0,
+            run_id="abc",
+            audit_all_generated_tools=False,
+            audit_mutating_tools=False,
+            enable_llm_judge=False,
+            case_ids=[],
+            skip_llm_artifact_checks=False,
+        )
+        mock_result = ProofResult(
+            protocol="rest",
+            service_id="rest-svc",
+            job_id="job-1",
+            active_version=1,
+            operations_enhanced=2,
+            llm_field_count=3,
+            invocation_results=[],
+        )
+        with (
+            patch("apps.proof_runner.live_llm_e2e._parse_args", return_value=mock_args),
+            patch(
+                "apps.proof_runner.live_llm_e2e.run_proofs",
+                new_callable=AsyncMock,
+                return_value=[mock_result],
+            ) as mock_run_proofs,
+            patch("builtins.print") as mock_print,
+        ):
+            await _async_main()
+            mock_print.assert_called_once()
+            output = mock_print.call_args[0][0]
+            parsed = json.loads(output)
+            assert isinstance(parsed, list)
+            assert len(parsed) == 1
+            assert mock_run_proofs.await_args.kwargs["audit_policy"] == AuditPolicy()
+
+    async def test_async_main_with_judge(self) -> None:
+        mock_args = argparse.Namespace(
+            namespace="test-ns",
+            api_base_url="http://test:8000",
+            protocol="rest",
+            profile="mock",
+            upstream_namespace=None,
+            timeout_seconds=30.0,
+            run_id="abc",
+            audit_all_generated_tools=False,
+            audit_mutating_tools=False,
+            enable_llm_judge=True,
+            case_ids=[],
+            skip_llm_artifact_checks=False,
+        )
+        mock_result = ProofResult(
+            protocol="rest",
+            service_id="rest-svc",
+            job_id="job-1",
+            active_version=1,
+            operations_enhanced=2,
+            llm_field_count=3,
+            invocation_results=[],
+        )
+        mock_judge = MagicMock()
+        with (
+            patch("apps.proof_runner.live_llm_e2e._parse_args", return_value=mock_args),
+            patch(
+                "apps.proof_runner.live_llm_e2e._build_llm_judge_from_env",
+                return_value=mock_judge,
+            ),
+            patch(
+                "apps.proof_runner.live_llm_e2e.run_proofs",
+                new_callable=AsyncMock,
+                return_value=[mock_result],
+            ),
+            patch("builtins.print"),
+        ):
+            await _async_main()
+
+    async def test_async_main_enables_mutating_audit_policy(self) -> None:
+        mock_args = argparse.Namespace(
+            namespace="test-ns",
+            api_base_url="http://test:8000",
+            protocol="rest",
+            profile="mock",
+            upstream_namespace=None,
+            timeout_seconds=30.0,
+            run_id="abc",
+            audit_all_generated_tools=True,
+            audit_mutating_tools=True,
+            enable_llm_judge=False,
+            case_ids=[],
+            skip_llm_artifact_checks=False,
+        )
+        mock_result = ProofResult(
+            protocol="rest",
+            service_id="rest-svc",
+            job_id="job-1",
+            active_version=1,
+            operations_enhanced=2,
+            llm_field_count=3,
+            invocation_results=[],
+        )
+        with (
+            patch("apps.proof_runner.live_llm_e2e._parse_args", return_value=mock_args),
+            patch(
+                "apps.proof_runner.live_llm_e2e.run_proofs",
+                new_callable=AsyncMock,
+                return_value=[mock_result],
+            ) as mock_run_proofs,
+            patch("builtins.print"),
+        ):
+            await _async_main()
+
+        assert mock_run_proofs.await_args.kwargs["audit_policy"] == AuditPolicy(
+            skip_destructive=False,
+            skip_external_side_effect=False,
+            skip_writes_state=False,
+        )
+
+    def test_main_calls_asyncio_run(self) -> None:
+        with patch("apps.proof_runner.live_llm_e2e.asyncio.run") as mock_run:
+            main()
+            mock_run.assert_called_once()

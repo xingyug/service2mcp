@@ -1,0 +1,100 @@
+openapi: "3.1.0"
+info:
+  title: "Messy Auth Upload API"
+  version: "2026-03-25"
+  description: |
+    Deliberately uneven fixture:
+    - oauth2 client-credentials security
+    - multipart upload request body
+    - callback and webhook sections that are currently unsupported
+servers:
+  - url: https://billing.example.test/api
+security:
+  - oauthClient:
+      - invoices.write
+components:
+  securitySchemes:
+    oauthClient:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.test/oauth/token
+          scopes:
+            invoices.write: Upload invoice attachments
+paths:
+  /customers:
+    get:
+      operationId: listCustomers
+      summary: List customers
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: OK
+  /invoices/{invoiceId}/attachments:
+    post:
+      operationId: uploadInvoiceAttachment
+      summary: Upload invoice attachment
+      parameters:
+        - in: path
+          name: invoiceId
+          required: true
+          schema:
+            type: string
+      callbacks:
+        onComplete:
+          "{$request.body#/callbackUrl}":
+            post:
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      type: object
+                      properties:
+                        status:
+                          type: string
+              responses:
+                "200":
+                  description: callback accepted
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                note:
+                  type: string
+                callbackUrl:
+                  type: string
+                  format: uri
+      responses:
+        "202":
+          description: Accepted
+webhooks:
+  invoiceSigned:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                invoiceId:
+                  type: string
+                signedAt:
+                  type: string
+      responses:
+        "200":
+          description: Ack

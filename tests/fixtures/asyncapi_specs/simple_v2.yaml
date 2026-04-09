@@ -1,0 +1,49 @@
+asyncapi: '2.6.0'
+info:
+  title: User Events
+  version: '1.0.0'
+  description: User lifecycle events
+servers:
+  production:
+    url: kafka://broker.example.com:9092
+    protocol: kafka
+channels:
+  user/created:
+    subscribe:
+      operationId: onUserCreated
+      summary: Receive user creation events
+      message:
+        payload:
+          type: object
+          properties:
+            userId:
+              type: string
+            email:
+              type: string
+            createdAt:
+              type: string
+              format: date-time
+    publish:
+      operationId: publishUserCreated
+      summary: Publish user creation event
+      message:
+        payload:
+          type: object
+          properties:
+            userId:
+              type: string
+            email:
+              type: string
+  user/deleted:
+    subscribe:
+      operationId: onUserDeleted
+      summary: Receive user deletion events
+      message:
+        payload:
+          type: object
+          properties:
+            userId:
+              type: string
+            deletedAt:
+              type: string
+              format: date-time

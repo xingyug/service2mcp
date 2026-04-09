@@ -1,0 +1,1747 @@
+"""Run live cross-protocol LLM-enabled proof submissions against compiler-api."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+import json
+import os
+import re
+import uuid
+from collections.abc import Awaitable, Callable, Mapping
+from copy import deepcopy
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Literal, cast
+
+import httpx
+
+from apps.compiler_worker.activities import (
+    build_sample_invocations,
+    build_streamable_http_tool_invoker,
+)
+from apps.compiler_worker.activities.production import _sample_invocation_overrides
+from libs.generator.generic_mode import runtime_service_name
+from libs.ir.models import EventDescriptor, EventSupportLevel, Operation, ServiceIR, ToolIntent
+from libs.runtime_contracts import stream_result_failure_reason, validate_tool_listing_payload
+from libs.validator.audit import (
+    AuditPolicy,
+    ToolAuditResult,
+    ToolAuditSummary,
+    _has_synthetic_path_placeholder_samples,
+)
+from libs.validator.llm_judge import JudgeEvaluation, LLMJudge
+
+FIXTURES_ROOT = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
+GRAPHQL_INTROSPECTION_PATH = FIXTURES_ROOT / "graphql_schemas" / "catalog_introspection.json"
+GRPC_PROTO_PATH = FIXTURES_ROOT / "grpc_protos" / "inventory.proto"
+SOAP_WSDL_PATH = FIXTURES_ROOT / "wsdl" / "order_service.wsdl"
+CLI_SPEC_PATH = FIXTURES_ROOT / "cli_specs" / "simple_tool.cli.yaml"
+ASYNCAPI_SPEC_PATH = FIXTURES_ROOT / "asyncapi_specs" / "simple_v2.yaml"
+_SOAP_ADDRESS_PATTERN = re.compile(r'location="[^"]+"')
+_TERMINAL_JOB_STATUSES = {"succeeded", "failed", "rolled_back"}
+_SUPPORTED_PROTOCOLS = (
+    "graphql",
+    "rest",
+    "openapi",
+    "grpc",
+    "jsonrpc",
+    "odata",
+    "scim",
+    "soap",
+    "sql",
+    "cli",
+    "asyncapi",
+)
+_SUPPORTED_PROFILES = ("mock", "real-targets")
+ToolInvoker = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class ToolInvocationSpec:
+    """A single runtime tool call used to prove a compiled service works."""
+
+    tool_name: str
+    arguments: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ProofCase:
+    """End-to-end proof inputs for a single protocol."""
+
+    protocol: str
+    service_id: str
+    request_payload: dict[str, Any]
+    tool_invocations: tuple[ToolInvocationSpec, ...] = ()
+    preferred_tool_ids: tuple[str, ...] = ()
+    audit_skip_tool_ids: tuple[str, ...] = ()
+    audit_skip_reason: str | None = None
+    tenant: str | None = None
+    environment: str | None = None
+    case_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolInvocationResult:
+    """Serialized result of a single runtime tool call."""
+
+    tool_name: str
+    result: dict[str, Any]
+
+
+# ToolAuditResult and ToolAuditSummary are imported from libs.validator.audit
+
+
+@dataclass(frozen=True)
+class ToolIntentCounts:
+    """Counts of tool_intent values found in compiled IR operations."""
+
+    discovery: int
+    action: int
+    unset: int
+
+
+@dataclass(frozen=True)
+class ProofResult:
+    """Summary emitted for a completed proof case."""
+
+    protocol: str
+    service_id: str
+    job_id: str
+    active_version: int
+    operations_enhanced: int
+    llm_field_count: int
+    invocation_results: list[ToolInvocationResult]
+    audit_summary: ToolAuditSummary | None = None
+    tool_intent_counts: ToolIntentCounts | None = None
+    judge_evaluation: JudgeEvaluation | None = None
+    case_id: str | None = None
+    error: str | None = None
+
+
+async def run_proofs(
+    *,
+    namespace: str,
+    api_base_url: str,
+    protocol: str,
+    profile: str = "mock",
+    upstream_namespace: str | None = None,
+    timeout_seconds: float,
+    run_id: str,
+    audit_all_generated_tools: bool = False,
+    audit_policy: AuditPolicy | None = None,
+    enable_llm_judge: bool = False,
+    enable_llm_enhancement: bool = True,
+    llm_judge: LLMJudge | None = None,
+    selected_case_ids: set[str] | None = None,
+    require_llm_artifacts: bool = True,
+) -> list[ProofResult]:
+    """Execute one or more live proof cases and return serialized results."""
+
+    selected_protocols = list(_SUPPORTED_PROTOCOLS) if protocol == "all" else [protocol]
+    cases = _build_proof_cases(
+        namespace,
+        run_id,
+        profile=profile,
+        upstream_namespace=upstream_namespace,
+        selected_protocols=set(selected_protocols),
+        selected_case_ids=selected_case_ids,
+        enable_llm_enhancement=enable_llm_enhancement,
+    )
+    results: list[ProofResult] = []
+
+    async with httpx.AsyncClient(
+        base_url=api_base_url,
+        timeout=30.0,
+    ) as client:
+        for case in cases:
+            try:
+                results.append(
+                    await _run_case(
+                        client,
+                        case,
+                        namespace=namespace,
+                        timeout_seconds=timeout_seconds,
+                        audit_all_generated_tools=audit_all_generated_tools,
+                        audit_policy=audit_policy or AuditPolicy(),
+                        enable_llm_judge=enable_llm_judge,
+                        llm_judge=llm_judge,
+                        require_llm_artifacts=require_llm_artifacts,
+                    )
+                )
+            except Exception as exc:  # broad-except: proof resilience — capture all case failures
+                import logging
+
+                error_message = _proof_case_error_message(exc)
+                logging.getLogger(__name__).exception(
+                    "Proof case %s (%s) failed: %s",
+                    case.case_id or case.service_id,
+                    case.protocol,
+                    error_message,
+                )
+                results.append(
+                    ProofResult(
+                        protocol=case.protocol,
+                        service_id=case.service_id,
+                        job_id="",
+                        active_version=0,
+                        operations_enhanced=0,
+                        llm_field_count=0,
+                        invocation_results=[],
+                        case_id=case.case_id,
+                        error=error_message,
+                    )
+                )
+    return results
+
+
+def _build_proof_cases(
+    namespace: str,
+    run_id: str,
+    *,
+    profile: str = "mock",
+    upstream_namespace: str | None = None,
+    selected_protocols: set[str] | None = None,
+    selected_case_ids: set[str] | None = None,
+    enable_llm_enhancement: bool = True,
+) -> list[ProofCase]:
+    if profile == "mock":
+        cases = _build_mock_proof_cases(namespace, run_id)
+    elif profile == "real-targets":
+        cases = _build_real_target_proof_cases(
+            namespace,
+            run_id,
+            upstream_namespace=upstream_namespace or "example-targets",
+        )
+    else:
+        raise ValueError(f"Unsupported proof profile: {profile}")
+
+    if not enable_llm_enhancement:
+        cases = [_disable_case_llm_enhancement(case) for case in cases]
+
+    if selected_protocols is None:
+        filtered_cases = cases
+    else:
+        filtered_cases = [case for case in cases if case.protocol in selected_protocols]
+
+    if selected_case_ids is None:
+        return filtered_cases
+    available_case_ids = {case.case_id for case in filtered_cases if case.case_id is not None}
+    unknown_case_ids = sorted(selected_case_ids - available_case_ids)
+    if unknown_case_ids:
+        raise ValueError(
+            "Unknown proof case id(s) for the selected profile/protocols: "
+            + ", ".join(unknown_case_ids)
+        )
+    return [
+        case
+        for case in filtered_cases
+        if case.case_id is not None and case.case_id in selected_case_ids
+    ]
+
+
+def _proof_case_error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    return message or type(exc).__name__
+
+
+def _disable_case_llm_enhancement(case: ProofCase) -> ProofCase:
+    payload = deepcopy(case.request_payload)
+    options = payload.setdefault("options", {})
+    if isinstance(options, dict):
+        options["skip_enhancement"] = True
+        hints = options.get("hints")
+        if isinstance(hints, dict):
+            hints.pop("llm_seed_mutation", None)
+            if not hints:
+                options.pop("hints", None)
+    return ProofCase(
+        protocol=case.protocol,
+        service_id=case.service_id,
+        request_payload=payload,
+        tool_invocations=case.tool_invocations,
+        preferred_tool_ids=case.preferred_tool_ids,
+        audit_skip_tool_ids=case.audit_skip_tool_ids,
+        audit_skip_reason=case.audit_skip_reason,
+        tenant=case.tenant,
+        environment=case.environment,
+        case_id=case.case_id,
+    )
+
+
+def _build_mock_proof_cases(namespace: str, run_id: str) -> list[ProofCase]:
+    http_base_url = _cluster_http_url(namespace, "llm-proof-http", 8080)
+    grpc_base_url = _cluster_grpc_url(namespace, "llm-proof-grpc", 50051)
+    sql_database_url = (
+        f"postgresql://proofsql:proofsql@llm-proof-sql.{namespace}.svc.cluster.local:5432/proofsql"
+    )
+
+    graphql_service_id = f"graphql-llm-e2e-{run_id}"
+    graphql_payload = json.loads(GRAPHQL_INTROSPECTION_PATH.read_text(encoding="utf-8"))
+    graphql_source_content = json.dumps(_strip_descriptions(graphql_payload), indent=2)
+
+    rest_service_id = f"rest-llm-e2e-{run_id}"
+
+    grpc_service_id = f"grpc-llm-e2e-{run_id}"
+    grpc_source_content = GRPC_PROTO_PATH.read_text(encoding="utf-8")
+
+    soap_service_id = f"soap-llm-e2e-{run_id}"
+    soap_source_content = _rewrite_wsdl_endpoint(
+        SOAP_WSDL_PATH.read_text(encoding="utf-8"),
+        f"{http_base_url}/soap/order-service",
+    )
+
+    sql_service_id = f"sql-llm-e2e-{run_id}"
+
+    cli_service_id = f"cli-llm-e2e-{run_id}"
+    cli_source_content = CLI_SPEC_PATH.read_text(encoding="utf-8")
+
+    asyncapi_service_id = f"asyncapi-llm-e2e-{run_id}"
+    asyncapi_source_content = ASYNCAPI_SPEC_PATH.read_text(encoding="utf-8")
+
+    return [
+        ProofCase(
+            protocol="graphql",
+            service_id=graphql_service_id,
+            case_id="mock-graphql",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": graphql_service_id,
+                "source_content": graphql_source_content,
+                "options": {
+                    "protocol": "graphql",
+                    "hints": {
+                        "service_name": graphql_service_id,
+                        "base_url": http_base_url,
+                        "graphql_path": "/graphql",
+                    },
+                },
+            },
+            tool_invocations=(
+                ToolInvocationSpec(
+                    tool_name="searchProducts",
+                    arguments={"term": "puzzle", "limit": 1},
+                ),
+            ),
+        ),
+        ProofCase(
+            protocol="rest",
+            service_id=rest_service_id,
+            case_id="mock-rest",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": rest_service_id,
+                "source_url": f"{http_base_url}/rest/catalog",
+                "options": {"protocol": "rest"},
+            },
+            tool_invocations=(
+                ToolInvocationSpec(
+                    tool_name="get_items_item_id",
+                    arguments={"item_id": "sku-123"},
+                ),
+            ),
+        ),
+        ProofCase(
+            protocol="grpc",
+            service_id=grpc_service_id,
+            case_id="mock-grpc",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": grpc_service_id,
+                "source_url": grpc_base_url,
+                "source_content": grpc_source_content,
+                "options": {
+                    "protocol": "grpc",
+                    "hints": {"enable_native_grpc_stream": "true"},
+                },
+            },
+            tool_invocations=(
+                ToolInvocationSpec(
+                    tool_name="ListItems",
+                    arguments={"location_id": "warehouse-1", "page_size": 1},
+                ),
+                ToolInvocationSpec(
+                    tool_name="WatchInventory",
+                    arguments={"sku": "sku-live"},
+                ),
+            ),
+        ),
+        ProofCase(
+            protocol="soap",
+            service_id=soap_service_id,
+            case_id="mock-soap",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": soap_service_id,
+                "source_content": soap_source_content,
+                "options": {"protocol": "soap"},
+            },
+            tool_invocations=(
+                ToolInvocationSpec(
+                    tool_name="GetOrderStatus",
+                    arguments={"orderId": "ORD-100", "includeHistory": True},
+                ),
+            ),
+        ),
+        ProofCase(
+            protocol="sql",
+            service_id=sql_service_id,
+            case_id="mock-sql",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": sql_service_id,
+                "source_url": sql_database_url,
+                "options": {"protocol": "sql", "hints": {"schema": "public"}},
+            },
+            tool_invocations=(
+                ToolInvocationSpec(
+                    tool_name="query_order_summaries",
+                    arguments={"limit": 1},
+                ),
+            ),
+        ),
+        ProofCase(
+            protocol="cli",
+            service_id=cli_service_id,
+            case_id="mock-cli",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": cli_service_id,
+                "source_content": cli_source_content,
+                "options": {"protocol": "cli"},
+            },
+            tool_invocations=(
+                ToolInvocationSpec(
+                    tool_name="list-items",
+                    arguments={"format": "json", "limit": 10},
+                ),
+            ),
+        ),
+        ProofCase(
+            protocol="asyncapi",
+            service_id=asyncapi_service_id,
+            case_id="mock-asyncapi",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": asyncapi_service_id,
+                "source_content": asyncapi_source_content,
+                "options": {"protocol": "asyncapi"},
+            },
+            tool_invocations=(
+                ToolInvocationSpec(
+                    tool_name="onUserCreated",
+                    arguments={"userId": "user-123"},
+                ),
+            ),
+        ),
+    ]
+
+
+def _build_real_target_proof_cases(
+    namespace: str,
+    run_id: str,
+    *,
+    upstream_namespace: str,
+) -> list[ProofCase]:
+    del namespace
+
+    directus_token = _required_env("PROOF_DIRECTUS_ACCESS_TOKEN")
+    pocketbase_token = _required_env("PROOF_POCKETBASE_ACCESS_TOKEN")
+    gitea_basic_auth = _required_env("PROOF_GITEA_BASIC_AUTH")
+    jackson_scim_base_url = _required_env("PROOF_JACKSON_SCIM_BASE_URL")
+    jackson_scim_secret = _required_env("PROOF_JACKSON_SCIM_SECRET")
+    gitea_basic_header = _basic_auth_header(gitea_basic_auth)
+
+    directus_base_url = _cluster_http_url(upstream_namespace, "directus", 8055)
+    gitea_base_url = _cluster_http_url(upstream_namespace, "gitea", 3000)
+    pocketbase_base_url = _cluster_http_url(upstream_namespace, "pocketbase", 8090)
+    northbreeze_base_url = _cluster_http_url(upstream_namespace, "northbreeze", 4004)
+    soap_base_url = _cluster_http_url(upstream_namespace, "soap-cxf", 8080)
+    openfga_grpc_base_url = _cluster_grpc_url(upstream_namespace, "openfga", 8081)
+    sql_database_url = (
+        "postgresql://catalog:catalog@"
+        f"real-postgres.{upstream_namespace}.svc.cluster.local:5432/catalog_v2"
+    )
+
+    return [
+        ProofCase(
+            protocol="graphql",
+            service_id=f"directus-graphql-{run_id}",
+            case_id="directus-graphql",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"directus-graphql-{run_id}",
+                "source_url": f"{directus_base_url}/graphql",
+                "options": {
+                    "protocol": "graphql",
+                    "auth_token": directus_token,
+                    "auth": {
+                        "type": "bearer",
+                        "runtime_secret_ref": "directus-access-token",
+                    },
+                },
+            },
+            preferred_tool_ids=("products", "customers", "orders"),
+        ),
+        ProofCase(
+            protocol="rest",
+            service_id=f"directus-rest-{run_id}",
+            case_id="directus-rest",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"directus-rest-{run_id}",
+                "source_url": f"{directus_base_url}/collections",
+                "options": {
+                    "protocol": "rest",
+                    "auth_token": directus_token,
+                    "auth": {
+                        "type": "bearer",
+                        "runtime_secret_ref": "directus-access-token",
+                    },
+                    "hints": {"llm_seed_mutation": "true"},
+                },
+            },
+            preferred_tool_ids=(
+                "get_items_products",
+                "get_items_products_id",
+                "get_items_customers",
+                "get_items_orders",
+            ),
+        ),
+        ProofCase(
+            protocol="openapi",
+            service_id=f"directus-openapi-{run_id}",
+            case_id="directus-openapi",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"directus-openapi-{run_id}",
+                "source_url": f"{directus_base_url}/server/specs/oas",
+                "options": {
+                    "protocol": "openapi",
+                    "auth_token": directus_token,
+                    "auth": {
+                        "type": "bearer",
+                        "runtime_secret_ref": "directus-access-token",
+                    },
+                    "preferred_smoke_tool_ids": [
+                        "ping",
+                        "serverInfo",
+                    ],
+                },
+            },
+            tool_invocations=(
+                ToolInvocationSpec(
+                    tool_name="ping",
+                    arguments={},
+                ),
+            ),
+            audit_skip_tool_ids=("oauth", "oauthProvider"),
+        ),
+        ProofCase(
+            protocol="openapi",
+            service_id=f"gitea-openapi-{run_id}",
+            case_id="gitea-openapi",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"gitea-openapi-{run_id}",
+                "source_url": f"{gitea_base_url}/swagger.v1.json",
+                "options": {
+                    "protocol": "openapi",
+                    "auth_header": gitea_basic_header,
+                    "auth": {
+                        "type": "basic",
+                        "runtime_secret_ref": "gitea-basic-auth",
+                    },
+                    "preferred_smoke_tool_ids": [
+                        "repoSearch",
+                        "orgGetAll",
+                        "listGitignoresTemplates",
+                    ],
+                },
+            },
+            preferred_tool_ids=("repoSearch", "orgGetAll", "listGitignoresTemplates"),
+            audit_skip_tool_ids=("getNodeInfo",),
+        ),
+        ProofCase(
+            protocol="jsonrpc",
+            service_id=f"aria2-jsonrpc-{run_id}",
+            case_id="aria2-jsonrpc",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"aria2-jsonrpc-{run_id}",
+                "source_url": f"{_cluster_http_url(upstream_namespace, 'aria2', 6800)}/jsonrpc",
+                "options": {
+                    "protocol": "jsonrpc",
+                    "auth_token": "token:test-secret",
+                    "preferred_smoke_tool_ids": [
+                        "aria2_getVersion",
+                        "aria2_getGlobalStat",
+                        "system_listMethods",
+                    ],
+                    "hints": {
+                        "jsonrpc_auth_in_params": "true",
+                        "jsonrpc_fallback_params_type": "positional",
+                    },
+                },
+            },
+            preferred_tool_ids=("aria2_getVersion", "aria2_getGlobalStat", "system_listMethods"),
+            audit_skip_tool_ids=(
+                "aria2_getFiles",
+                "aria2_getOption",
+                "aria2_getPeers",
+                "aria2_getServers",
+                "aria2_getUris",
+            ),
+            audit_skip_reason=(
+                "Skipped by proof-case policy because this endpoint requires a live aria2 "
+                "download gid, which the proof environment does not seed."
+            ),
+        ),
+        ProofCase(
+            protocol="grpc",
+            service_id=f"openfga-grpc-{run_id}",
+            case_id="openfga-grpc",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"openfga-grpc-{run_id}",
+                "source_url": openfga_grpc_base_url,
+                "options": {
+                    "protocol": "grpc",
+                    "preferred_smoke_tool_ids": [
+                        "ListStores",
+                        "CreateStore",
+                        "GetStore",
+                        "ReadAuthorizationModels",
+                    ],
+                    "hints": {"enable_native_grpc_stream": "true"},
+                },
+            },
+            preferred_tool_ids=(
+                "ListStores",
+                "CreateStore",
+                "GetStore",
+                "ReadAuthorizationModels",
+            ),
+            audit_skip_tool_ids=(
+                "GetStore",
+                "ListObjects",
+                "ListUsers",
+                "Read",
+                "ReadAssertions",
+                "ReadAuthorizationModel",
+                "ReadAuthorizationModels",
+                "ReadChanges",
+            ),
+            audit_skip_reason=(
+                "Skipped by proof-case policy because this endpoint requires a live OpenFGA "
+                "store or authorization model context that the proof environment does not "
+                "pre-create."
+            ),
+        ),
+        ProofCase(
+            protocol="odata",
+            service_id=f"northbreeze-odata-{run_id}",
+            case_id="northbreeze-odata",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"northbreeze-odata-{run_id}",
+                "source_url": f"{northbreeze_base_url}/odata/v4/northbreeze/$metadata",
+                "options": {"protocol": "odata"},
+            },
+            preferred_tool_ids=("list_products", "func_get_top_products"),
+        ),
+        ProofCase(
+            protocol="rest",
+            service_id=f"pocketbase-rest-{run_id}",
+            case_id="pocketbase-rest",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"pocketbase-rest-{run_id}",
+                "source_url": f"{pocketbase_base_url}/api/collections",
+                "options": {
+                    "protocol": "rest",
+                    "auth_token": pocketbase_token,
+                    "auth": {
+                        "type": "bearer",
+                        "runtime_secret_ref": "pocketbase-access-token",
+                    },
+                    "hints": {"llm_seed_mutation": "true"},
+                    "preferred_smoke_tool_ids": [
+                        "get_api_collections",
+                        "get_api_health",
+                    ],
+                },
+            },
+            preferred_tool_ids=("get_api_collections", "get_api_health"),
+        ),
+        ProofCase(
+            protocol="scim",
+            service_id=f"jackson-scim-{run_id}",
+            case_id="jackson-scim",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"jackson-scim-{run_id}",
+                "source_url": f"{jackson_scim_base_url}/Users",
+                "options": {
+                    "protocol": "scim",
+                    "auth_token": jackson_scim_secret,
+                    "auth": {
+                        "type": "bearer",
+                        "runtime_secret_ref": "jackson-scim-secret",
+                    },
+                    "preferred_smoke_tool_ids": [
+                        "list_users",
+                        "get_user",
+                        "list_groups",
+                    ],
+                },
+            },
+            preferred_tool_ids=("list_users", "get_user", "list_groups"),
+        ),
+        ProofCase(
+            protocol="soap",
+            service_id=f"soap-cxf-{run_id}",
+            case_id="soap-cxf",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"soap-cxf-{run_id}",
+                "source_url": f"{soap_base_url}/services/OrderService?wsdl",
+                "options": {
+                    "protocol": "soap",
+                    "preferred_smoke_tool_ids": ["GetOrderStatus"],
+                    "sample_invocation_overrides": {
+                        "GetOrderStatus": {"orderId": "ORD-1001"},
+                    },
+                },
+            },
+            tool_invocations=(
+                ToolInvocationSpec(
+                    tool_name="GetOrderStatus",
+                    arguments={"orderId": "ORD-1001"},
+                ),
+            ),
+        ),
+        ProofCase(
+            protocol="sql",
+            service_id=f"real-postgres-sql-{run_id}",
+            case_id="real-postgres-sql",
+            request_payload={
+                "created_by": "llm-e2e",
+                "service_name": f"real-postgres-sql-{run_id}",
+                "source_url": sql_database_url,
+                "options": {"protocol": "sql", "hints": {"schema": "public"}},
+            },
+        ),
+    ]
+
+
+async def _run_case(
+    client: httpx.AsyncClient,
+    case: ProofCase,
+    *,
+    namespace: str,
+    timeout_seconds: float,
+    audit_all_generated_tools: bool,
+    audit_policy: AuditPolicy = AuditPolicy(),
+    enable_llm_judge: bool = False,
+    llm_judge: LLMJudge | None = None,
+    require_llm_artifacts: bool = True,
+) -> ProofResult:
+    job = await _submit_compilation(client, case.request_payload)
+    job_id = str(job["id"])
+    final_job = await _wait_for_terminal_job(client, job_id, timeout_seconds=timeout_seconds)
+    events = await _fetch_compilation_events(client, job_id)
+
+    if final_job["status"] != "succeeded":
+        raise RuntimeError(
+            f"{case.protocol} proof job {job_id} ended with status {final_job['status']}: "
+            f"{final_job.get('error_detail') or 'no error detail'}"
+        )
+
+    operations_enhanced = _operations_enhanced_from_events(events)
+    if require_llm_artifacts and operations_enhanced <= 0:
+        raise RuntimeError(
+            f"{case.protocol} proof job {job_id} did not record any LLM enhancements."
+        )
+
+    tenant, environment = _case_scope(case)
+    active_version = await _active_version_for_service(
+        client,
+        case.service_id,
+        tenant=tenant,
+        environment=environment,
+    )
+    artifact = await _artifact_version(
+        client,
+        case.service_id,
+        active_version,
+        tenant=tenant,
+        environment=environment,
+    )
+    artifact_ir = cast(dict[str, Any], artifact["ir_json"])
+    service_ir = ServiceIR.model_validate(artifact_ir)
+    llm_field_count = _count_llm_fields(artifact_ir)
+    if require_llm_artifacts and llm_field_count <= 0:
+        raise RuntimeError(
+            f"{case.protocol} proof service {case.service_id} has no llm-sourced fields in IR."
+        )
+    request_options = case.request_payload.get("options")
+    sample_invocation_overrides = (
+        _sample_invocation_overrides(request_options)
+        if isinstance(request_options, Mapping)
+        else {}
+    )
+    invocation_specs = _resolve_invocation_specs(
+        service_ir,
+        case,
+        sample_invocation_overrides=sample_invocation_overrides,
+    )
+
+    # Verify tool_intent derivation in compiled IR.
+    tool_intent_counts = _compute_tool_intent_counts(service_ir)
+
+    runtime_base_url = _cluster_http_url(
+        namespace,
+        runtime_service_name(service_ir.service_name, active_version),
+        8003,
+    )
+    invocation_results = await _invoke_runtime_tools(runtime_base_url, invocation_specs)
+    audit_summary = (
+        await _audit_generated_tools(
+            runtime_base_url,
+            service_ir,
+            representative_invocations=invocation_specs,
+            representative_results=invocation_results,
+            audit_policy=audit_policy,
+            forced_skip_tool_ids=case.audit_skip_tool_ids,
+            forced_skip_reason=case.audit_skip_reason,
+            sample_invocation_overrides=sample_invocation_overrides,
+        )
+        if audit_all_generated_tools
+        else None
+    )
+    representative_failures = _representative_invocation_failures(service_ir, invocation_results)
+    audit_failure_summary = (
+        _summarize_failed_audit_results(audit_summary) if audit_summary is not None else None
+    )
+    proof_error_parts: list[str] = []
+    if representative_failures:
+        proof_error_parts.append(
+            "Representative runtime invocation failed: " + "; ".join(representative_failures)
+        )
+    if audit_failure_summary is not None:
+        proof_error_parts.append(f"Generated-tool audit failed: {audit_failure_summary}")
+    proof_error = " ".join(proof_error_parts) or None
+
+    # Run LLM-as-a-Judge evaluation if enabled.
+    judge_evaluation: JudgeEvaluation | None = None
+    if enable_llm_judge and llm_judge is not None:
+        try:
+            judge_evaluation = llm_judge.evaluate(service_ir)
+        except Exception:  # broad-except: proof resilience — judge is optional
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "LLM judge evaluation failed for %s; continuing without judge results",
+                case.protocol,
+                exc_info=True,
+            )
+
+    return ProofResult(
+        protocol=case.protocol,
+        service_id=case.service_id,
+        job_id=job_id,
+        active_version=active_version,
+        operations_enhanced=operations_enhanced,
+        llm_field_count=llm_field_count,
+        invocation_results=invocation_results,
+        audit_summary=audit_summary,
+        tool_intent_counts=tool_intent_counts,
+        judge_evaluation=judge_evaluation,
+        case_id=case.case_id,
+        error=proof_error,
+    )
+
+
+async def _submit_compilation(
+    client: httpx.AsyncClient,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    response = await client.post(
+        "/api/v1/compilations",
+        json=payload,
+        headers=_compiler_api_auth_headers(),
+    )
+    response.raise_for_status()
+    submission = _parse_json_object_response(
+        response,
+        context="Compiler API compilation submission response",
+    )
+    _require_identifier_field(
+        submission,
+        "id",
+        context="Compiler API compilation submission response",
+    )
+    return submission
+
+
+async def _wait_for_terminal_job(
+    client: httpx.AsyncClient,
+    job_id: str,
+    *,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        response = await client.get(
+            f"/api/v1/compilations/{job_id}",
+            headers=_compiler_api_auth_headers(),
+        )
+        response.raise_for_status()
+        payload = _parse_json_object_response(
+            response,
+            context=f"Compiler API compilation job {job_id} response",
+        )
+        status = _require_string_field(
+            payload,
+            "status",
+            context=f"Compiler API compilation job {job_id} response",
+        )
+        if status in _TERMINAL_JOB_STATUSES:
+            return payload
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError(f"Timed out waiting for compilation job {job_id}.")
+        await asyncio.sleep(2.0)
+
+
+async def _fetch_compilation_events(
+    client: httpx.AsyncClient,
+    job_id: str,
+) -> list[dict[str, Any]]:
+    response = await client.get(
+        f"/api/v1/compilations/{job_id}/events",
+        headers=_compiler_api_auth_headers(),
+        params={"token": _compiler_api_sse_token()},
+    )
+    response.raise_for_status()
+    return _parse_sse_events(response.text)
+
+
+def _parse_sse_events(payload: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    current_event: dict[str, Any] = {}
+    current_data_lines: list[str] = []
+
+    for line in payload.splitlines():
+        if not line.strip():
+            if current_data_lines:
+                raw_data = "\n".join(current_data_lines)
+                try:
+                    current_event["data"] = json.loads(raw_data)
+                except json.JSONDecodeError:
+                    current_event["data"] = raw_data
+                current_data_lines = []
+            if current_event:
+                events.append(current_event)
+                current_event = {}
+            continue
+        if line.startswith("event:"):
+            current_event["event"] = line.partition(":")[2].strip()
+            continue
+        if line.startswith("data:"):
+            current_data_lines.append(line.partition(":")[2].strip())
+
+    if current_data_lines:
+        raw_data = "\n".join(current_data_lines)
+        try:
+            current_event["data"] = json.loads(raw_data)
+        except json.JSONDecodeError:
+            current_event["data"] = raw_data
+
+    if current_event:
+        events.append(current_event)
+    return events
+
+
+def _operations_enhanced_from_events(events: list[dict[str, Any]]) -> int:
+    for event in events:
+        payload = event.get("data")
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("stage") != "enhance":
+            continue
+        if payload.get("event_type") != "stage.succeeded":
+            continue
+        detail = payload.get("detail")
+        if isinstance(detail, dict):
+            operations_enhanced = detail.get("operations_enhanced")
+            if operations_enhanced is None:
+                return 0
+            if not isinstance(operations_enhanced, int) or isinstance(operations_enhanced, bool):
+                raise RuntimeError(
+                    "Enhance stage event field 'operations_enhanced' was "
+                    f"{operations_enhanced!r}, expected integer."
+                )
+            return operations_enhanced
+    return 0
+
+
+def _case_scope(case: ProofCase) -> tuple[str | None, str | None]:
+    return (
+        case.tenant or _request_payload_scope(case.request_payload, "tenant"),
+        case.environment or _request_payload_scope(case.request_payload, "environment"),
+    )
+
+
+def _request_payload_scope(payload: dict[str, Any], field: str) -> str | None:
+    value = payload.get(field)
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _scope_query_params(*, tenant: str | None, environment: str | None) -> dict[str, str]:
+    params: dict[str, str] = {}
+    if tenant is not None:
+        params["tenant"] = tenant
+    if environment is not None:
+        params["environment"] = environment
+    return params
+
+
+def _scope_context(service_id: str, *, tenant: str | None, environment: str | None) -> str:
+    if tenant is None and environment is None:
+        return service_id
+    return f"{service_id} (tenant={tenant!r}, environment={environment!r})"
+
+
+async def _active_version_for_service(
+    client: httpx.AsyncClient,
+    service_id: str,
+    *,
+    tenant: str | None = None,
+    environment: str | None = None,
+) -> int:
+    request_params = _scope_query_params(tenant=tenant, environment=environment)
+    response = await client.get(
+        "/api/v1/services",
+        params=request_params or None,
+        headers=_compiler_api_auth_headers(),
+    )
+    response.raise_for_status()
+    payload = _parse_json_object_response(
+        response,
+        context="Compiler API service catalog response",
+    )
+    services = _require_list_field(
+        payload,
+        "services",
+        context="Compiler API service catalog response",
+    )
+    scope_context = _scope_context(service_id, tenant=tenant, environment=environment)
+    for service in services:
+        if isinstance(service, dict) and service.get("service_id") == service_id:
+            return _require_int_field(
+                service,
+                "active_version",
+                context=f"Compiler API service catalog entry for {scope_context}",
+            )
+    raise RuntimeError(f"Service {scope_context} not found in service catalog.")
+
+
+async def _artifact_version(
+    client: httpx.AsyncClient,
+    service_id: str,
+    version_number: int,
+    *,
+    tenant: str | None = None,
+    environment: str | None = None,
+) -> dict[str, Any]:
+    request_params = _scope_query_params(tenant=tenant, environment=environment)
+    response = await client.get(
+        f"/api/v1/artifacts/{service_id}/versions/{version_number}",
+        params=request_params or None,
+        headers=_compiler_api_auth_headers(),
+    )
+    response.raise_for_status()
+    scope_context = _scope_context(service_id, tenant=tenant, environment=environment)
+    artifact = _parse_json_object_response(
+        response,
+        context=f"Compiler API artifact version response for {scope_context} v{version_number}",
+    )
+    _require_mapping_field(
+        artifact,
+        "ir_json",
+        context=f"Compiler API artifact version response for {scope_context} v{version_number}",
+    )
+    return artifact
+
+
+async def _invoke_runtime_tools(
+    runtime_base_url: str,
+    invocation_specs: tuple[ToolInvocationSpec, ...],
+) -> list[ToolInvocationResult]:
+    invoker = build_streamable_http_tool_invoker(runtime_base_url)
+    results: list[ToolInvocationResult] = []
+    for spec in invocation_specs:
+        result = _json_safe(await invoker(spec.tool_name, spec.arguments))
+        results.append(ToolInvocationResult(tool_name=spec.tool_name, result=result))
+    return results
+
+
+def _resolve_invocation_specs(
+    service_ir: ServiceIR,
+    case: ProofCase,
+    *,
+    sample_invocation_overrides: Mapping[str, dict[str, Any]] | None = None,
+) -> tuple[ToolInvocationSpec, ...]:
+    if case.tool_invocations:
+        return case.tool_invocations
+
+    sample_invocations = build_sample_invocations(service_ir)
+    if sample_invocation_overrides:
+        sample_invocations.update(
+            {
+                tool_name: dict(arguments)
+                for tool_name, arguments in sample_invocation_overrides.items()
+            }
+        )
+    operation_by_id: dict[str, Operation] = {}
+    placeholder_only_tools: set[str] = set()
+    for operation in service_ir.operations:
+        if not operation.enabled or operation.id not in sample_invocations:
+            continue
+        arguments = sample_invocations[operation.id]
+        if _has_synthetic_path_placeholder_samples(
+            operation,
+            arguments,
+            include_numeric_fallbacks=True,
+        ):
+            placeholder_only_tools.add(operation.id)
+            continue
+        operation_by_id[operation.id] = operation
+
+    for preferred_tool_id in case.preferred_tool_ids:
+        if preferred_tool_id not in operation_by_id:
+            continue
+        arguments = sample_invocations[preferred_tool_id]
+        return (ToolInvocationSpec(tool_name=preferred_tool_id, arguments=arguments),)
+
+    safe_candidates = [
+        operation.id
+        for operation in sorted(operation_by_id.values(), key=lambda operation: operation.id)
+        if not operation.risk.writes_state and not operation.risk.destructive
+    ]
+    for tool_name in safe_candidates:
+        return (ToolInvocationSpec(tool_name=tool_name, arguments=sample_invocations[tool_name]),)
+
+    risky_only_tools = sorted(
+        operation.id
+        for operation in operation_by_id.values()
+        if operation.risk.writes_state or operation.risk.destructive
+    )
+    if risky_only_tools:
+        raise RuntimeError(
+            f"{case.case_id or case.protocol} proof case produced only state-mutating or "
+            "destructive runtime tool samples; provide explicit tool_invocations or safe "
+            "sample overrides."
+        )
+
+    if placeholder_only_tools:
+        raise RuntimeError(
+            f"{case.case_id or case.protocol} proof case produced only synthetic placeholder "
+            "path samples; provide explicit tool_invocations or real path defaults."
+        )
+    raise RuntimeError(
+        f"{case.case_id or case.protocol} proof case produced no invocable runtime tool samples."
+    )
+
+
+async def _audit_generated_tools(
+    runtime_base_url: str,
+    service_ir: ServiceIR,
+    *,
+    representative_invocations: tuple[ToolInvocationSpec, ...],
+    representative_results: list[ToolInvocationResult],
+    tool_invoker: ToolInvoker | None = None,
+    available_tool_names: set[str] | None = None,
+    audit_policy: AuditPolicy = AuditPolicy(),
+    forced_skip_tool_ids: tuple[str, ...] = (),
+    forced_skip_reason: str | None = None,
+    sample_invocation_overrides: Mapping[str, dict[str, Any]] | None = None,
+) -> ToolAuditSummary:
+    runtime_tool_names = (
+        available_tool_names
+        if available_tool_names is not None
+        else await _fetch_runtime_tool_names(runtime_base_url)
+    )
+    sample_invocations = build_sample_invocations(service_ir)
+    if sample_invocation_overrides:
+        sample_invocations.update(
+            {
+                tool_name: dict(arguments)
+                for tool_name, arguments in sample_invocation_overrides.items()
+            }
+        )
+    for spec in representative_invocations:
+        sample_invocations[spec.tool_name] = spec.arguments
+    representative_tool_ids = {spec.tool_name for spec in representative_invocations}
+
+    cached_results = {
+        invocation_result.tool_name: invocation_result.result
+        for invocation_result in representative_results
+    }
+    invoker = tool_invoker or build_streamable_http_tool_invoker(runtime_base_url)
+    enabled_operations = sorted(
+        (operation for operation in service_ir.operations if operation.enabled),
+        key=lambda operation: operation.id,
+    )
+    forced_skip_tool_id_set = set(forced_skip_tool_ids)
+    audit_results: list[ToolAuditResult] = []
+
+    for operation in enabled_operations:
+        if operation.id in forced_skip_tool_id_set:
+            audit_results.append(
+                ToolAuditResult(
+                    tool_name=operation.id,
+                    outcome="skipped",
+                    reason=forced_skip_reason
+                    or (
+                        "Skipped by proof-case policy because this endpoint is "
+                        "disabled in the target deployment."
+                    ),
+                )
+            )
+            continue
+
+        if operation.id not in runtime_tool_names:
+            audit_results.append(
+                ToolAuditResult(
+                    tool_name=operation.id,
+                    outcome="failed",
+                    reason="Runtime /tools listing does not expose this generated tool.",
+                )
+            )
+            continue
+
+        arguments = sample_invocations[operation.id]
+        if operation.id not in representative_tool_ids and _has_synthetic_path_placeholder_samples(
+            operation,
+            arguments,
+            include_numeric_fallbacks=True,
+        ):
+            audit_results.append(
+                ToolAuditResult(
+                    tool_name=operation.id,
+                    outcome="skipped",
+                    reason=(
+                        "Skipped tool because path parameters still use synthetic "
+                        "placeholder samples."
+                    ),
+                    arguments=arguments,
+                )
+            )
+            continue
+
+        skip_reason = audit_policy.skip_reason(operation, sample_invocations)
+        if skip_reason is not None:
+            audit_results.append(
+                ToolAuditResult(
+                    tool_name=operation.id,
+                    outcome="skipped",
+                    reason=skip_reason,
+                )
+            )
+            continue
+
+        result = cached_results.get(operation.id)
+        if result is None:
+            try:
+                result = _json_safe(await invoker(operation.id, arguments))
+            except Exception as exc:  # broad-except: proof resilience
+                failure_skip_reason = audit_policy.failure_skip_reason(operation, arguments)
+                if failure_skip_reason is not None:
+                    audit_results.append(
+                        ToolAuditResult(
+                            tool_name=operation.id,
+                            outcome="skipped",
+                            reason=failure_skip_reason,
+                            arguments=arguments,
+                        )
+                    )
+                    continue
+                audit_results.append(
+                    ToolAuditResult(
+                        tool_name=operation.id,
+                        outcome="failed",
+                        reason=f"Invocation raised: {exc}",
+                        arguments=arguments,
+                    )
+                )
+                continue
+
+        failure_reason = _generated_tool_audit_failure_reason(service_ir, operation.id, result)
+        if failure_reason is not None:
+            failure_skip_reason = audit_policy.failure_skip_reason(operation, arguments)
+            if failure_skip_reason is not None:
+                audit_results.append(
+                    ToolAuditResult(
+                        tool_name=operation.id,
+                        outcome="skipped",
+                        reason=failure_skip_reason,
+                        arguments=arguments,
+                        result=result,
+                    )
+                )
+                continue
+            audit_results.append(
+                ToolAuditResult(
+                    tool_name=operation.id,
+                    outcome="failed",
+                    reason=failure_reason,
+                    arguments=arguments,
+                    result=result,
+                )
+            )
+            continue
+
+        audit_results.append(
+            ToolAuditResult(
+                tool_name=operation.id,
+                outcome="passed",
+                reason="Invocation succeeded.",
+                arguments=arguments,
+                result=result,
+            )
+        )
+
+    unexpected_runtime_tool_names = sorted(
+        runtime_tool_names - {operation.id for operation in enabled_operations}
+    )
+    for tool_name in unexpected_runtime_tool_names:
+        audit_results.append(
+            ToolAuditResult(
+                tool_name=tool_name,
+                outcome="failed",
+                reason=(
+                    "Runtime /tools listing exposes an unexpected tool that is not present "
+                    "in the compiled IR."
+                ),
+            )
+        )
+
+    passed = sum(result.outcome == "passed" for result in audit_results)
+    failed = sum(result.outcome == "failed" for result in audit_results)
+    skipped = sum(result.outcome == "skipped" for result in audit_results)
+    return ToolAuditSummary(
+        discovered_operations=len(enabled_operations),
+        generated_tools=len(enabled_operations),
+        audited_tools=passed + failed,
+        passed=passed,
+        failed=failed,
+        skipped=skipped,
+        results=audit_results,
+    )
+
+
+async def _fetch_runtime_tool_names(runtime_base_url: str) -> set[str]:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        response = await client.get(f"{runtime_base_url.rstrip('/')}/tools")
+        response.raise_for_status()
+        payload = _parse_json_object_response(
+            response,
+            context=f"Runtime /tools response from {runtime_base_url.rstrip('/')}",
+        )
+    tools = validate_tool_listing_payload(
+        payload,
+        context=f"Runtime /tools response from {runtime_base_url.rstrip('/')}",
+    )
+    return {tool["name"] for tool in tools}
+
+
+def _parse_json_object_response(
+    response: httpx.Response,
+    *,
+    context: str,
+) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"{context} returned invalid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{context} returned JSON {type(payload).__name__}, expected object.")
+    return cast(dict[str, Any], payload)
+
+
+def _require_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> Any:
+    if field not in payload:
+        raise RuntimeError(f"{context} did not include required field {field!r}.")
+    return payload[field]
+
+
+def _require_string_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> str:
+    value = _require_field(payload, field, context=context)
+    if not isinstance(value, str):
+        raise RuntimeError(
+            f"{context} field {field!r} was {type(value).__name__}, expected string."
+        )
+    return value
+
+
+def _require_int_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> int:
+    value = _require_field(payload, field, context=context)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{context} field {field!r} was {value!r}, expected integer.") from exc
+
+
+def _require_list_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> list[Any]:
+    value = _require_field(payload, field, context=context)
+    if not isinstance(value, list):
+        raise RuntimeError(f"{context} field {field!r} was {type(value).__name__}, expected list.")
+    return value
+
+
+def _require_mapping_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> dict[str, Any]:
+    value = _require_field(payload, field, context=context)
+    if not isinstance(value, dict):
+        raise RuntimeError(
+            f"{context} field {field!r} was {type(value).__name__}, expected object."
+        )
+    return cast(dict[str, Any], value)
+
+
+def _require_identifier_field(
+    payload: dict[str, Any],
+    field: str,
+    *,
+    context: str,
+) -> str:
+    value = _require_field(payload, field, context=context)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    raise RuntimeError(
+        f"{context} field {field!r} was {type(value).__name__}, expected string or integer."
+    )
+
+
+def _representative_invocation_failures(
+    expected_ir: ServiceIR,
+    invocation_results: list[ToolInvocationResult],
+) -> list[str]:
+    failures: list[str] = []
+    for invocation_result in invocation_results:
+        failure_reason = _generated_tool_audit_failure_reason(
+            expected_ir,
+            invocation_result.tool_name,
+            invocation_result.result,
+        )
+        if failure_reason is not None:
+            failures.append(f"{invocation_result.tool_name}: {failure_reason}")
+    return failures
+
+
+def _summarize_failed_audit_results(summary: ToolAuditSummary) -> str | None:
+    failed_results = [result for result in summary.results if result.outcome == "failed"]
+    if not failed_results:
+        return None
+    summary_text = "; ".join(
+        f"{result.tool_name}: {result.reason}" for result in failed_results[:3]
+    )
+    if len(failed_results) > 3:
+        summary_text += f"; and {len(failed_results) - 3} more"
+    return summary_text
+
+
+# _generated_tool_audit_skip_reason is now replaced by AuditPolicy.skip_reason()
+
+
+def _generated_tool_audit_failure_reason(
+    expected_ir: ServiceIR,
+    operation_id: str,
+    result: dict[str, Any],
+) -> str | None:
+    status = result.get("status")
+    if status != "ok":
+        return f"Invocation returned unexpected status: {status!r}."
+    if "result" not in result:
+        return "Invocation returned ok status without a result payload."
+
+    descriptor = _supported_descriptor_for_operation(expected_ir, operation_id)
+    if descriptor is None:
+        return None
+
+    transport = result.get("transport")
+    if transport != descriptor.transport.value:
+        return (
+            f"Invocation returned transport {transport!r}, expected {descriptor.transport.value!r}."
+        )
+
+    return stream_result_failure_reason(
+        result.get("result"),
+        transport=descriptor.transport.value,
+    )
+
+
+def _supported_descriptor_for_operation(
+    expected_ir: ServiceIR,
+    operation_id: str,
+) -> EventDescriptor | None:
+    descriptors = [
+        descriptor
+        for descriptor in expected_ir.event_descriptors
+        if descriptor.operation_id == operation_id
+        and descriptor.support is EventSupportLevel.supported
+    ]
+    if not descriptors:
+        return None
+    if len(descriptors) > 1:
+        raise ValueError(
+            f"Generated-tool audit does not support multiple descriptors for {operation_id}."
+        )
+    return descriptors[0]
+
+
+def _compute_tool_intent_counts(service_ir: ServiceIR) -> ToolIntentCounts:
+    """Count tool_intent values across all enabled operations in a compiled IR."""
+    discovery = 0
+    action = 0
+    unset = 0
+    for op in service_ir.operations:
+        if not op.enabled:
+            continue
+        if op.tool_intent is None:
+            unset += 1
+        elif op.tool_intent == ToolIntent.discovery:
+            discovery += 1
+        elif op.tool_intent == ToolIntent.action:
+            action += 1
+        else:
+            unset += 1
+    return ToolIntentCounts(discovery=discovery, action=action, unset=unset)
+
+
+def _count_llm_fields(ir_json: dict[str, Any]) -> int:
+    count = 0
+    for operation in ir_json.get("operations", []):
+        if isinstance(operation, dict) and operation.get("source") == "llm":
+            count += 1
+        if not isinstance(operation, dict):
+            continue
+        for param in operation.get("params", []):
+            if isinstance(param, dict) and param.get("source") == "llm":
+                count += 1
+    return count
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(nested) for key, nested in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _json_safe(model_dump(mode="json"))
+        except TypeError:
+            return _json_safe(model_dump())
+
+    if hasattr(value, "__dict__"):
+        return _json_safe(vars(value))
+    return str(value)
+
+
+def _strip_descriptions(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: ("" if key == "description" else _strip_descriptions(nested))
+            for key, nested in value.items()
+        }
+    if isinstance(value, list):
+        return [_strip_descriptions(item) for item in value]
+    return value
+
+
+def _rewrite_wsdl_endpoint(content: str, endpoint: str) -> str:
+    return _SOAP_ADDRESS_PATTERN.sub(f'location="{endpoint}"', content, count=1)
+
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name)
+    if value:
+        return value
+    raise RuntimeError(f"Required environment variable {name} is not set.")
+
+
+def _compiler_api_sse_token() -> str:
+    from apps.access_control.authn.service import build_service_jwt
+
+    return build_service_jwt()
+
+
+def _compiler_api_auth_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {_compiler_api_sse_token()}"}
+
+
+def _basic_auth_header(secret: str) -> str:
+    encoded = base64.b64encode(secret.encode("utf-8")).decode("ascii")
+    return f"Basic {encoded}"
+
+
+def _cluster_http_url(namespace: str, service_name: str, port: int) -> str:
+    return f"http://{service_name}.{namespace}.svc.cluster.local:{port}"
+
+
+def _cluster_grpc_url(namespace: str, service_name: str, port: int) -> str:
+    return f"grpc://{service_name}.{namespace}.svc.cluster.local:{port}"
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--api-base-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--namespace", required=True)
+    parser.add_argument("--profile", choices=_SUPPORTED_PROFILES, default="mock")
+    parser.add_argument("--upstream-namespace")
+    parser.add_argument(
+        "--protocol",
+        choices=("all",) + _SUPPORTED_PROTOCOLS,
+        default="all",
+    )
+    parser.add_argument("--timeout-seconds", type=float, default=900.0)
+    parser.add_argument("--run-id", default=uuid.uuid4().hex[:6])
+    parser.add_argument("--audit-all-generated-tools", action="store_true")
+    parser.add_argument(
+        "--audit-mutating-tools",
+        action="store_true",
+        help=(
+            "When auditing generated tools, also invoke state-mutating, "
+            "external-side-effect, and destructive operations."
+        ),
+    )
+    parser.add_argument("--enable-llm-judge", action="store_true")
+    parser.add_argument("--case-id", action="append", dest="case_ids", default=[])
+    parser.add_argument(
+        "--skip-llm-artifact-checks",
+        action="store_true",
+        help="Do not require enhancement-stage counts or llm-sourced IR fields.",
+    )
+    return parser.parse_args()
+
+
+def _build_audit_policy(*, audit_mutating_tools: bool) -> AuditPolicy:
+    if audit_mutating_tools:
+        return AuditPolicy(
+            skip_destructive=False,
+            skip_external_side_effect=False,
+            skip_writes_state=False,
+        )
+    return AuditPolicy()
+
+
+def _build_llm_judge_from_env() -> LLMJudge | None:
+    """Build an LLM judge using the same provider config as the compiler worker."""
+    try:
+        from libs.enhancer.enhancer import EnhancerConfig, create_llm_client
+
+        config = EnhancerConfig.from_env()
+        client = create_llm_client(config)
+        return LLMJudge(client)
+    except Exception:  # broad-except: proof resilience — judge initialization is optional
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Could not build LLM judge from env config; judge evaluation disabled",
+            exc_info=True,
+        )
+        return None
+
+
+async def _async_main() -> None:
+    args = _parse_args()
+    selected_case_ids = {case_id for case_id in args.case_ids if case_id} or None
+    audit_policy = _build_audit_policy(
+        audit_mutating_tools=bool(args.audit_mutating_tools),
+    )
+    judge: LLMJudge | None = None
+    if args.enable_llm_judge:
+        judge = _build_llm_judge_from_env()
+    results = await run_proofs(
+        namespace=args.namespace,
+        api_base_url=args.api_base_url,
+        protocol=cast(
+            Literal[
+                "all",
+                "graphql",
+                "rest",
+                "openapi",
+                "grpc",
+                "jsonrpc",
+                "odata",
+                "scim",
+                "soap",
+                "sql",
+            ],
+            args.protocol,
+        ),
+        profile=cast(Literal["mock", "real-targets"], args.profile),
+        upstream_namespace=cast(str | None, args.upstream_namespace),
+        timeout_seconds=float(args.timeout_seconds),
+        run_id=str(args.run_id),
+        audit_all_generated_tools=bool(args.audit_all_generated_tools),
+        audit_policy=audit_policy,
+        enable_llm_judge=bool(args.enable_llm_judge),
+        llm_judge=judge,
+        selected_case_ids=selected_case_ids,
+        enable_llm_enhancement=not bool(args.skip_llm_artifact_checks),
+        require_llm_artifacts=not bool(args.skip_llm_artifact_checks),
+    )
+    print(
+        json.dumps(
+            _json_safe([asdict(result) for result in results]),
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    if any(result.error for result in results):
+        raise SystemExit(1)
+
+
+def main() -> None:
+    asyncio.run(_async_main())
+
+
+if __name__ == "__main__":
+    main()

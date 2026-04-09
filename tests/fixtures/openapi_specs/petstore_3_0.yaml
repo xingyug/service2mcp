@@ -1,0 +1,116 @@
+openapi: "3.0.3"
+info:
+  title: Petstore
+  version: "1.0.0"
+  description: A sample pet store API
+servers:
+  - url: https://petstore.example.com/v1
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List all pets
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: A list of pets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Pet"
+    post:
+      operationId: createPet
+      summary: Create a pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewPet"
+      responses:
+        "201":
+          description: Pet created
+  /pets/{petId}:
+    get:
+      operationId: showPetById
+      summary: Info for a specific pet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Expected response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+    delete:
+      operationId: deletePet
+      summary: Delete a pet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Pet deleted
+    put:
+      operationId: updatePet
+      summary: Update a pet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewPet"
+      responses:
+        "200":
+          description: Pet updated
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        tag:
+          type: string
+      required:
+        - id
+        - name
+    NewPet:
+      type: object
+      properties:
+        name:
+          type: string
+        tag:
+          type: string
+      required:
+        - name
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+security:
+  - bearerAuth: []

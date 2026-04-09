@@ -1,0 +1,53 @@
+name: kubectl-proxy
+description: Kubernetes kubectl wrapper
+version: "2.1.0"
+base_command: kubectl
+commands:
+  - name: get-pods
+    description: List pods in a namespace
+    subcommands: ["get", "pods"]
+    args:
+      - name: namespace
+        type: string
+        required: false
+        default: default
+      - name: output
+        type: string
+        required: false
+        default: json
+      - name: selector
+        type: string
+        required: false
+        description: Label selector
+    output_format: json
+  - name: apply-manifest
+    description: Apply a Kubernetes manifest
+    subcommands: ["apply"]
+    args:
+      - name: filename
+        type: string
+        required: true
+        description: Path to manifest file
+      - name: namespace
+        type: string
+        required: false
+    risk:
+      writes_state: true
+      risk_level: cautious
+  - name: delete-resource
+    description: Delete a Kubernetes resource
+    subcommands: ["delete"]
+    args:
+      - name: resource-type
+        type: string
+        required: true
+      - name: name
+        type: string
+        required: true
+      - name: namespace
+        type: string
+        required: false
+    risk:
+      writes_state: true
+      destructive: true
+      risk_level: dangerous

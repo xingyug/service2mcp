@@ -1,0 +1,186 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-postgres
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  selector:
+    {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-postgres
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "postgres") | nindent 8 }}
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: postgres
+          image: "{{ .Values.images.postgres.repository }}:{{ .Values.images.postgres.tag }}"
+          imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.global.database.name | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.global.database.user | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tool-compiler.fullname" . }}-secrets
+                  key: postgres-password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          {{- with .Values.resources.postgres }}
+          resources:{{ toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          startupProbe:
+            tcpSocket:
+              port: postgres
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: postgres
+          livenessProbe:
+            tcpSocket:
+              port: postgres
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: postgres-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-redis
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "redis") | nindent 4 }}
+spec:
+  selector:
+    {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "redis") | nindent 4 }}
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-redis
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "redis") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "redis") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "redis") | nindent 8 }}
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: "{{ .Values.images.redis.repository }}:{{ .Values.images.redis.tag }}"
+          imagePullPolicy: {{ .Values.images.redis.pullPolicy }}
+          {{- with .Values.resources.redis }}
+          resources:{{ toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: redis
+              containerPort: 6379
+          startupProbe:
+            tcpSocket:
+              port: redis
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: redis
+          livenessProbe:
+            tcpSocket:
+              port: redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-temporal
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "temporal") | nindent 4 }}
+spec:
+  selector:
+    {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "temporal") | nindent 4 }}
+  ports:
+    - name: grpc
+      port: 7233
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-temporal
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "temporal") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "temporal") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "temporal") | nindent 8 }}
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: temporal
+          image: "{{ .Values.images.temporal.repository }}:{{ .Values.images.temporal.tag }}"
+          imagePullPolicy: {{ .Values.images.temporal.pullPolicy }}
+          command: ["temporal", "server", "start-dev", "--ip", "0.0.0.0"]
+          {{- with .Values.resources.temporal }}
+          resources:{{ toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: grpc
+              containerPort: 7233
+          startupProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+          livenessProbe:
+            tcpSocket:
+              port: grpc

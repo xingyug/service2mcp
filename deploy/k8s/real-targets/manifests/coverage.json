@@ -1,0 +1,80 @@
+{
+  "_description": "Coverage expectations for 11 real-target MCP servers.",
+  "expectations": [
+    {
+      "service_id": "directus-graphql",
+      "protocol": "graphql",
+      "expected_tools": 33,
+      "expected_passed": 33,
+      "notes": "Exact parity. 33/33 tools."
+    },
+    {
+      "service_id": "directus-openapi",
+      "protocol": "openapi",
+      "expected_tools": 154,
+      "expected_passed": 20,
+      "notes": "Exact parity. 154/154 tools. Most skipped by audit policy (state-mutating)."
+    },
+    {
+      "service_id": "directus-rest",
+      "protocol": "rest",
+      "expected_tools": 2,
+      "notes": "REST black-box discovery. Proof tests 2 safe tools."
+    },
+    {
+      "service_id": "gitea-openapi",
+      "protocol": "openapi",
+      "expected_tools": 406,
+      "expected_passed": 50,
+      "notes": "Exact parity. 406/406 tools. Large surface, most skipped by audit policy."
+    },
+    {
+      "service_id": "pocketbase-rest",
+      "protocol": "rest",
+      "expected_tools": 2,
+      "notes": "REST black-box discovery. Proof tests 2 safe tools."
+    },
+    {
+      "service_id": "aria2-jsonrpc",
+      "protocol": "jsonrpc",
+      "expected_tools": 3,
+      "expected_passed": 3,
+      "notes": "Proof tests 3 safe tools. Extractor discovers 36+ via system.listMethods."
+    },
+    {
+      "service_id": "openfga-grpc",
+      "protocol": "grpc",
+      "expected_tools": 4,
+      "expected_passed": 4,
+      "notes": "Proof tests 4 read-safe tools. Extractor discovers 19 via reflection."
+    },
+    {
+      "service_id": "jackson-scim",
+      "protocol": "scim",
+      "expected_tools": 10,
+      "expected_passed": 3,
+      "notes": "SCIM RFC 7644 ops. ~10 tools. Proof tests 3 safe read tools."
+    },
+    {
+      "service_id": "northbreeze-odata",
+      "protocol": "odata",
+      "expected_tools": 17,
+      "expected_passed": 17,
+      "notes": "Exact parity. 17/17 tools."
+    },
+    {
+      "service_id": "postgres-sql",
+      "protocol": "sql",
+      "expected_tools": 22,
+      "expected_passed": 10,
+      "notes": "22 tools from 10 tables + 2 views. Some tables lack PKs for UPDATE/DELETE."
+    },
+    {
+      "service_id": "soap-cxf",
+      "protocol": "soap",
+      "expected_tools": 3,
+      "expected_passed": 3,
+      "notes": "Exact parity. 3/3 tools."
+    }
+  ]
+}

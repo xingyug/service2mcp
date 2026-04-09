@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: jackson
+  namespace: example-targets
+  labels:
+    app.kubernetes.io/name: jackson
+    app.kubernetes.io/part-of: tool-compiler
+    tool-compiler.io/protocol: scim
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: jackson
+  ports:
+    - name: http
+      port: 5225
+      targetPort: 5225
+      protocol: TCP

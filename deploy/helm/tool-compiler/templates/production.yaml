@@ -1,0 +1,92 @@
+{{/*
+Production hardening resources: HPA and PDB.
+Only rendered when the corresponding values are enabled.
+*/}}
+
+{{- if and .Values.autoscaling .Values.autoscaling.compilerApi .Values.autoscaling.compilerApi.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-compiler-api
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "compiler-api") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "tool-compiler.fullname" . }}-compiler-api
+  minReplicas: {{ .Values.autoscaling.compilerApi.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.compilerApi.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.compilerApi.targetCPUUtilizationPercentage }}
+{{- end }}
+---
+{{- if and .Values.autoscaling .Values.autoscaling.mcpRuntime .Values.autoscaling.mcpRuntime.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-mcp-runtime
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "mcp-runtime") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "tool-compiler.fullname" . }}-mcp-runtime
+  minReplicas: {{ .Values.autoscaling.mcpRuntime.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.mcpRuntime.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.mcpRuntime.targetCPUUtilizationPercentage }}
+{{- end }}
+---
+{{- if and .Values.podDisruptionBudget .Values.podDisruptionBudget.compilerApi .Values.podDisruptionBudget.compilerApi.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-compiler-api
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "compiler-api") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.compilerApi.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "compiler-api") | nindent 6 }}
+{{- end }}
+---
+{{- if and .Values.podDisruptionBudget .Values.podDisruptionBudget.accessControl .Values.podDisruptionBudget.accessControl.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-access-control
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "access-control") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.accessControl.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "access-control") | nindent 6 }}
+{{- end }}
+---
+{{- if and .Values.podDisruptionBudget .Values.podDisruptionBudget.mcpRuntime .Values.podDisruptionBudget.mcpRuntime.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-mcp-runtime
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "mcp-runtime") | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.mcpRuntime.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "mcp-runtime") | nindent 6 }}
+{{- end }}

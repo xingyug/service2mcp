@@ -1,0 +1,282 @@
+# Prometheus alerting rules for the service2mcp platform.
+#
+# Metric sources:
+#   - apps/mcp_runtime/observability.py   (mcp_runtime_* metrics)
+#   - apps/compiler_worker/observability.py (compiler_workflow_*, compiler_extractor_*)
+#   - Standard kube-state-metrics / cAdvisor for resource alerts
+#
+# Severity ladder:
+#   critical — pages on-call, service is down or data-loss risk
+#   warning  — requires attention within the current shift
+#   info     — notable, investigate when convenient
+
+groups:
+  # -------------------------------------------------------------------
+  # 1. Availability
+  # -------------------------------------------------------------------
+  - name: service2mcp.availability
+    rules:
+      - alert: Service2MCPApiDown
+        expr: up{job="compiler-api"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Compiler API is down"
+          description: >-
+            The compiler-api target {{ $labels.instance }} has been
+            unreachable for more than 5 minutes.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/api-down.md"
+
+      - alert: Service2MCPRuntimeDown
+        expr: up{job="mcp-runtime"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MCP runtime is down"
+          description: >-
+            The mcp-runtime target {{ $labels.instance }} has been
+            unreachable for more than 5 minutes.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/runtime-down.md"
+
+      - alert: Service2MCPWorkerDown
+        expr: up{job="compiler-worker"} == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Compiler worker is down"
+          description: >-
+            The compiler-worker target {{ $labels.instance }} has been
+            unreachable for more than 10 minutes.  Compilation jobs
+            will queue indefinitely until the worker recovers.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/worker-down.md"
+
+  # -------------------------------------------------------------------
+  # 2. Latency
+  # -------------------------------------------------------------------
+  - name: service2mcp.latency
+    rules:
+      - alert: HighCompilationLatency
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (
+              rate(compiler_workflow_stage_duration_seconds_bucket[5m])
+            )
+          ) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 compilation stage latency exceeds 30s"
+          description: >-
+            The 95th-percentile compilation stage duration has been
+            above 30 seconds for the last 10 minutes.  Check for slow
+            extractors, LLM timeouts, or database contention.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/high-compilation-latency.md"
+
+      - alert: HighToolInvocationLatency
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (
+              rate(mcp_runtime_tool_latency_seconds_bucket[5m])
+            )
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P95 tool invocation latency exceeds 5s"
+          description: >-
+            The 95th-percentile runtime tool-call latency has been
+            above 5 seconds for the last 5 minutes.  Investigate
+            upstream service health and circuit-breaker state.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/high-tool-latency.md"
+
+  # -------------------------------------------------------------------
+  # 3. Error rates
+  # -------------------------------------------------------------------
+  - name: service2mcp.errors
+    rules:
+      - alert: HighToolErrorRate
+        expr: >-
+          (
+            sum(rate(mcp_runtime_tool_calls_total{outcome="error"}[5m]))
+            /
+            sum(rate(mcp_runtime_tool_calls_total[5m]))
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tool error rate exceeds 10%"
+          description: >-
+            More than 10% of runtime tool calls are failing.
+            Current rate: {{ $value | humanizePercentage }}.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/high-tool-error-rate.md"
+
+      - alert: HighUpstreamErrorRate
+        expr: >-
+          (
+            sum(rate(mcp_runtime_upstream_errors_total{error_type=~"5.."}[5m]))
+            /
+            sum(rate(mcp_runtime_tool_calls_total[5m]))
+          ) > 0.20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Upstream 5xx error rate exceeds 20%"
+          description: >-
+            More than 20% of runtime tool calls are receiving 5xx
+            responses from upstream services.
+            Current rate: {{ $value | humanizePercentage }}.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/high-upstream-error-rate.md"
+
+      - alert: HighCompilationFailureRate
+        expr: >-
+          (
+            sum(rate(compiler_workflow_jobs_total{status="failed"}[10m]))
+            /
+            sum(rate(compiler_workflow_jobs_total[10m]))
+          ) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Compilation failure rate exceeds 25%"
+          description: >-
+            More than 25% of compilation jobs are failing.
+            Current rate: {{ $value | humanizePercentage }}.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/high-compilation-failure-rate.md"
+
+  # -------------------------------------------------------------------
+  # 4. Circuit breakers
+  # -------------------------------------------------------------------
+  - name: service2mcp.circuit_breaker
+    rules:
+      - alert: CircuitBreakerOpen
+        expr: mcp_runtime_circuit_breaker_state == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Circuit breaker open for {{ $labels.operation_id }}"
+          description: >-
+            The circuit breaker for operation {{ $labels.operation_id }}
+            has been open for more than 2 minutes.  The upstream
+            service may be degraded or unreachable.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/circuit-breaker-open.md"
+
+      - alert: MultipleCircuitBreakersOpen
+        expr: sum(mcp_runtime_circuit_breaker_state == 1) > 3
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "More than 3 circuit breakers are open"
+          description: >-
+            {{ $value }} circuit breakers are simultaneously open,
+            indicating widespread upstream degradation.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/multiple-circuit-breakers-open.md"
+
+  # -------------------------------------------------------------------
+  # 5. Resources
+  # -------------------------------------------------------------------
+  - name: service2mcp.resources
+    rules:
+      - alert: HighMemoryUsage
+        expr: >-
+          (
+            container_memory_working_set_bytes{namespace=~"tool-compiler.*"}
+            /
+            container_spec_memory_limit_bytes{namespace=~"tool-compiler.*"}
+          ) > 0.80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container memory usage above 80%"
+          description: >-
+            Container {{ $labels.container }} in pod {{ $labels.pod }}
+            is using {{ $value | humanizePercentage }} of its memory
+            limit.  Risk of OOM-kill if usage continues to grow.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/high-memory-usage.md"
+
+      - alert: HighCPUUsage
+        expr: >-
+          (
+            rate(container_cpu_usage_seconds_total{namespace=~"tool-compiler.*"}[5m])
+            /
+            container_spec_cpu_quota{namespace=~"tool-compiler.*"}
+            * container_spec_cpu_period{namespace=~"tool-compiler.*"}
+          ) > 0.80
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container CPU usage above 80% for 15m"
+          description: >-
+            Container {{ $labels.container }} in pod {{ $labels.pod }}
+            has sustained CPU utilization above 80% of its limit for
+            15 minutes.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/high-cpu-usage.md"
+
+      - alert: DatabaseConnectionPoolExhausted
+        expr: >-
+          pg_stat_activity_count{datname="tool_compiler"}
+          >=
+          (pg_settings_max_connections - 2)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connection pool nearly exhausted"
+          description: >-
+            Fewer than 2 PostgreSQL connections remain available.
+            New requests will be rejected.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/db-pool-exhausted.md"
+
+  # -------------------------------------------------------------------
+  # 6. Business metrics
+  # -------------------------------------------------------------------
+  - name: service2mcp.business
+    rules:
+      - alert: NoCompilationsIn1Hour
+        expr: >-
+          sum(increase(compiler_workflow_jobs_total{status="succeeded"}[1h])) == 0
+          and ON() (hour() >= 8 and hour() <= 20)
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "No successful compilations in the last hour"
+          description: >-
+            Zero successful compilations have been recorded in the
+            past hour during business hours (08:00–20:00 UTC).  This
+            may indicate an upstream regression or traffic drop.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/no-compilations.md"
+
+      - alert: AuditFailureSpike
+        expr: >-
+          (
+            sum(rate(compiler_workflow_jobs_total{status="failed"}[15m]))
+            /
+            sum(rate(compiler_workflow_jobs_total[15m]))
+          )
+          > 2 * (
+            sum(rate(compiler_workflow_jobs_total{status="failed"}[1h]))
+            /
+            sum(rate(compiler_workflow_jobs_total[1h]))
+          )
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Audit/compilation failure rate spiked 2x"
+          description: >-
+            The 15-minute failure rate is more than double the 1-hour
+            baseline, indicating a sudden regression in compilation or
+            audit quality.
+          runbook_url: "https://github.com/YOUR_ORG/service2mcp/blob/main/docs/runbooks/audit-failure-spike.md"

@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ service_name }}
+  namespace: {{ namespace }}
+  labels:
+{{ labels_yaml_4 }}
+  annotations:
+{{ annotations_yaml_4 }}
+spec:
+  type: ClusterIP
+  selector:
+{{ selector_labels_yaml_4 }}
+  ports:
+    - name: http
+      port: {{ service_port }}
+      targetPort: http
+      protocol: TCP

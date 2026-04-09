@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grpc-server
+  namespace: example-test-targets
+  labels:
+    app: grpc-server
+    tool-compiler.io/protocol: grpc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grpc-server
+  template:
+    metadata:
+      labels:
+        app: grpc-server
+        tool-compiler.io/protocol: grpc
+    spec:
+      containers:
+        - name: grpc-server
+          image: YOUR_REGISTRY/YOUR_PROJECT/test-target-grpc:latest
+          ports:
+            - containerPort: 50051
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 50051
+            initialDelaySeconds: 10
+            periodSeconds: 15

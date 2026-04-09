@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:DataServices>
+    <Schema Namespace="Northbreeze" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+
+      <EntityType Name="Product">
+        <Key><PropertyRef Name="ID"/></Key>
+        <Property Name="ID" Type="Edm.Int32" Nullable="false"/>
+        <Property Name="Name" Type="Edm.String"/>
+        <Property Name="Price" Type="Edm.Decimal" Scale="2"/>
+        <Property Name="Stock" Type="Edm.Int32"/>
+        <Property Name="CategoryID" Type="Edm.Int32"/>
+        <Property Name="SupplierID" Type="Edm.Int32"/>
+        <Property Name="Discontinued" Type="Edm.Boolean"/>
+        <NavigationProperty Name="Category" Type="Northbreeze.Category" Partner="Products">
+          <ReferentialConstraint Property="CategoryID" ReferencedProperty="ID"/>
+        </NavigationProperty>
+        <NavigationProperty Name="Supplier" Type="Northbreeze.Supplier" Partner="Products">
+          <ReferentialConstraint Property="SupplierID" ReferencedProperty="ID"/>
+        </NavigationProperty>
+      </EntityType>
+
+      <EntityType Name="Category">
+        <Key><PropertyRef Name="ID"/></Key>
+        <Property Name="ID" Type="Edm.Int32" Nullable="false"/>
+        <Property Name="Name" Type="Edm.String"/>
+        <Property Name="Description" Type="Edm.String"/>
+        <NavigationProperty
+          Name="Products"
+          Type="Collection(Northbreeze.Product)"
+          Partner="Category"
+        />
+      </EntityType>
+
+      <EntityType Name="Supplier">
+        <Key><PropertyRef Name="ID"/></Key>
+        <Property Name="ID" Type="Edm.Int32" Nullable="false"/>
+        <Property Name="Name" Type="Edm.String"/>
+        <Property Name="City" Type="Edm.String"/>
+        <Property Name="Country" Type="Edm.String"/>
+        <Property Name="Phone" Type="Edm.String"/>
+        <NavigationProperty
+          Name="Products"
+          Type="Collection(Northbreeze.Product)"
+          Partner="Supplier"
+        />
+      </EntityType>
+
+      <Function Name="GetTopProducts" IsBound="false">
+        <Parameter Name="count" Type="Edm.Int32"/>
+        <ReturnType Type="Collection(Northbreeze.Product)"/>
+      </Function>
+
+      <Action Name="ResetData" IsBound="false"/>
+
+      <EntityContainer Name="NorthbreezeService">
+        <EntitySet Name="Products" EntityType="Northbreeze.Product">
+          <NavigationPropertyBinding Path="Category" Target="Categories"/>
+          <NavigationPropertyBinding Path="Supplier" Target="Suppliers"/>
+        </EntitySet>
+        <EntitySet Name="Categories" EntityType="Northbreeze.Category">
+          <NavigationPropertyBinding Path="Products" Target="Products"/>
+        </EntitySet>
+        <EntitySet Name="Suppliers" EntityType="Northbreeze.Supplier">
+          <NavigationPropertyBinding Path="Products" Target="Products"/>
+        </EntitySet>
+        <FunctionImport
+          Name="GetTopProducts"
+          Function="Northbreeze.GetTopProducts"
+          EntitySet="Products"
+        />
+        <ActionImport Name="ResetData" Action="Northbreeze.ResetData"/>
+      </EntityContainer>
+
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>

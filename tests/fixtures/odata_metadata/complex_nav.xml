@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="4.0" xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx">
+  <edmx:DataServices>
+    <Schema Namespace="Example.Model" xmlns="http://docs.oasis-open.org/odata/ns/edm">
+      <EntityType Name="Order">
+        <Key>
+          <PropertyRef Name="OrderId"/>
+        </Key>
+        <Property Name="OrderId" Type="Edm.Int32" Nullable="false"/>
+        <Property Name="CustomerId" Type="Edm.Int32"/>
+        <Property Name="TotalAmount" Type="Edm.Decimal"/>
+        <Property Name="OrderDate" Type="Edm.String"/>
+        <NavigationProperty Name="Customer" Type="Example.Model.Customer"/>
+        <NavigationProperty Name="Items" Type="Collection(Example.Model.OrderItem)"/>
+      </EntityType>
+
+      <EntityType Name="Customer">
+        <Key>
+          <PropertyRef Name="CustomerId"/>
+        </Key>
+        <Property Name="CustomerId" Type="Edm.Int32" Nullable="false"/>
+        <Property Name="Name" Type="Edm.String"/>
+        <Property Name="Email" Type="Edm.String"/>
+        <NavigationProperty Name="Orders" Type="Collection(Example.Model.Order)"/>
+      </EntityType>
+
+      <EntityType Name="OrderItem">
+        <Key>
+          <PropertyRef Name="ItemId"/>
+        </Key>
+        <Property Name="ItemId" Type="Edm.Int32" Nullable="false"/>
+        <Property Name="OrderId" Type="Edm.Int32"/>
+        <Property Name="ProductName" Type="Edm.String"/>
+        <Property Name="Quantity" Type="Edm.Int32"/>
+        <Property Name="UnitPrice" Type="Edm.Decimal"/>
+      </EntityType>
+
+      <Function Name="GetOrdersByStatus" IsBound="false">
+        <Parameter Name="status" Type="Edm.String"/>
+        <ReturnType Type="Collection(Example.Model.Order)"/>
+      </Function>
+
+      <EntityContainer Name="DefaultContainer">
+        <EntitySet Name="Orders" EntityType="Example.Model.Order"/>
+        <EntitySet Name="Customers" EntityType="Example.Model.Customer"/>
+        <EntitySet Name="OrderItems" EntityType="Example.Model.OrderItem"/>
+        <FunctionImport Name="GetOrdersByStatus" Function="Example.Model.GetOrdersByStatus"/>
+      </EntityContainer>
+    </Schema>
+  </edmx:DataServices>
+</edmx:Edmx>

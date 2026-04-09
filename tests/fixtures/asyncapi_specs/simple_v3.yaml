@@ -1,0 +1,47 @@
+asyncapi: '3.0.0'
+info:
+  title: Order Events
+  version: '2.0.0'
+  description: Order processing events
+servers:
+  production:
+    host: rabbitmq.example.com:5672
+    protocol: amqp
+channels:
+  orderCreated:
+    address: orders/created
+    messages:
+      OrderCreated:
+        payload:
+          type: object
+          properties:
+            orderId:
+              type: string
+            amount:
+              type: number
+            currency:
+              type: string
+  orderShipped:
+    address: orders/shipped
+    messages:
+      OrderShipped:
+        payload:
+          type: object
+          properties:
+            orderId:
+              type: string
+            trackingNumber:
+              type: string
+operations:
+  onOrderCreated:
+    action: receive
+    channel:
+      $ref: '#/channels/orderCreated'
+  publishOrderCreated:
+    action: send
+    channel:
+      $ref: '#/channels/orderCreated'
+  onOrderShipped:
+    action: receive
+    channel:
+      $ref: '#/channels/orderShipped'

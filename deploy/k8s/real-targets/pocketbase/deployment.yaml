@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pocketbase
+  namespace: example-targets
+  labels:
+    app.kubernetes.io/name: pocketbase
+    app.kubernetes.io/part-of: tool-compiler
+    tool-compiler.io/protocol: rest
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pocketbase
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pocketbase
+        app.kubernetes.io/part-of: tool-compiler
+        tool-compiler.io/protocol: rest
+    spec:
+      containers:
+      - name: pocketbase
+        image: YOUR_REGISTRY/YOUR_PROJECT/real-target-pocketbase:arm64-k3s
+        ports:
+        - containerPort: 8090
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 30m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8090
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8090
+          initialDelaySeconds: 10
+          periodSeconds: 30
+      nodeSelector:
+        kubernetes.io/hostname: YOUR_NODE_HOSTNAME
+      imagePullSecrets:
+      - name: gcr-secret

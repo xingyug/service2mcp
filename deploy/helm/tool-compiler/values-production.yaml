@@ -1,0 +1,139 @@
+# Production-grade Helm values overlay.
+# Usage: helm upgrade --install tool-compiler ./deploy/helm/tool-compiler \
+#   -f deploy/helm/tool-compiler/values.yaml \
+#   -f deploy/helm/tool-compiler/values-production.yaml
+
+fullnameOverride: tool-compiler
+
+# ---- Global overrides ----
+global:
+  database:
+    host: tool-compiler-postgres
+    port: 5432
+    name: toolcompiler
+    user: toolcompiler
+    # In production, use a Secret reference rather than a literal password.
+    password: ""
+  redisUrl: redis://tool-compiler-redis:6379/0
+  temporalAddress: tool-compiler-temporal:7233
+  # In production, use external secret management for JWT/billing secrets.
+  jwtSecret: ""
+  billingSecret: ""
+
+# ---- Image policy ----
+images:
+  compilerApi:
+    pullPolicy: Always
+  accessControl:
+    pullPolicy: Always
+  compilerWorker:
+    pullPolicy: Always
+  mcpRuntime:
+    pullPolicy: Always
+
+# ---- Resource limits & requests ----
+resources:
+  compilerApi:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  accessControl:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  compilerWorker:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+  mcpRuntime:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  postgres:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  redis:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# ---- Security contexts ----
+securityContext:
+  pod:
+    runAsNonRoot: true
+    fsGroup: 65534
+  container:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+
+# ---- Horizontal Pod Autoscaler ----
+autoscaling:
+  compilerApi:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+  mcpRuntime:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# ---- Pod Disruption Budgets ----
+podDisruptionBudget:
+  compilerApi:
+    enabled: true
+    minAvailable: 1
+  accessControl:
+    enabled: true
+    minAvailable: 1
+  mcpRuntime:
+    enabled: true
+    minAvailable: 1
+
+# ---- Liveness / readiness overrides ----
+probes:
+  compilerApi:
+    readiness:
+      path: /healthz
+      port: 8000
+      initialDelaySeconds: 10
+      periodSeconds: 15
+    liveness:
+      path: /healthz
+      port: 8000
+      initialDelaySeconds: 30
+      periodSeconds: 30
+  mcpRuntime:
+    readiness:
+      path: /readyz
+      port: 8003
+      initialDelaySeconds: 5
+      periodSeconds: 10
+    liveness:
+      path: /healthz
+      port: 8003
+      initialDelaySeconds: 15
+      periodSeconds: 30

@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graphql-server
+  namespace: example-test-targets
+  labels:
+    app: graphql-server
+    app.kubernetes.io/name: graphql-server
+    app.kubernetes.io/part-of: example-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: graphql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: graphql-server
+  template:
+    metadata:
+      labels:
+        app: graphql-server
+        app.kubernetes.io/name: graphql-server
+        app.kubernetes.io/component: test-target
+        tool-compiler.io/protocol: graphql
+    spec:
+      containers:
+        - name: apollo-server
+          image: YOUR_REGISTRY/YOUR_PROJECT/test-target-graphql:latest
+          ports:
+            - containerPort: 4000
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 4000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 4000
+            initialDelaySeconds: 10
+            periodSeconds: 30

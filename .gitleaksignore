@@ -1,0 +1,6 @@
+# Test-only dummy credentials for local GKE test target services.
+# These are NOT real secrets — they protect nothing and exist only in the
+# example-targets namespace for protocol testing.
+be9c1761e73c7aa4533bd98f016ed27a7146e6c7:deploy/k8s/real-targets/deploy-all.sh:generic-api-key:140
+be9c1761e73c7aa4533bd98f016ed27a7146e6c7:deploy/k8s/real-targets/gitea/configmap.yaml:generic-api-key:27
+be9c1761e73c7aa4533bd98f016ed27a7146e6c7:deploy/k8s/real-targets/gitea/configmap.yaml:generic-api-key:28

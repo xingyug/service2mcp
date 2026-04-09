@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: graphql-server
+  namespace: example-test-targets
+  labels:
+    app: graphql-server
+    app.kubernetes.io/name: graphql-server
+    app.kubernetes.io/part-of: example-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: graphql
+spec:
+  type: ClusterIP
+  selector:
+    app: graphql-server
+  ports:
+    - port: 4000
+      targetPort: 4000
+      protocol: TCP
+      name: http

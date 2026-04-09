@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jackson
+  namespace: example-targets
+  labels:
+    app.kubernetes.io/name: jackson
+    app.kubernetes.io/part-of: tool-compiler
+    tool-compiler.io/protocol: scim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jackson
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jackson
+        app.kubernetes.io/part-of: tool-compiler
+        tool-compiler.io/protocol: scim
+    spec:
+      initContainers:
+      - name: wait-for-postgres
+        image: busybox:1.36
+        command:
+        - sh
+        - -c
+        - until nc -z real-postgres 5432; do echo "waiting for postgres..."; sleep
+          2; done
+      containers:
+      - name: jackson
+        image: boxyhq/jackson:latest
+        ports:
+        - containerPort: 5225
+          protocol: TCP
+        env:
+        - name: JACKSON_API_KEYS
+          value: tc-test-api-key-12345
+        - name: DB_ENGINE
+          value: sql
+        - name: DB_TYPE
+          value: postgres
+        - name: DB_URL
+          value: postgres://jackson_user:jackson_pass@real-postgres:5432/jackson
+        - name: NEXTAUTH_URL
+          value: http://jackson.example-targets.svc.cluster.local:5225
+        - name: NEXTAUTH_SECRET
+          value: tc-nextauth-secret-for-testing-only
+        - name: NEXTAUTH_ACL
+          value: '*@example.com'
+        - name: RETRACED_HOST_URL
+          value: ''
+        - name: TERMINUS_PROXY_URL
+          value: ''
+        - name: NODE_ENV
+          value: production
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 384Mi
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 5225
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 5225
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+        startupProbe:
+          httpGet:
+            path: /api/health
+            port: 5225
+          failureThreshold: 60
+          periodSeconds: 5
+      nodeSelector:
+        kubernetes.io/hostname: YOUR_NODE_HOSTNAME

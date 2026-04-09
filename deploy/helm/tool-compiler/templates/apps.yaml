@@ -1,0 +1,437 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-runtime-ir
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "mcp-runtime") | nindent 4 }}
+data:
+  service-ir.json: {{ .Values.mcpRuntime.serviceIrJson | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-compiler-api
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "compiler-api") | nindent 4 }}
+spec:
+  selector:
+    {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "compiler-api") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.compilerApi.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-compiler-api
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "compiler-api") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "compiler-api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "compiler-api") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: compiler-api
+          image: "{{ .Values.images.compilerApi.repository }}:{{ .Values.images.compilerApi.tag }}"
+          imagePullPolicy: {{ .Values.images.compilerApi.pullPolicy }}
+          command:
+            - sh
+            - -lc
+            - alembic -c migrations/alembic.ini upgrade head && python -m uvicorn apps.compiler_api.main:app --host 0.0.0.0 --port {{ .Values.services.compilerApi.port }}
+          env:
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://{{ .Values.global.database.user }}:{{ .Values.global.database.password }}@{{ include "tool-compiler.fullname" . }}-postgres:{{ .Values.global.database.port }}/{{ .Values.global.database.name }}"
+            - name: WORKFLOW_ENGINE
+              value: celery
+            - name: REDIS_URL
+              value: {{ .Values.global.redisUrl | quote }}
+            - name: TEMPORAL_ADDRESS
+              value: {{ .Values.global.temporalAddress | quote }}
+            - name: ACCESS_CONTROL_URL
+              value: "http://{{ include "tool-compiler.fullname" . }}-access-control:{{ .Values.services.accessControl.port }}"
+            - name: ACCESS_CONTROL_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tool-compiler.fullname" . }}-secrets
+                  key: jwt-secret
+          {{- with .Values.resources.compilerApi }}
+          resources:{{ toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.services.compilerApi.port }}
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-access-control
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "access-control") | nindent 4 }}
+spec:
+  selector:
+    {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "access-control") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.accessControl.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-access-control
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "access-control") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "access-control") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "access-control") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: access-control
+          image: "{{ .Values.images.accessControl.repository }}:{{ .Values.images.accessControl.tag }}"
+          imagePullPolicy: {{ .Values.images.accessControl.pullPolicy }}
+          command:
+            - sh
+            - -lc
+            - python -m uvicorn apps.access_control.main:app --host 0.0.0.0 --port {{ .Values.services.accessControl.port }}
+          env:
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://{{ .Values.global.database.user }}:{{ .Values.global.database.password }}@{{ include "tool-compiler.fullname" . }}-postgres:{{ .Values.global.database.port }}/{{ .Values.global.database.name }}"
+            - name: ACCESS_CONTROL_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tool-compiler.fullname" . }}-secrets
+                  key: jwt-secret
+            {{- if .Values.gatewayAdminMock.enabled }}
+            - name: GATEWAY_ADMIN_URL
+              value: "http://{{ include "tool-compiler.fullname" . }}-gateway-admin-mock:{{ .Values.services.gatewayAdminMock.port }}"
+            {{- end }}
+          {{- with .Values.resources.accessControl }}
+          resources:{{ toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.services.accessControl.port }}
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+---
+{{- if .Values.gatewayAdminMock.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-gateway-admin-mock
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "gateway-admin-mock") | nindent 4 }}
+spec:
+  selector:
+    {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "gateway-admin-mock") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.gatewayAdminMock.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-gateway-admin-mock
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "gateway-admin-mock") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "gateway-admin-mock") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "gateway-admin-mock") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: gateway-admin-mock
+          image: "{{ .Values.images.gatewayAdminMock.repository }}:{{ .Values.images.gatewayAdminMock.tag }}"
+          imagePullPolicy: {{ .Values.images.gatewayAdminMock.pullPolicy }}
+          command:
+            - sh
+            - -lc
+            - python -m uvicorn apps.gateway_admin_mock.main:app --host 0.0.0.0 --port {{ .Values.services.gatewayAdminMock.port }}
+          {{- with .Values.resources.gatewayAdminMock }}
+          resources:{{ toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.services.gatewayAdminMock.port }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-compiler-worker
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "compiler-worker") | nindent 4 }}
+spec:
+  selector:
+    {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "compiler-worker") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.compilerWorker.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-compiler-worker
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "compiler-worker") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "compiler-worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "compiler-worker") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "tool-compiler.fullname" . }}-compiler-worker
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: compiler-worker
+          image: "{{ .Values.images.compilerWorker.repository }}:{{ .Values.images.compilerWorker.tag }}"
+          imagePullPolicy: {{ .Values.images.compilerWorker.pullPolicy }}
+          command:
+            - sh
+            - -lc
+            - python -m apps.compiler_worker.entrypoint
+          env:
+            - name: DATABASE_URL
+              value: "postgresql+asyncpg://{{ .Values.global.database.user }}:{{ .Values.global.database.password }}@{{ include "tool-compiler.fullname" . }}-postgres:{{ .Values.global.database.port }}/{{ .Values.global.database.name }}"
+            - name: REDIS_URL
+              value: {{ .Values.global.redisUrl | quote }}
+            - name: TEMPORAL_ADDRESS
+              value: {{ .Values.global.temporalAddress | quote }}
+            - name: WORKFLOW_ENGINE
+              value: celery
+            - name: MCP_RUNTIME_IMAGE
+              value: "{{ .Values.images.mcpRuntime.repository }}:{{ .Values.images.mcpRuntime.tag }}"
+            - name: COMPILER_TARGET_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            {{- if .Values.compilerWorker.runtimeImagePullSecrets }}
+            - name: MCP_RUNTIME_IMAGE_PULL_SECRETS
+              value: {{ .Values.compilerWorker.runtimeImagePullSecrets | quote }}
+            {{- end }}
+            {{- if .Values.compilerWorker.runtimeNodeSelector }}
+            - name: MCP_RUNTIME_NODE_SELECTOR
+              value: {{ .Values.compilerWorker.runtimeNodeSelector | quote }}
+            {{- end }}
+            - name: CELERY_WORKER_CONCURRENCY
+              value: "1"
+            - name: CELERY_WORKER_POOL
+              value: solo
+            - name: ROUTE_PUBLISH_MODE
+              value: access-control
+            - name: ACCESS_CONTROL_URL
+              value: "http://{{ include "tool-compiler.fullname" . }}-access-control:{{ .Values.services.accessControl.port }}"
+            - name: ACCESS_CONTROL_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tool-compiler.fullname" . }}-secrets
+                  key: jwt-secret
+            {{- range .Values.compilerWorker.extraEnv }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+            {{- range .Values.compilerWorker.secretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .secretKey }}
+            {{- end }}
+          {{- with .Values.resources.compilerWorker }}
+          resources:{{ toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.services.compilerWorker.port }}
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+{{- if .Values.mcpRuntime.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-mcp-runtime
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "mcp-runtime") | nindent 4 }}
+spec:
+  selector:
+    {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "mcp-runtime") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.services.mcpRuntime.port }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tool-compiler.fullname" . }}-mcp-runtime
+  labels:
+    {{- include "tool-compiler.componentLabels" (dict "root" . "component" "mcp-runtime") | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "mcp-runtime") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tool-compiler.componentSelectorLabels" (dict "root" . "component" "mcp-runtime") | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mcp-runtime
+          image: "{{ .Values.images.mcpRuntime.repository }}:{{ .Values.images.mcpRuntime.tag }}"
+          imagePullPolicy: {{ .Values.images.mcpRuntime.pullPolicy }}
+          command:
+            - sh
+            - -lc
+            - python -m uvicorn apps.mcp_runtime.main:app --host 0.0.0.0 --port {{ .Values.services.mcpRuntime.port }}
+          env:
+            - name: SERVICE_IR_PATH
+              value: /config/service-ir.json
+            - name: BILLING_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tool-compiler.fullname" . }}-secrets
+                  key: billing-secret
+          {{- with .Values.resources.mcpRuntime }}
+          resources:{{ toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.services.mcpRuntime.port }}
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          volumeMounts:
+            - name: runtime-ir
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: runtime-ir
+          configMap:
+            name: {{ include "tool-compiler.fullname" . }}-runtime-ir
+{{- end }}

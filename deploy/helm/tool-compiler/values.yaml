@@ -1,0 +1,182 @@
+fullnameOverride: tool-compiler
+
+global:
+  database:
+    host: tool-compiler-postgres
+    port: 5432
+    name: toolcompiler
+    user: toolcompiler
+    password: toolcompiler
+  redisUrl: redis://tool-compiler-redis:6379/0
+  temporalAddress: tool-compiler-temporal:7233
+  jwtSecret: dev-secret
+  billingSecret: dev-token
+
+images:
+  compilerApi:
+    repository: tool-compiler/compiler-api
+    tag: latest
+    pullPolicy: IfNotPresent
+  migrations:
+    repository: ""
+    tag: ""
+    pullPolicy: ""
+  accessControl:
+    repository: tool-compiler/access-control
+    tag: latest
+    pullPolicy: IfNotPresent
+  gatewayAdminMock:
+    repository: tool-compiler/gateway-admin-mock
+    tag: latest
+    pullPolicy: IfNotPresent
+  compilerWorker:
+    repository: tool-compiler/compiler-worker
+    tag: latest
+    pullPolicy: IfNotPresent
+  mcpRuntime:
+    repository: tool-compiler/mcp-runtime
+    tag: latest
+    pullPolicy: IfNotPresent
+  postgres:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  redis:
+    repository: redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+  temporal:
+    repository: temporalio/server
+    tag: "1.25.2"
+    pullPolicy: IfNotPresent
+
+services:
+  compilerApi:
+    port: 8000
+  accessControl:
+    port: 8001
+  compilerWorker:
+    port: 8002
+  mcpRuntime:
+    port: 8003
+  gatewayAdminMock:
+    port: 8004
+
+gatewayAdminMock:
+  enabled: false
+
+compilerWorker:
+  extraEnv: []
+  secretEnv: []
+  runtimeImagePullSecrets: ""
+  runtimeNodeSelector: ""
+
+# Default cluster resources keep the control plane out of BestEffort QoS so
+# long-running LLM proof jobs do not get evicted under shared-node pressure.
+resources:
+  compilerApi:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  accessControl:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  gatewayAdminMock:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  compilerWorker:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  mcpRuntime:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  postgres:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+  redis:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  temporal:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+mcpRuntime:
+  enabled: true
+  serviceIrJson: |
+    {
+      "ir_version": "1.0.0",
+      "compiler_version": "0.1.0",
+      "source_url": "https://example.com/billing/openapi.json",
+      "source_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "protocol": "openapi",
+      "service_name": "billing-runtime",
+      "service_description": "Billing runtime fixture",
+      "base_url": "https://billing.example.com",
+      "auth": {
+        "type": "bearer",
+        "runtime_secret_ref": "billing-secret"
+      },
+      "operations": [
+        {
+          "id": "listAccounts",
+          "name": "List Accounts",
+          "description": "List billing accounts.",
+          "method": "GET",
+          "path": "/accounts",
+          "params": [
+            {
+              "name": "customer_id",
+              "type": "string",
+              "required": true,
+              "description": "Customer identifier",
+              "source": "extractor",
+              "confidence": 1.0
+            }
+          ],
+          "risk": {
+            "writes_state": false,
+            "destructive": false,
+            "external_side_effect": false,
+            "idempotent": true,
+            "risk_level": "safe",
+            "confidence": 1.0,
+            "source": "extractor"
+          },
+          "source": "extractor",
+          "confidence": 1.0,
+          "enabled": true
+        }
+      ],
+      "operation_chains": []
+    }

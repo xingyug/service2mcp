@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aria2
+  namespace: example-targets
+  labels:
+    app.kubernetes.io/name: aria2
+    app.kubernetes.io/part-of: tool-compiler
+    tool-compiler.io/protocol: jsonrpc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aria2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aria2
+        app.kubernetes.io/part-of: tool-compiler
+        tool-compiler.io/protocol: jsonrpc
+    spec:
+      containers:
+      - name: aria2
+        image: YOUR_REGISTRY/YOUR_PROJECT/real-target-aria2:arm64-k3s
+        ports:
+        - containerPort: 6800
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 30m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - 'curl -sf -d ''{"jsonrpc":"2.0","method":"aria2.getVersion","id":"hc","params":["token:test-secret"]}''
+              -H ''Content-Type: application/json'' http://127.0.0.1:6800/jsonrpc'
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 6800
+          initialDelaySeconds: 10
+          periodSeconds: 30
+      nodeSelector:
+        kubernetes.io/hostname: YOUR_NODE_HOSTNAME
+      imagePullSecrets:
+      - name: gcr-secret

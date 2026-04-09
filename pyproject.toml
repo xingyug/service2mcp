@@ -1,0 +1,150 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "service2mcp"
+version = "0.1.0"
+description = "Compile services into governed MCP tool servers"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.6,<3",
+    "fastapi>=0.110,<1",
+    "uvicorn[standard]>=0.27,<1",
+    "grpcio>=1.62,<2",
+    "grpcio-reflection>=1.62,<2",
+    "httpx>=0.27,<1",
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "asyncpg>=0.29,<1",
+    "aiosqlite>=0.20,<1",
+    "psycopg[binary]>=3.1,<4",
+    "alembic>=1.13,<2",
+    "celery[redis]>=5.6.3,<6",
+    "redis>=5.0,<6",
+    "jinja2>=3.1,<4",
+    "pyyaml>=6.0,<7",
+    "defusedxml>=0.7,<1",
+    "mcp>=1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0,<10",
+    "pytest-asyncio>=1.3,<2",
+    "pytest-cov>=7.1,<8",
+    "hypothesis>=6.98,<7",
+    "testcontainers[postgres,redis]>=4.13.3,<5",
+    "ruff>=0.3,<1",
+    "mypy>=1.8,<2",
+    "types-defusedxml>=0.7,<1",
+    "nox>=2026.2.9,<2027",
+    "basedpyright>=1.18,<2",
+    "pre-commit>=3.7,<5",
+    "respx>=0.21,<1",
+]
+extractors = [
+    "openapi-spec-validator>=0.7,<1",
+    "jsonschema>=4.26.0,<5",
+    "gql[httpx]>=4.0,<5",
+]
+enhancer = [
+    "anthropic>=0.40,<1",
+    "openai>=2.30,<3",
+    "google-cloud-aiplatform>=1.50,<2",
+    "tiktoken>=0.6,<1",
+]
+observability = [
+    "prometheus-client>=0.20,<1",
+    "opentelemetry-api>=1.23,<2",
+    "opentelemetry-sdk>=1.23,<2",
+    "opentelemetry-exporter-otlp>=1.23,<2",
+    "opentelemetry-instrumentation-fastapi>=0.44b0,<1",
+    "opentelemetry-instrumentation-httpx>=0.44b0,<1",
+]
+brokers = [
+    "aiokafka>=0.11,<1",
+    "aio-pika>=9.4,<10",
+    "aiomqtt>=2.3,<3",
+]
+all = ["service2mcp[dev,extractors,enhancer,observability,brokers]"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["libs", "apps"]
+
+[tool.pytest.ini_options]
+testpaths = ["libs", "tests", "apps"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+markers = [
+    "contract: contract tests verifying inter-component contracts",
+    "e2e: end-to-end tests exercising full compilation pipeline",
+    "integration: integration tests crossing service boundaries",
+    "security: security-focused tests (auth bypass, injection, SSRF)",
+    "performance: performance benchmark tests (extraction, compilation, runtime)",
+    "slow: tests that take more than 10 seconds",
+    "regression: regression locks for exact-parity services",
+]
+
+[tool.coverage.run]
+source = ["libs", "apps"]
+omit = [
+    "*/tests/*",
+    "*/migrations/*",
+    "*/__pycache__/*",
+    "apps/web-ui/*",
+]
+
+[tool.coverage.report]
+fail_under = 55
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "pass",
+    "\\.\\.\\.",
+]
+show_missing = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["yaml"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["testcontainers.postgres", "testcontainers.postgres.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["aiokafka", "aiokafka.*", "aio_pika", "aio_pika.*", "aiomqtt", "aiomqtt.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "google.protobuf",
+    "google.protobuf.*",
+    "grpc",
+    "grpc.*",
+    "grpc_reflection",
+    "grpc_reflection.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["apps.*.tests.*", "libs.*.tests.*", "libs.tests.*"]
+ignore_errors = true

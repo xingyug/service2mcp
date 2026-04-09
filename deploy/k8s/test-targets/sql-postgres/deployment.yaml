@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sql-postgres
+  namespace: example-test-targets
+  labels:
+    app: sql-postgres
+    app.kubernetes.io/name: sql-postgres
+    app.kubernetes.io/part-of: example-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: sql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sql-postgres
+  template:
+    metadata:
+      labels:
+        app: sql-postgres
+        app.kubernetes.io/name: sql-postgres
+        app.kubernetes.io/component: test-target
+        tool-compiler.io/protocol: sql
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: catalog
+            - name: POSTGRES_USER
+              value: catalog
+            - name: POSTGRES_PASSWORD
+              value: catalog
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          startupProbe:
+            tcpSocket:
+              port: 5432
+            failureThreshold: 30
+            periodSeconds: 5
+      volumes:
+        - name: init-sql
+          configMap:
+            name: sql-postgres-init
+        - name: pgdata
+          emptyDir: {}

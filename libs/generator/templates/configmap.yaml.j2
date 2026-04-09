@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ config_map_name }}
+  namespace: {{ namespace }}
+  labels:
+{{ labels_yaml_4 }}
+  annotations:
+{{ annotations_yaml_4 }}
+binaryData:
+  {{ service_ir_key }}: "{{ service_ir_gzip_base64 }}"

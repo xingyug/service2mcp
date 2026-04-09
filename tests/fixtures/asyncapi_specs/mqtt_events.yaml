@@ -1,0 +1,25 @@
+asyncapi: '2.6.0'
+info:
+  title: IoT Sensor Data
+  version: '1.0.0'
+servers:
+  production:
+    url: mqtt://iot-broker:1883
+    protocol: mqtt
+channels:
+  sensors/temperature:
+    subscribe:
+      operationId: onTemperatureReading
+      message:
+        payload:
+          type: object
+          properties:
+            sensorId:
+              type: string
+            temperature:
+              type: number
+            unit:
+              type: string
+            timestamp:
+              type: string
+              format: date-time

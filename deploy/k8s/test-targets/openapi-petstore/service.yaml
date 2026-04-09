@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: openapi-petstore
+  namespace: example-test-targets
+  labels:
+    app: openapi-petstore
+    app.kubernetes.io/name: openapi-petstore
+    app.kubernetes.io/part-of: example-test-targets
+    app.kubernetes.io/component: test-target
+    tool-compiler.io/protocol: openapi
+spec:
+  type: ClusterIP
+  selector:
+    app: openapi-petstore
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http

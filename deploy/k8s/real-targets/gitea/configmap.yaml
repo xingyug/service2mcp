@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitea-config
+  namespace: example-targets
+  labels:
+    app.kubernetes.io/name: gitea
+    app.kubernetes.io/part-of: tool-compiler
+data:
+  app.ini: |
+    APP_NAME = service2mcp Test Gitea
+    RUN_MODE = prod
+
+    [server]
+    DOMAIN           = gitea.example-targets.svc.cluster.local
+    HTTP_PORT        = 3000
+    ROOT_URL         = http://gitea.example-targets.svc.cluster.local:3000/
+    DISABLE_SSH      = true
+    LFS_START_SERVER = false
+
+    [database]
+    DB_TYPE  = sqlite3
+    PATH     = /data/gitea/gitea.db
+
+    [security]
+    INSTALL_LOCK        = true
+    SECRET_KEY          = tcsecretkey1234567890abcdef  # gitleaks:allow
+    INTERNAL_TOKEN      = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0YyI6InRlc3QifQ.placeholder  # gitleaks:allow
+
+    [service]
+    DISABLE_REGISTRATION        = false
+    REQUIRE_SIGNIN_VIEW         = false
+    DEFAULT_ALLOW_CREATE_ORGANIZATION = true
+    ENABLE_BASIC_AUTHENTICATION = true
+
+    [api]
+    ENABLE_SWAGGER = true
+    MAX_RESPONSE_ITEMS = 50
+
+    [log]
+    MODE  = console
+    LEVEL = Info
+
+    [openid]
+    ENABLE_OPENID_SIGNIN = false
+
+    [oauth2]
+    ENABLE = false
+
+    [mailer]
+    ENABLED = false
+
+    [cron]
+    ENABLED = false
+
+    [session]
+    PROVIDER = memory
+
+    [cache]
+    ADAPTER = memory
+
+    [queue]
+    TYPE = level
